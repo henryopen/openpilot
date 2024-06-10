@@ -265,7 +265,7 @@ class CarState(CarStateBase):
 
     # FrogPilot CarState functions
     self.lkas_previously_enabled = self.lkas_enabled
-    self.lkas_enabled = cp.vl[self.cruise_btns_msg_canfd]["LKAS_BTN"]
+    self.lkas_enabled = cp.vl[self.cruise_btns_msg_canfd]["LFA_BTN"]
 
     return ret, fp_ret
 
