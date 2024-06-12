@@ -206,6 +206,7 @@ typedef struct UIScene {
   float lane_width_right;
   float lat_accel;
   float lead_detection_threshold;
+  float path_edge_width;
   float road_curvature;
   float speed_jerk;
   float speed_jerk_difference;
@@ -236,6 +237,7 @@ typedef struct UIScene {
   int wheel_icon;
 
   QPolygonF track_adjacent_vertices[6];
+  QPolygonF track_edge_vertices;
 
 } UIScene;
 
