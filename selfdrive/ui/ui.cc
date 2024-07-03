@@ -350,6 +350,7 @@ void ui_update_frogpilot_params(UIState *s) {
   scene.pedals_on_ui = custom_onroad_ui && params.getBool("PedalsOnUI");
   scene.dynamic_pedals_on_ui = scene.pedals_on_ui && params.getBool("DynamicPedalsOnUI");
   scene.static_pedals_on_ui = scene.pedals_on_ui && params.getBool("StaticPedalsOnUI");
+  scene.rainbow_path = custom_onroad_ui && params.getBool("RainbowPath");
   scene.road_name_ui = custom_onroad_ui && params.getBool("RoadNameUI");
   scene.rotating_wheel = custom_onroad_ui && params.getBool("RotatingWheel");
   scene.show_stopping_point = custom_onroad_ui && params.getBool("ShowStoppingPoint");
@@ -574,9 +575,9 @@ void Device::setAwake(bool on) {
 
 void Device::resetInteractiveTimeout(int timeout, int timeout_onroad) {
   if (timeout == -1) {
-    timeout = (ignition_on ? 10 : 30);
+    timeout = (ignition_on ? 10 : 600);
   } else {
-    timeout = (ignition_on ? timeout_onroad : timeout);
+    timeout = (ignition_on ? timeout_onroad : 600);
   }
   interactive_timeout = timeout * UI_FREQ;
 }

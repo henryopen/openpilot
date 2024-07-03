@@ -52,6 +52,7 @@ SoftwarePanel::SoftwarePanel(QWidget* parent) : ListWidget(parent) {
   installBtn = new ButtonControl(tr("Install Update"), tr("INSTALL"));
   connect(installBtn, &ButtonControl::clicked, [=]() {
     installBtn->setEnabled(false);
+    params.putBool("IsPrebuilt", false);
     params.putBool("DoReboot", true);
   });
   addItem(installBtn);

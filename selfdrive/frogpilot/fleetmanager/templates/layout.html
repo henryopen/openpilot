@@ -16,6 +16,17 @@
       width: 80px;
       height: 80px;
     }
+    .container1 {
+       display: flex;
+       flex-wrap: wrap;
+       align-items: flex-start;
+      }
+      #save_type {
+       flex: 1;
+      }
+      #pac-input {
+       flex: 2;
+      }
   </style>
     <!-- UIkit CSS -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/uikit@3.9.2/dist/css/uikit.min.css" />
@@ -46,23 +57,23 @@
   <nav class="navbar navbar-fixed-top navbar-expand-sm navbar-dark bg-dark">
     <div class="container">
       <a href="/" class="navbar-brand mb-0 h1">
-        <img class="d-inline-block align-top mr-2" src="/static/frog.png" /> FrogPilot </a>
+        FrogPilot </a>
       <button type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" class="navbar-toggler" aria-controls="navbarNav" aria-expanded="false" arial-label="Toggle navigation">
         <span class="navbar-toggler-icon"></span>
       </button>
       <div class="collapse navbar-collapse ml-auto" id="navbarNav">
         <ul class="navbar-nav">
           <li class="nav-item active">
-            <a href="/footage" class="nav-link">Dashcam Routes</a>
+            <a href="/footage" class="nav-link">Dashcam</a>
           </li>
           <li class="nav-item active">
-            <a href="/screenrecords" class="nav-link">Screen Recordings</a>
+            <a href="/screenrecords" class="nav-link">Screen</a>
           </li>
           <li class="nav-item active">
-            <a href="/error_logs" class="nav-link">Error Logs</a>
+            <a href="/error_logs" class="nav-link">Error</a>
           </li>
           <li class="nav-item active">
-            <a href="/addr_input" class="nav-link">Navigation</a>
+            <a href="/addr_input" class="nav-link">Navi</a>
           </li>
           <li class="nav-item active">
             <a href="/tools" class="nav-link">Tools</a>

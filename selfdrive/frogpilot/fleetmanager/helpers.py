@@ -252,6 +252,10 @@ def get_PrimeType():
   PrimeType = params.get_int("PrimeType")
   return PrimeType
 
+def get_past_dest():
+    past_dest = params.get("NavPastDestinations")
+    return past_dest
+
 def get_last_lon_lat():
   last_pos = params.get("LastGPSPosition")
   if last_pos:

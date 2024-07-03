@@ -11,9 +11,9 @@ from openpilot.common.realtime import DT_CTRL
 # V_CRUISE's are in kph
 V_CRUISE_MIN = 8
 V_CRUISE_MAX = 145
-V_CRUISE_UNSET = 255
-V_CRUISE_INITIAL = 40
-V_CRUISE_INITIAL_EXPERIMENTAL_MODE = 105
+V_CRUISE_UNSET = 20
+V_CRUISE_INITIAL = 20
+V_CRUISE_INITIAL_EXPERIMENTAL_MODE = 60
 IMPERIAL_INCREMENT = 1.6  # should be CV.MPH_TO_KPH, but this causes rounding errors
 
 MIN_SPEED = 1.0
@@ -72,8 +72,8 @@ class VCruiseHelper:
   def _update_v_cruise_non_pcm(self, CS, enabled, is_metric, speed_limit_changed, frogpilot_toggles):
     # handle button presses. TODO: this should be in state_control, but a decelCruise press
     # would have the effect of both enabling and changing speed is checked after the state transition
-    if not enabled:
-      return
+    #if not enabled:
+      #return
 
     long_press = False
     button_type = None
@@ -94,26 +94,24 @@ class VCruiseHelper:
           break
 
     if button_type is None:
+      if self.params_memory.get_bool('KeyChanged'):
+        self.v_cruise_kph = self.params_memory.get_int('KeySetSpeed')
+        self.params_memory.put_bool('KeyChanged', False)
+      elif self.params_memory.get_bool('SpeedLimitChanged'):
+        self.v_cruise_kph = math.ceil(self.params_memory.get_int('DetectSpeedLimit')/10)*10
+        self.params_memory.put_int('KeySetSpeed', self.v_cruise_kph)
+        self.params_memory.put_bool('SpeedLimitChanged', False)
       return
-
-    # Confirm or deny the new speed limit value
-    if speed_limit_changed:
-      if button_type == ButtonType.accelCruise:
-        self.params_memory.put_bool("SLCConfirmed", True)
-        self.params_memory.put_bool("SLCConfirmedPressed", True)
-        return
-      elif button_type == ButtonType.decelCruise:
-        self.params_memory.put_bool("SLCConfirmed", False)
-        self.params_memory.put_bool("SLCConfirmedPressed", True)
-        return
 
     # Don't adjust speed when pressing resume to exit standstill
     cruise_standstill = self.button_change_states[button_type]["standstill"] or CS.cruiseState.standstill
-    if button_type == ButtonType.accelCruise and cruise_standstill:
+    if (button_type == ButtonType.accelCruise or self.params_memory.get_bool('KeyResume')) and cruise_standstill:
+      self.params_memory.put_bool('KeyChanged', False)
       return
 
     # Don't adjust speed if we've enabled since the button was depressed (some ports enable on rising edge)
     if not self.button_change_states[button_type]["enabled"]:
+      self.params_memory.put_bool('KeyChanged', False)
       return
 
     v_cruise_delta_interval = frogpilot_toggles.custom_cruise_increase_long if long_press else frogpilot_toggles.custom_cruise_increase
@@ -133,6 +131,10 @@ class VCruiseHelper:
       self.v_cruise_kph = max(self.v_cruise_kph, CS.vEgo * CV.MS_TO_KPH)
 
     self.v_cruise_kph = clip(round(self.v_cruise_kph, 1), V_CRUISE_MIN, V_CRUISE_MAX)
+    self.params_memory.put_int('KeySetSpeed', self.v_cruise_kph)
+    self.params_memory.put_bool('KeyChanged', False)
+    if self.params_memory.get_bool('KeyResume'):
+      self.params_memory.put_bool('KeyResume', False)
 
   def update_button_timers(self, CS, enabled):
     # increment timer for buttons still pressed
@@ -148,7 +150,7 @@ class VCruiseHelper:
 
   def initialize_v_cruise(self, CS, experimental_mode: bool, desired_speed_limit, frogpilot_toggles) -> None:
     # initializing is handled by the PCM
-    if self.CP.pcmCruise:
+    if self.CP.pcmCruise or self.params_memory.get_bool('KeyResume'):
       return
 
     initial = V_CRUISE_INITIAL_EXPERIMENTAL_MODE if experimental_mode and not frogpilot_toggles.conditional_experimental_mode else V_CRUISE_INITIAL
@@ -157,12 +159,11 @@ class VCruiseHelper:
     if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_kph_last < 250:
       self.v_cruise_kph = self.v_cruise_kph_last
     else:
-      if desired_speed_limit != 0 and frogpilot_toggles.set_speed_limit:
-        self.v_cruise_kph = int(round(desired_speed_limit * CV.MS_TO_KPH))
-      else:
-        self.v_cruise_kph = int(round(clip(CS.vEgo * CV.MS_TO_KPH, initial, V_CRUISE_MAX)))
+      self.v_cruise_kph = int(round(clip(CS.vEgo * CV.MS_TO_KPH, initial, V_CRUISE_MAX)))
 
     self.v_cruise_cluster_kph = self.v_cruise_kph
+    self.params_memory.put_int('KeySetSpeed', self.v_cruise_kph)
+    self.params_memory.put_bool('KeyChanged', False)
 
 
 def apply_deadzone(error, deadzone):

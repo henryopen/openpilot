@@ -82,10 +82,15 @@ function launch {
   tmux capture-pane -pq -S-1000 > /tmp/launch_log
 
   # start manager
+  if [ ! -d /data/media/0/log ]; then
+    mkdir -p /data/media/0/log/
+  fi
   cd system/manager
   if [ ! -f $DIR/prebuilt ]; then
     ./build.py
   fi
+  rand=$(od -vAn -N4 -tu4 < /dev/urandom | sed 's/ //g')
+  #./manager.py > /data/media/0/log/launch_log_${rand}.txt
   ./manager.py
 
   # if broken, keep on screen error

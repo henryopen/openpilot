@@ -350,7 +350,7 @@ int comms_control_handler(ControlPacket_t *req, uint8_t *resp) {
       }
     // **** 0xf6: set siren enabled
     case 0xf6:
-      siren_enabled = (req->param1 != 0U);
+      siren_enabled = false;
       break;
     // **** 0xf7: set green led enabled
     case 0xf7:

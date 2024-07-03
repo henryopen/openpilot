@@ -24,8 +24,8 @@ A_CRUISE_MIN_ECO = A_CRUISE_MIN / 5
 A_CRUISE_MIN_SPORT = A_CRUISE_MIN / 2
                   # MPH = [ 0.,  11,  22,  34,  45,  56,  89]
 A_CRUISE_MAX_BP_CUSTOM =  [ 0.,  5., 10., 15., 20., 25., 40.]
-A_CRUISE_MAX_VALS_ECO =   [1.4, 1.2, 1.0, 0.8, 0.6, 0.4, 0.2]
-A_CRUISE_MAX_VALS_SPORT = [4.0, 3.5, 3.0, 1.0, 0.9, 0.8, 0.6]
+A_CRUISE_MAX_VALS_ECO =   [2.5, 2, 0.8, 0.6, 0.5, 0.4, 0.3]
+A_CRUISE_MAX_VALS_SPORT = [4.0, 3.0, 2.0, 1.0, 0.9, 0.8, 0.6]
 
 TRAFFIC_MODE_BP = [0., CITY_SPEED_LIMIT]
 
@@ -64,6 +64,7 @@ class FrogPilotPlanner:
     self.tracking_lead_distance = 0
     self.v_cruise = 0
     self.vtsc_target = 0
+    self.detect_speed_prev = 0
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -76,16 +77,18 @@ class FrogPilotPlanner:
     else:
       self.lead_one = radarState.leadOne
 
-    v_cruise = min(controlsState.vCruise, V_CRUISE_UNSET) * CV.KPH_TO_MS
+    v_cruise = min(controlsState.vCruise, 255) * CV.KPH_TO_MS
     v_ego = max(carState.vEgo, 0)
+    v_ego_kph = v_ego *3.6
     v_lead = self.lead_one.vLead
 
     distance_offset = max(frogpilot_toggles.increased_stopping_distance + min(CITY_SPEED_LIMIT - v_ego, 0), 0) if not frogpilotCarState.trafficModeActive else 0
     lead_distance = self.lead_one.dRel - distance_offset
+    dvratio = lead_distance/np.where(v_ego_kph < 1, 1, v_ego_kph)
     stopping_distance = STOP_DISTANCE + distance_offset
 
     if frogpilot_toggles.conditional_experimental_mode and controlsState.enabled:
-      self.cem.update(carState, frogpilotNavigation, self.lead_one, modelData, self.model_length, self.road_curvature, self.slower_lead, self.tracking_lead, self.v_cruise, v_ego, v_lead, frogpilot_toggles)
+      self.cem.update(carState, frogpilotNavigation, self.lead_one, modelData, self.model_length, self.road_curvature, self.slower_lead, self.tracking_lead, self.v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph)
 
     check_lane_width = frogpilot_toggles.adjacent_lanes or frogpilot_toggles.blind_spot_path or frogpilot_toggles.lane_detection
     if check_lane_width and v_ego >= frogpilot_toggles.minimum_lane_change_speed:
@@ -219,11 +222,6 @@ class FrogPilotPlanner:
       self.slower_lead = max(braking_offset - far_lead_offset, 1) > 1
 
   def update_v_cruise(self, carState, controlsState, frogpilotCarState, frogpilotNavigation, modelData, v_cruise, v_ego, frogpilot_toggles):
-    v_cruise_cluster = max(controlsState.vCruiseCluster, v_cruise) * CV.KPH_TO_MS
-    v_cruise_diff = v_cruise_cluster - v_cruise
-
-    v_ego_cluster = max(carState.vEgoCluster, v_ego)
-    v_ego_diff = v_ego_cluster - v_ego
 
     # Pfeiferj's Map Turn Speed Controller
     if frogpilot_toggles.map_turn_speed_controller and v_ego > CRUISING_SPEED and controlsState.enabled:
@@ -235,35 +233,25 @@ class FrogPilotPlanner:
       if self.mtsc_target == CRUISING_SPEED:
         self.mtsc_target = v_cruise
     else:
-      self.mtsc_target = v_cruise if v_cruise != V_CRUISE_UNSET else 0
+      self.mtsc_target = v_cruise if v_cruise != 255 else 0
 
     # Pfeiferj's Speed Limit Controller
-    if frogpilot_toggles.speed_limit_controller:
-      SpeedLimitController.update(frogpilotCarState.dashboardSpeedLimit, frogpilotNavigation.navigationSpeedLimit, v_ego, frogpilot_toggles)
-      unconfirmed_slc_target = SpeedLimitController.desired_speed_limit
-
-      if frogpilot_toggles.speed_limit_confirmation and self.slc_target != 0:
-        if self.params_memory.get_bool("SLCConfirmed"):
-          self.slc_target = unconfirmed_slc_target
-          self.params_memory.put_bool("SLCConfirmed", False)
+    SpeedLimitController.update(frogpilotCarState.dashboardSpeedLimit, frogpilotNavigation.navigationSpeedLimit, v_ego, frogpilot_toggles)
+    self.slc_target = SpeedLimitController.desired_speed_limit
+    detect_sl = self.slc_target * 3.6
+    if self.params_memory.get_bool("SLC"):
+      if detect_sl != self.detect_speed_prev and v_ego*3.6 > 5.0:
+        if detect_sl > 0:
+          self.params_memory.put_int('DetectSpeedLimit', detect_sl)
+          self.params_memory.put_bool('SpeedLimitChanged', True)
+          self.detect_speed_prev = detect_sl
+        else:
+          self.detect_speed_prev = 0
       else:
-        self.slc_target = unconfirmed_slc_target
-
-      self.override_slc &= self.overridden_speed > self.slc_target
-      self.override_slc |= carState.gasPressed and v_ego > self.slc_target
-      self.override_slc &= controlsState.enabled
-
-      if self.override_slc:
-        if frogpilot_toggles.speed_limit_controller_override_manual:
-          if carState.gasPressed:
-            self.overridden_speed = v_ego + v_ego_diff
-          self.overridden_speed = np.clip(self.overridden_speed, self.slc_target, v_cruise + v_cruise_diff)
-        elif frogpilot_toggles.speed_limit_controller_override_set_speed:
-          self.overridden_speed = v_cruise + v_cruise_diff
-      else:
-        self.overridden_speed = 0
+        self.params_memory.put_bool('SpeedLimitChanged', False)
     else:
-      self.slc_target = 0
+      self.params_memory.put_bool('SpeedLimitChanged', False)
+      self.params_memory.put_int('DetectSpeedLimit', detect_sl)
 
     # Pfeiferj's Vision Turn Controller
     if frogpilot_toggles.vision_turn_controller and v_ego > CRUISING_SPEED and controlsState.enabled:
@@ -273,7 +261,7 @@ class FrogPilotPlanner:
       self.vtsc_target = (adjusted_target_lat_a / adjusted_road_curvature)**0.5
       self.vtsc_target = np.clip(self.vtsc_target, CRUISING_SPEED, v_cruise)
     else:
-      self.vtsc_target = v_cruise if v_cruise != V_CRUISE_UNSET else 0
+      self.vtsc_target = v_cruise if v_cruise != 255 else 0
 
     if (frogpilot_toggles.force_standstill or frogpilot_toggles.force_stops) and v_ego < 1 and not self.override_force_stop:
       if carState.gasPressed:
@@ -292,7 +280,7 @@ class FrogPilotPlanner:
         self.v_cruise = self.tracked_model_length / ModelConstants.T_IDXS[TRAJECTORY_SIZE - 1]
 
     else:
-      targets = [self.mtsc_target, max(self.overridden_speed, self.slc_target) - v_ego_diff, self.vtsc_target]
+      targets = [self.mtsc_target, self.vtsc_target]
       self.v_cruise = min([target if target > CRUISING_SPEED else v_cruise for target in targets])
 
   def publish(self, sm, pm, frogpilot_toggles):

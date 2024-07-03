@@ -3,8 +3,9 @@
   <form name="searchForm" method="post">
     <fieldset class="uk-fieldset">
       <div class="uk-margin">
+      <div class="container1">
         {% if home or work or fav1 or fav2 or fav3 %}
-        <select class="uk-select" name="fav_val">
+        <select class="uk-select" name="fav_val" id="save_type">
           <option value="favorites">Select Saved Destinations</option>
           {% if home %} <option value="home">Home: {{home}}</option> {% endif %}
           {% if work %} <option value="work">Work: {{work}}</option> {% endif %}
@@ -14,12 +15,55 @@
         </select>
         {% endif %}
         <input class="uk-input" type="text" name="addr_val" id="pac-input" placeholder="Search a place">
+      </div>
         <input class="uk-button uk-button-primary uk-width-1-1 uk-margin-small-bottom" type="submit" value="Search">
       </div>
     </fieldset>
   </form>
+<div class="container1">
+  <div style="flex: 1;">
+    <div id="destinationHeading" style="font-weight: bold;"></div>
+      <div id="jsonOutput" style="text-align: left;"></div>
+    </div>
+  <div id="map" style="flex: 0 0 33.33%;"></div></div>
 <!-- Include the Google Maps Places API script conditionally with JavaScript -->
 <script>
+  fetch('/get_past_dest')
+  .then(response => response.json())
+  .then(data => {
+    const mapDiv = document.getElementById("map");
+    let tableContent = "<table>";
+
+    // Add table headers
+    tableContent += "<tr>";
+    tableContent += "<th>Index</th>";
+    tableContent += "<th>Place Name</th>";
+    tableContent += "<th>Save Type</th>";
+    tableContent += "</tr>";
+
+    // Iterate over each place in the JSON data
+    data.forEach((place ,index)=> {
+      tableContent += "<tr>";
+      tableContent += `<td>${index}</td>`;
+      tableContent += `<td><a href="#" onclick="setNav('${place.place_name}')">${place.place_name}</a></td>`;
+      tableContent += `<td>${place.save_type}</td>`;
+      tableContent += "</tr>";
+    });
+
+    tableContent += "</table>";
+
+    // Set the HTML content of the map div
+    mapDiv.innerHTML = tableContent;
+  })
+  .catch(error => {
+    console.log('Error:', error);
+  });
+  function setNav(placeName) {
+    // Set value of inputs
+      document.getElementById('pac-input').value = placeName;
+    // Submit form
+      document.forms['searchForm'].submit();
+  }
   // attach gmap_key to variable
   let gmap = "{{gmap_key}}";
 
@@ -36,10 +80,10 @@
       var place = autocomplete.getPlace();
 
       // Check if the place has a formatted address
-      if (place.formatted_address) {
+      //if (place.formatted_address) {
         // Set the value of the input field to the formatted address
-        document.getElementById('pac-input').value = place.formatted_address;
-      }
+        document.getElementById('pac-input').value = place.name;
+      //}
     }
 
     // Define the autocomplete variable

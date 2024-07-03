@@ -167,6 +167,7 @@ typedef struct UIScene {
   bool parked;
   bool pedals_on_ui;
   bool random_events;
+  bool rainbow_path;
   bool reverse;
   bool reverse_cruise;
   bool reverse_cruise_ui;

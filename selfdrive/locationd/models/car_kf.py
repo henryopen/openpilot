@@ -61,7 +61,7 @@ class CarKalman(KalmanFilter):
     (.05 / 100)**2,
     .01**2,
     math.radians(0.02)**2,
-    math.radians(0.25)**2,
+    2 * math.radians(0.25)**2,
 
     .1**2, .01**2,
     math.radians(0.1)**2,

@@ -57,6 +57,7 @@ ButtonType = car.CarState.ButtonEvent.Type
 FrogPilotButtonType = custom.FrogPilotCarState.ButtonEvent.Type
 GearShifter = car.CarState.GearShifter
 SafetyModel = car.CarParams.SafetyModel
+LongCtrlState = car.CarControl.Actuators.LongControlState
 
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 CSID_MAP = {"1": EventName.roadCameraError, "2": EventName.wideRoadCameraError, "0": EventName.driverCameraError}
@@ -105,11 +106,13 @@ class Controls:
       ignore += ['roadCameraState', 'wideRoadCameraState']
     if FrogPilotVariables.toggles.radarless_model:
       ignore += ['radarState']
+    ignore += ['driverMonitoringState']
+    self.params.put_bool_nonblocking("DmModelInitialized", True)
     self.sm = messaging.SubMaster(['deviceState', 'pandaStates', 'peripheralState', 'modelV2', 'liveCalibration',
                                    'carOutput', 'driverMonitoringState', 'longitudinalPlan', 'liveLocationKalman',
                                    'managerState', 'liveParameters', 'radarState', 'liveTorqueParameters',
                                    'testJoystick', 'frogpilotCarState', 'frogpilotPlan'] + self.camera_packets + self.sensor_packets,
-                                  ignore_alive=ignore, ignore_avg_freq=ignore+['radarState', 'testJoystick'], ignore_valid=['testJoystick', ],
+                                  ignore_alive=ignore, ignore_avg_freq=ignore+['radarState', 'testJoystick', 'driverMonitoringState'], ignore_valid=['testJoystick', ],
                                   frequency=int(1/DT_CTRL))
 
     self.joystick_mode = self.params.get_bool("JoystickDebugMode")
@@ -640,6 +643,16 @@ class Controls:
       else:
         actuators.accel = self.LoC.update(CC.longActive, CS, long_plan.aTarget, long_plan.shouldStop, pid_accel_limits)
 
+      keyacce = self.params_memory.get_int("KeyAcce")/100
+      keyturn = self.params_memory.get_int("KeyTurn")/100
+
+      if keyacce != 0:
+          actuators.longControlState = LongCtrlState.pid
+          if keyacce > 0:
+            actuators.accel = 2.0 * keyacce
+          elif keyacce < 0:
+            actuators.accel = 3.0 * keyacce
+
       if len(long_plan.speeds):
         actuators.speed = long_plan.speeds[-1]
 
@@ -650,6 +663,10 @@ class Controls:
                                                                              self.steer_limited, self.desired_curvature,
                                                                              self.sm['liveLocationKalman'],
                                                                              model_data=self.sm['modelV2'])
+      if CC.latActive and keyturn != 0:
+          ksteer = clip(keyturn, -1, 1)
+          #max angle is 45 for angle-based cars, max curvature is 0.02
+          actuators.steer, actuators.steeringAngleDeg, actuators.curvature = ksteer, ksteer * 90., ksteer * -0.02
     else:
       lac_log = log.ControlsState.LateralDebugState.new_message()
       if self.sm.recv_frame['testJoystick'] > 0:

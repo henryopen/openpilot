@@ -5,6 +5,7 @@
 
 #include "selfdrive/ui/qt/onroad/buttons.h"
 #include "selfdrive/ui/qt/widgets/cameraview.h"
+#include "selfdrive/ui/qt/maps/map_instructions.h"
 
 #include "selfdrive/frogpilot/screenrecorder/screenrecorder.h"
 
@@ -134,6 +135,7 @@ private:
   bool useSI;
   bool useViennaSLCSign;
   bool vtscControllingCurve;
+  bool autoturnProfile;
 
   double currentAcceleration;
 
@@ -168,6 +170,7 @@ private:
   QString accelerationUnit;
   QString leadDistanceUnit;
   QString leadSpeedUnit;
+  QString roadNameP;
 
   size_t animationFrameIndex;
 

@@ -8,6 +8,7 @@
 #include "common/swaglog.h"
 #include "selfdrive/ui/qt/onroad/buttons.h"
 #include "selfdrive/ui/qt/util.h"
+#include "selfdrive/ui/qt/maps/map_helpers.h"
 
 // Window that shows camera view and variety of info drawn on top
 AnnotatedCameraWidget::AnnotatedCameraWidget(VisionStreamType type, QWidget* parent) : fps_filter(UI_FREQ, 3, 1. / UI_FREQ), CameraWidget("camerad", type, true, parent) {
@@ -55,6 +56,8 @@ void AnnotatedCameraWidget::updateState(const UIState &s) {
   const auto cs = sm["controlsState"].getControlsState();
   const auto car_state = sm["carState"].getCarState();
   const auto nav_instruction = sm["navInstruction"].getNavInstruction();
+  autoturnProfile = paramsMemory.getBool("AutoTurn");
+  roadNameP = QString::fromStdString(paramsMemory.get("RoadName"));
 
   // Handle older routes where vCruiseCluster is not set
   float v_cruise = cs.getVCruiseCluster() == 0.0 ? cs.getVCruise() : cs.getVCruiseCluster();
@@ -75,6 +78,113 @@ void AnnotatedCameraWidget::updateState(const UIState &s) {
   speedLimit *= (s.scene.is_metric ? MS_TO_KPH : MS_TO_MPH);
   if (speedLimitController && !slcOverridden) {
     speedLimit = speedLimit - (showSLCOffset ? slcSpeedLimitOffset : 0);
+  }
+
+  // Show arrow with direction
+  QString primary_str = QString::fromStdString(nav_instruction.getManeuverPrimaryText());
+  QString secondary_str = QString::fromStdString(nav_instruction.getManeuverSecondaryText());
+  auto distance_str_pair = map_format_distance(nav_instruction.getManeuverDistance(), s.scene.is_metric);
+  QString type = QString::fromStdString(nav_instruction.getManeuverType());
+  QString modifier = QString::fromStdString(nav_instruction.getManeuverModifier());
+  QString distance_str = distance_str_pair.first;
+  QString distance_unit = distance_str_pair.second;
+
+  int distance_value = nav_instruction.getManeuverDistance();
+  QString fn;
+  if (nav_alive) {
+  fn += "於"+distance_str+distance_unit+"後";
+  if (!modifier.isEmpty()) {
+      QString moditext;
+      if (modifier == "uturn") {
+        moditext = "迴轉";
+      } else if (modifier == "sharp right") {
+        moditext = "向右急";
+      } else if (modifier == "right") {
+        moditext = "向右";
+      } else if (modifier == "slight right") {
+        moditext = "靠右";
+      } else if (modifier == "straight") {
+        moditext = "直行";
+      } else if (modifier == "slight left") {
+        moditext = "靠左";
+      } else if (modifier == "left") {
+        moditext = "向左";
+      } else if (modifier == "sharp left") {
+        moditext = "向左急";
+      } else {
+        moditext = modifier;
+      }
+      fn += moditext;
+    }
+    type = type.trimmed();
+  if (!type.isEmpty()) {
+    QString typetext;
+    if (type == "turn") {
+      typetext = "轉彎";
+    } else if (type == "new name") {
+      typetext = "新路";
+    } else if (type == "depart") {
+      typetext = "出發";
+    } else if (type == "arrive") {
+      typetext = "抵達";
+    } else if (type == "merge") {
+      typetext = "合併";
+    } else if (type == "on ramp") {
+      typetext = "進入交流道";
+    } else if (type == "off ramp") {
+      typetext = "駛出交流道";
+    } else if (type == "fork") {
+      typetext = "換道";
+    } else if (type == "use lane") {
+      typetext = "線道";
+    } else if (type == "end off road") {
+      typetext = "抵達終點";
+    } else if (type == "continue") {
+      typetext = "直行";
+    } else if (type == "roundabout") {
+      typetext = "進入圓環";
+    } else if (type == "takeRoundabout") {
+      typetext = "圓環轉彎";
+    } else if (type == "exit roundabout") {
+      typetext = "駛出圓環";
+    } else if (type == "exit rotary") {
+      typetext = "駛出圓環";
+    } else if (type == "rotary") {
+      typetext = "進入圓環";
+    } else if (type == "notification") {
+      typetext = "注意";
+    } else if (type == "roundabout turn") {
+      typetext = "圓環轉彎";
+    } else {
+      typetext = type;
+    }
+    fn += typetext;
+  }
+
+  paramsMemory.put("ANav", (fn + " " + primary_str + " " + secondary_str).toUtf8().toStdString());
+  int distancetoturn = 101;
+  if (v_ego*3.6 > 60) {
+    if (type == "off ramp") {
+      if (roadNameP.contains("高速公路")) {
+        distancetoturn = 501;
+      } else {
+        distancetoturn = 301;
+      }
+    } else {
+      distancetoturn = 201;
+    }
+  }
+
+  if (autoturnProfile) {
+    if ((modifier.contains("left") || modifier.contains("uturn")) && distance_value < distancetoturn) {
+      paramsMemory.putIntNonBlocking("KeyTurnLight", 1);
+    } else if (modifier.contains("right") && distance_value < distancetoturn) {
+              paramsMemory.putIntNonBlocking("KeyTurnLight", 2);
+          }
+    else {
+      paramsMemory.putIntNonBlocking("KeyTurnLight", 0);
+    }
+  }
   }
 
   has_us_speed_limit = (nav_alive && speed_limit_sign == cereal::NavInstruction::SpeedLimitSign::MUTCD) || (speedLimitController && !useViennaSLCSign);
@@ -270,6 +380,7 @@ void AnnotatedCameraWidget::drawHud(QPainter &p) {
       drawText(p, rect().center().x(), 290, speedUnit, 200);
     }
   }
+  paramsMemory.putInt("DisMax",std::nearbyint(setSpeed - cruiseAdjustment));
 
   p.restore();
 }
@@ -356,6 +467,10 @@ void AnnotatedCameraWidget::drawLaneLines(QPainter &painter, const UIState *s, c
     for (int i = 0; i < acceleration_const.size(); i++) {
       acceleration.push_back(acceleration_const[i]);
     }
+    
+    const float hue_shift_speed = 0.5; // Adjust this value to control the speed of the rainbow scroll
+    static float hue_base = 0.0; // Base hue that changes over time
+    hue_base = fmod(hue_base + v_ego * hue_shift_speed, 360.0); // Update base hue to create scrolling effect
 
     for (int i = 0; i < max_len; ++i) {
       // Some points are out of frame
@@ -363,6 +478,25 @@ void AnnotatedCameraWidget::drawLaneLines(QPainter &painter, const UIState *s, c
 
       // Flip so 0 is bottom of frame
       float lin_grad_point = (height() - scene.track_vertices[i].y()) / height();
+      float acceleration_abs = fabs(acceleration[i]);
+
+      if (acceleration_abs < 2.0 && scene.rainbow_path) {
+            float saturation = util::map_val(acceleration_abs, 0.0f, 1.0f, 0.7f, 0.9f); // higher saturation when acceleration_abs is 0
+            float lightness = util::map_val(acceleration_abs, 0.0f, 1.0f, 0.7f, 0.6f);
+            float alpha = util::map_val(acceleration_abs, 0.0f, 1.0f, 0.7f, 0.9f);
+
+            float perspective_factor = lin_grad_point;
+            float rainbow_height = 0.1 + 0.4 * perspective_factor;
+
+            for (int j = 0; j <= 50; ++j) {
+                float color_position = static_cast<float>(j) / 50.0;
+                if (color_position >= lin_grad_point - rainbow_height / 2 && color_position <= lin_grad_point + rainbow_height / 2) {
+                    float hue = fmod(hue_base + color_position * 360.0, 360.0);
+                    QColor rainbow_color = QColor::fromHslF(hue / 360.0, saturation, lightness, alpha);
+                    bg.setColorAt(color_position, rainbow_color);
+                }
+            }
+      } else {
 
       // If acceleration is between -0.25 and 0.25, resort to the theme color
       if (std::abs(acceleration[i]) < 0.25 && (currentHolidayTheme != 0)) {
@@ -389,6 +523,7 @@ void AnnotatedCameraWidget::drawLaneLines(QPainter &painter, const UIState *s, c
         // Skip a point, unless next is last
         i += (i + 2) < max_len ? 1 : 0;
       }
+    }
     }
   } else if (currentHolidayTheme != 0) {
     const std::map<double, QBrush> &colorMap = std::get<2>(holidayThemeConfiguration[currentHolidayTheme]);
@@ -586,6 +721,9 @@ void AnnotatedCameraWidget::drawLead(QPainter &painter, const cereal::ModelDataV
   const float leadBuff = currentHolidayTheme != 0 || customColors != 0 ? 100. : 40.;  // Make the center of the chevron appear sooner if a theme is active
   const float d_rel = lead_data.getX()[0];
   const float v_rel = lead_data.getV()[0] - v_ego;
+
+  paramsMemory.putIntNonBlocking("AdvRatio",(d_rel/std::max(1.0, v_ego*3.6))*100);
+  paramsMemory.putIntNonBlocking("ADrel",d_rel);
 
   float fillAlpha = 0;
   if (d_rel < leadBuff) {
@@ -857,6 +995,10 @@ void AnnotatedCameraWidget::paintFrogPilotWidgets(QPainter &painter, const UISce
 
   alertSize = scene.alert_size;
 
+  int lightint = std::round(scene.light_sensor*100)/100;
+  paramsMemory.putIntNonBlocking("ALight",lightint);
+
+
   alwaysOnLateralActive = scene.always_on_lateral_active;
   showAlwaysOnLateralStatusBar = scene.show_aol_status_bar;
   if ((showAlwaysOnLateralStatusBar || showConditionalExperimentalStatusBar || roadNameUI) && !bigMapOpen) {
@@ -892,6 +1034,7 @@ void AnnotatedCameraWidget::paintFrogPilotWidgets(QPainter &painter, const UISce
   customColors = scene.custom_colors;
 
   desiredFollow = scene.desired_follow;
+  paramsMemory.putIntNonBlocking("ADF", scene.desired_follow);
   stoppedEquivalence = scene.stopped_equivalence;
 
   experimentalMode = scene.experimental_mode;
@@ -939,7 +1082,7 @@ void AnnotatedCameraWidget::paintFrogPilotWidgets(QPainter &painter, const UISce
 
   roadNameUI = scene.road_name_ui;
 
-  speedLimitController = scene.speed_limit_controller;
+  speedLimitController = true;
   showSLCOffset = speedLimitController && scene.show_slc_offset;
   slcOverridden = speedLimitController && scene.speed_limit_overridden;
   slcSpeedLimitOffset = scene.speed_limit_offset * (is_metric ? MS_TO_KPH : MS_TO_MPH);
@@ -1275,16 +1418,16 @@ void AnnotatedCameraWidget::drawSLCConfirmation(QPainter &p) {
 void AnnotatedCameraWidget::drawStatusBar(QPainter &p) {
   p.save();
 
-  static QElapsedTimer timer;
+  //static QElapsedTimer timer;
   static QString lastShownStatus;
 
-  static bool displayStatusText = false;
+  //static bool displayStatusText = false;
 
-  constexpr qreal fadeDuration = 1500.0;
-  constexpr qreal textDuration = 5000.0;
+  //constexpr qreal fadeDuration = 1500.0;
+  //constexpr qreal textDuration = 5000.0;
 
-  static qreal roadNameOpacity = 0.0;
-  static qreal statusTextOpacity = 0.0;
+  //static qreal roadNameOpacity = 0.0;
+  //static qreal statusTextOpacity = 0.0;
 
   QString newStatus;
 
@@ -1294,38 +1437,38 @@ void AnnotatedCameraWidget::drawStatusBar(QPainter &p) {
   p.drawRoundedRect(statusBarRect, 30, 30);
 
   static const std::map<int, QString> conditionalStatusMap = {
-    {0, tr("Conditional Experimental Mode ready")},
-    {1, tr("Conditional Experimental overridden")},
-    {2, tr("Experimental Mode manually activated")},
-    {3, tr("Conditional Experimental overridden")},
-    {4, tr("Experimental Mode manually activated")},
-    {5, tr("Conditional Experimental overridden")},
-    {6, tr("Experimental Mode manually activated")},
-    {7, tr("Experimental Mode activated for") + (mapOpen ? tr(" low speed") : tr(" speed being less than ") + QString::number(conditionalSpeedLead) + leadSpeedUnit)},
-    {8, tr("Experimental Mode activated for") + (mapOpen ? tr(" low speed") : tr(" speed being less than ") + QString::number(conditionalSpeed) + leadSpeedUnit)},
-    {9, tr("Experimental Mode activated for turn") + (mapOpen ? "" : tr(" / lane change"))},
-    {10, tr("Experimental Mode activated for intersection")},
-    {11, tr("Experimental Mode activated for upcoming turn")},
-    {12, tr("Experimental Mode activated for curve")},
-    {13, tr("Experimental Mode activated for slower lead")},
-    {14, tr("Experimental Mode activated for stopped lead")},
-    {15, tr("Experimental Mode activated for stop light") + (mapOpen ? tr("") : tr(" or stop sign"))},
-    {16, tr("Experimental Mode activated due to no speed limit")},
+    {0, tr("Ready")},
+    {1, tr("Overridden")},
+    {2, tr("Manually Activated")},
+    {3, tr("Overridden")},
+    {4, tr("Manually Activated")},
+    {5, tr("Overridden")},
+    {6, tr("Manually Activated")},
+    {7, tr("Low Speed with Lead")},
+    {8, tr("Low Speed")},
+    {9, tr("Blinker Signal")},
+    {10, tr("NAV Intersection")},
+    {11, tr("NAV Upcoming Turn")},
+    {12, tr("Curve")},
+    {13, tr("Slower Lead")},
+    {14, tr("Stopped Lead")},
+    {15, tr("Stop Light")},
+    {16, tr("No Speed Limit")},
   };
 
   if (alwaysOnLateralActive && showAlwaysOnLateralStatusBar) {
-    newStatus = tr("Always On Lateral active") + (mapOpen ? "" : tr(". Press the \"Cruise Control\" button to disable"));
+    newStatus = tr("AOL Active");
   } else if (showConditionalExperimentalStatusBar) {
     newStatus = conditionalStatusMap.at(conditionalStatus);
   }
 
   static const std::map<int, QString> suffixMap = {
-    {1, tr(". Long press the \"distance\" button to revert")},
-    {2, tr(". Long press the \"distance\" button to revert")},
-    {3, tr(". Double press the \"LKAS\" button to revert")},
-    {4, tr(". Double press the \"LKAS\" button to revert")},
-    {5, tr(". Double tap the screen to revert")},
-    {6, tr(". Double tap the screen to revert")},
+    {1, tr("")},
+    {2, tr("")},
+    {3, tr("")},
+    {4, tr("")},
+    {5, tr("")},
+    {6, tr("")},
   };
 
   if (!alwaysOnLateralActive && !mapOpen && !newStatus.isEmpty()) {
@@ -1338,35 +1481,35 @@ void AnnotatedCameraWidget::drawStatusBar(QPainter &p) {
 
   if (newStatus != lastShownStatus || roadName.isEmpty()) {
     lastShownStatus = newStatus;
-    displayStatusText = true;
-    timer.restart();
-  } else if (displayStatusText && timer.hasExpired(textDuration + fadeDuration)) {
-    displayStatusText = false;
+    //displayStatusText = true;
+    //timer.restart();
+  //} else if (displayStatusText && timer.hasExpired(textDuration + fadeDuration)) {
+    //displayStatusText = false;
   }
 
-  if (displayStatusText) {
-    statusTextOpacity = qBound(0.0, 1.0 - (timer.elapsed() - textDuration) / fadeDuration, 1.0);
-    roadNameOpacity = 1.0 - statusTextOpacity;
-  } else {
-    roadNameOpacity = qBound(0.0, timer.elapsed() / fadeDuration, 1.0);
-    statusTextOpacity = 0.0;
-  }
+  //if (displayStatusText) {
+  //  statusTextOpacity = qBound(0.0, 1.0 - (timer.elapsed() - textDuration) / fadeDuration, 1.0);
+  //  roadNameOpacity = 1.0 - statusTextOpacity;
+  //} else {
+  //  roadNameOpacity = qBound(0.0, timer.elapsed() / fadeDuration, 1.0);
+  //  statusTextOpacity = 0.0;
+  //}
 
-  p.setFont(InterFont(40, QFont::Bold));
-  p.setOpacity(statusTextOpacity);
+  p.setFont(InterFont(70, QFont::Normal));
+  //p.setOpacity(statusTextOpacity);
   p.setPen(Qt::white);
   p.setRenderHint(QPainter::TextAntialiasing);
 
   QRect textRect = p.fontMetrics().boundingRect(statusBarRect, Qt::AlignCenter | Qt::TextWordWrap, newStatus);
-  textRect.moveBottom(statusBarRect.bottom() - 50);
+  textRect.moveBottom(statusBarRect.bottom() - 105);
   p.drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, newStatus);
 
-  if (!roadName.isEmpty()) {
-    p.setOpacity(roadNameOpacity);
-    textRect = p.fontMetrics().boundingRect(statusBarRect, Qt::AlignCenter | Qt::TextWordWrap, roadName);
-    textRect.moveBottom(statusBarRect.bottom() - 50);
-    p.drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, roadName);
-  }
+  // if (!roadName.isEmpty()) {
+  //   p.setOpacity(roadNameOpacity);
+  //   textRect = p.fontMetrics().boundingRect(statusBarRect, Qt::AlignCenter | Qt::TextWordWrap, roadName);
+  //   textRect.moveBottom(statusBarRect.bottom() - 50);
+  //   p.drawText(textRect, Qt::AlignCenter | Qt::TextWordWrap, roadName);
+  // }
 
   p.restore();
 }

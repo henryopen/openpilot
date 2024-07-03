@@ -7,6 +7,7 @@ from openpilot.selfdrive.car import apply_driver_steer_torque_limits
 from openpilot.selfdrive.car.interfaces import CarControllerBase
 from openpilot.selfdrive.car.volkswagen import mqbcan, pqcan
 from openpilot.selfdrive.car.volkswagen.values import CANBUS, CarControllerParams, VolkswagenFlags
+from openpilot.common.params import Params
 
 VisualAlert = car.CarControl.HUDControl.VisualAlert
 LongCtrlState = car.CarControl.Actuators.LongControlState
@@ -26,11 +27,21 @@ class CarController(CarControllerBase):
     self.eps_timer_soft_disable_alert = False
     self.hca_frame_timer_running = 0
     self.hca_frame_same_torque = 0
+    
+    self.mem_params = Params("/dev/shm/params")
 
   def update(self, CC, CS, now_nanos, frogpilot_toggles):
     actuators = CC.actuators
     hud_control = CC.hudControl
     can_sends = []
+
+    now_gear = self.mem_params.get_int("NowGear")
+    self.mem_params.put_int("AAccel", actuators.accel*100)
+    self.mem_params.put_int("ASO", actuators.steer*100)
+
+    if self.frame % self.CCP.BCM_01_STEP == 0:
+      if CS.motor_18["MO_Hybrid_StartStopp_LED"] == 0 and now_gear == 2:
+        can_sends.append(self.CCS.create_bcm_01_control(self.packer_pt, CANBUS.body, CS.bcm_01))
 
     # **** Steering Controls ************************************************ #
 
@@ -83,7 +94,7 @@ class CarController(CarControllerBase):
       if frogpilot_toggles.sport_plus:
         accel = clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX_PLUS) if CC.longActive else 0
       else:
-        accel = clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX) if CC.longActive else 0
+        accel = clip(actuators.accel, self.CCP.ACCEL_MIN, self.CCP.ACCEL_MAX)
       stopping = actuators.longControlState == LongCtrlState.stopping
       starting = actuators.longControlState == LongCtrlState.pid and (CS.esp_hold_confirmation or CS.out.vEgo < self.CP.vEgoStopping)
       can_sends.extend(self.CCS.create_acc_accel_control(self.packer_pt, CANBUS.pt, CS.acc_type, CC.longActive, accel,

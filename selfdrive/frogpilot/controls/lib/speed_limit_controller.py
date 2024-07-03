@@ -92,8 +92,8 @@ class SpeedLimitController:
       if speed_limits.get(priority, 0) in filtered_limits:
         return float(speed_limits[priority])
 
-    if self.frogpilot_toggles.use_previous_limit:
-      return float(self.prv_speed_limit)
+    #if self.frogpilot_toggles.use_previous_limit:
+      #return float(self.prv_speed_limit)
 
     return 0
 

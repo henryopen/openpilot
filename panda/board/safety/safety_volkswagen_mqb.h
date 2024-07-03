@@ -38,12 +38,13 @@ const LongitudinalLimits VOLKSWAGEN_MQB_LONG_LIMITS_SPORT = {
 #define MSG_ACC_02      0x30C   // TX by OP, ACC HUD data to the instrument cluster
 #define MSG_MOTOR_14    0x3BE   // RX from ECU, for brake switch status
 #define MSG_LDW_02      0x397   // TX by OP, Lane line recognition and text alerts
+#define MSG_BCM_01      1626   // TX by OP, Lane line recognition and text alerts
 
 // Transmit of GRA_ACC_01 is allowed on bus 0 and 2 to keep compatibility with gateway and camera integration
 const CanMsg VOLKSWAGEN_MQB_STOCK_TX_MSGS[] = {{MSG_HCA_01, 0, 8}, {MSG_GRA_ACC_01, 0, 8}, {MSG_GRA_ACC_01, 2, 8},
                                                {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8}};
 const CanMsg VOLKSWAGEN_MQB_LONG_TX_MSGS[] = {{MSG_HCA_01, 0, 8}, {MSG_LDW_02, 0, 8}, {MSG_LH_EPS_03, 2, 8},
-                                              {MSG_ACC_02, 0, 8}, {MSG_ACC_06, 0, 8}, {MSG_ACC_07, 0, 8}};
+                                              {MSG_ACC_02, 0, 8}, {MSG_ACC_06, 0, 8}, {MSG_ACC_07, 0, 8}, {MSG_BCM_01, 1, 8}};
 
 RxCheck volkswagen_mqb_rx_checks[] = {
   {.msg = {{MSG_ESP_19, 0, 8, .check_checksum = false, .max_counter = 0U, .frequency = 100U}, { 0 }, { 0 }}},
@@ -167,17 +168,15 @@ static void volkswagen_mqb_rx_hook(const CANPacket_t *to_push) {
       // Signal: GRA_ACC_01.GRA_Tip_Wiederaufnahme
       if (volkswagen_longitudinal) {
         bool set_button = GET_BIT(to_push, 16U);
-        bool resume_button = GET_BIT(to_push, 19U);
-        if ((volkswagen_set_button_prev && !set_button) || (volkswagen_resume_button_prev && !resume_button)) {
-          controls_allowed = acc_main_on;
-        }
+        bool resume_button = GET_BIT(to_push, 19U);        
+        controls_allowed = acc_main_on;
         volkswagen_set_button_prev = set_button;
         volkswagen_resume_button_prev = resume_button;
       }
       // Always exit controls on rising edge of Cancel
       // Signal: GRA_ACC_01.GRA_Abbrechen
       if (GET_BIT(to_push, 13U)) {
-        controls_allowed = false;
+        controls_allowed = acc_main_on;
       }
     }
 

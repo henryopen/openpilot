@@ -99,7 +99,7 @@ def get_torque_params():
 # Twilsonco's Lateral Neural Network Feedforward
 class FluxModel:
   def __init__(self, params_file, zero_bias=False):
-    with open(params_file, "r") as f:
+    with open(params_file) as f:
       params = json.load(f)
 
     self.input_size = params["input_size"]
@@ -423,7 +423,7 @@ class CarInterfaceBase(ABC):
     fp_ret.distanceLongPressed = self.frogpilot_distance_functions(distance_button, self.prev_distance_button, frogpilot_toggles)
     fp_ret.ecoGear |= ret.gearShifter == GearShifter.eco
     fp_ret.sportGear |= ret.gearShifter == GearShifter.sport
-    fp_ret.trafficModeActive = frogpilot_toggles.traffic_mode and self.traffic_mode_active
+    fp_ret.trafficModeActive = frogpilot_toggles.traffic_mode and (self.traffic_mode_active or ret.vEgo * 3.6 < 60)
     self.prev_distance_button = distance_button
 
     # copy back for next iteration
@@ -437,10 +437,6 @@ class CarInterfaceBase(ABC):
                            enable_buttons=(ButtonType.accelCruise, ButtonType.decelCruise)):
     events = Events()
 
-    if cs_out.doorOpen:
-      events.add(EventName.doorOpen)
-    if cs_out.seatbeltUnlatched:
-      events.add(EventName.seatbeltNotLatched)
     if cs_out.gearShifter != GearShifter.drive and (extra_gears is None or
        cs_out.gearShifter not in extra_gears):
       events.add(EventName.wrongGear)
@@ -470,6 +466,21 @@ class CarInterfaceBase(ABC):
       events.add(EventName.preEnableStandstill)
     if cs_out.gasPressed:
       events.add(EventName.gasPressedOverride)
+    if cs_out.gearShifter == GearShifter.drive:
+      self.params_memory.put_int("NowGear",1)
+      indrive = True
+    elif cs_out.gearShifter == GearShifter.eco:
+      self.params_memory.put_int("NowGear",2)
+      indrive = True
+    else:
+      self.params_memory.put_int("NowGear",0)
+      indrive = False
+    self.params_memory.put_int("ASpeed",cs_out.vEgo*3.6)
+    self.params_memory.put_int("AKvs",cs_out.fueltotal*100)
+    self.params_memory.put_int("AKML",cs_out.kpl*100)
+    self.params_memory.put_int("ATvol",cs_out.tankvol*10)
+    self.params_memory.put_bool("LeftBlind",cs_out.leftBlindspot)
+    self.params_memory.put_bool("RightBlind",cs_out.rightBlindspot)
 
     # Handle button presses
     for b in cs_out.buttonEvents:
@@ -483,6 +494,13 @@ class CarInterfaceBase(ABC):
       # FrogPilot button presses
       if b.type == FrogPilotButtonType.lkas:
         self.always_on_lateral_disabled = not self.always_on_lateral_disabled
+
+    if not self.CP.pcmCruise and self.params_memory.get_bool("KeyResume") and indrive:
+      events.add(EventName.buttonEnable)
+    if self.params_memory.get_bool("KeyCancel"):
+        self.params_memory.put_bool("KeyResume",False)
+        events.add(EventName.buttonCancel)
+        self.params_memory.put_bool("KeyCancel",False)
 
     # Handle permanent and temporary steering faults
     self.steering_unpressed = 0 if cs_out.steeringPressed else self.steering_unpressed + 1

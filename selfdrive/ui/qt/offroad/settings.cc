@@ -71,6 +71,12 @@ TogglesPanel::TogglesPanel(SettingsWindow *parent) : ListWidget(parent) {
       tr("Display speed in km/h instead of mph."),
       "../assets/offroad/icon_metric.png",
     },
+    {
+      "IsPrebuilt",
+      tr("Prebuilt Toggle"),
+      tr("Prebuilt Toggle"),
+      "../assets/offroad/icon_prebuilt.png",
+    },
 #ifdef ENABLE_MAPS
     {
       "NavSettingTime24h",

@@ -2,6 +2,7 @@
 import math
 import numpy as np
 from openpilot.common.numpy_fast import clip, interp
+from openpilot.common.params import Params
 
 import cereal.messaging as messaging
 from openpilot.common.conversions import Conversions as CV
@@ -151,6 +152,7 @@ class LongitudinalPlanner:
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
     self.solverExecutionTime = 0.0
+    self.params_memory = Params("/dev/shm/params")
 
   @staticmethod
   def parse_model(model_msg, model_error, v_ego, taco_tune):
@@ -186,6 +188,8 @@ class LongitudinalPlanner:
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
     force_slow_decel = sm['controlsState'].forceDecel
+    if sm['controlsState'].enabled:
+      self.params_memory.put_bool_nonblocking('KeyResume',False)
 
     # Reset current state when not engaged, or user is controlling the speed
     reset_state = long_control_off if self.CP.openpilotLongitudinalControl else not sm['controlsState'].enabled

@@ -249,6 +249,10 @@ struct CarState {
   # process meta
   cumLagMs @50 :Float32;
 
+  tankvol @51 :Float32;
+  kpl @52 :Float32;
+  fueltotal @53 :Float32;
+
   struct WheelSpeeds {
     # optional wheel speeds
     fl @0 :Float32;

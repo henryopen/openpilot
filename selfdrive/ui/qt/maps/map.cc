@@ -40,9 +40,9 @@ MapWindow::MapWindow(const QMapLibre::Settings &settings) : m_settings(settings)
   error->setAlignment(Qt::AlignCenter);
 
   overlay_layout->addWidget(error);
-  overlay_layout->addWidget(map_instructions);
+  overlay_layout->addWidget(map_eta);  
   overlay_layout->addStretch(1);
-  overlay_layout->addWidget(map_eta);
+  overlay_layout->addWidget(map_instructions);  
 
   last_position = coordinate_from_param("LastGPSPosition");
   grabGesture(Qt::GestureType::PinchGesture);

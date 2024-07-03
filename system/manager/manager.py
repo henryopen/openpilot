@@ -12,6 +12,7 @@ from cereal import log
 import cereal.messaging as messaging
 import openpilot.system.sentry as sentry
 from openpilot.common.params import Params, ParamKeyType
+from openpilot.common.basedir import BASEDIR
 from openpilot.common.text_window import TextWindow
 from openpilot.system.hardware import HARDWARE, PC
 from openpilot.system.manager.helpers import unblock_stdout, write_onroad_params, save_bootlog
@@ -72,7 +73,7 @@ def manager_init(frogpilot_functions) -> None:
     ("CarParamsPersistent", ""),
     ("CompletedTrainingVersion", "0"),
     ("DisengageOnAccelerator", "0"),
-    ("ExperimentalLongitudinalEnabled", "0"),
+    ("ExperimentalLongitudinalEnabled", "1"),
     ("GithubSshKeys", ""),
     ("GithubUsername", ""),
     ("GsmApn", ""),
@@ -89,6 +90,7 @@ def manager_init(frogpilot_functions) -> None:
     ("SshEnabled", "0"),
     ("TetheringEnabled", "0"),
     ("LongitudinalPersonality", str(log.LongitudinalPersonality.standard)),
+    ("IsPrebuilt", "0"),
 
     # Default FrogPilot parameters
     ("AccelerationPath", "1"),
@@ -246,6 +248,7 @@ def manager_init(frogpilot_functions) -> None:
     ("PromptVolume", "100"),
     ("QOLControls", "1"),
     ("QOLVisuals", "1"),
+    ("RainbowPath", "1"),
     ("RandomEvents", "0"),
     ("RefuseVolume", "100"),
     ("RelaxedFollow", "1.75"),
@@ -407,6 +410,15 @@ def manager_cleanup() -> None:
 
   cloudlog.info("everything is dead")
 
+def touch_prebuilt():
+  prebuilt_path = os.path.join(BASEDIR, "prebuilt")
+  if not os.path.exists(prebuilt_path):
+     subprocess.run(["touch", prebuilt_path], check=True)
+
+def remove_prebuilt():
+  prebuilt_path = os.path.join(BASEDIR, "prebuilt")
+  if os.path.exists(prebuilt_path):
+    os.remove(prebuilt_path)
 
 def manager_thread() -> None:
   cloudlog.bind(daemon="manager")
@@ -467,6 +479,10 @@ def manager_thread() -> None:
 
     # Exit main loop when uninstall/shutdown/reboot is needed
     shutdown = False
+    if params.get_bool("IsPrebuilt"):
+      touch_prebuilt()
+    else:
+      remove_prebuilt()
     for param in ("DoUninstall", "DoShutdown", "DoReboot"):
       if params.get_bool(param):
         shutdown = True

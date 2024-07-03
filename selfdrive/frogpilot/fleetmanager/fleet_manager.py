@@ -177,7 +177,7 @@ def addr_input():
   lon = float(0.0)
   lat = float(0.0)
   if request.method == 'POST':
-    valid_addr = False
+    valid_addr = True
     postvars = request.form.to_dict()
     addr, lon, lat, valid_addr, token = fleet.parse_addr(postvars, lon, lat, valid_addr, token)
     if not valid_addr:
@@ -242,6 +242,11 @@ def public_token_input():
     return redirect(url_for('addr_input'))
   else:
     return render_template("public_token_input.html")
+
+@app.route("/get_past_dest", methods=['GET'])
+def get_past_dest():
+    response = fleet.get_past_dest()
+    return Response(response, content_type='application/json')
 
 @app.route("/app_token_input", methods=['GET', 'POST'])
 def app_token_input():
