@@ -65,6 +65,7 @@ class FrogPilotPlanner:
     self.v_cruise = 0
     self.vtsc_target = 0
     self.detect_speed_prev = 0
+    self.autoacce = False
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -101,14 +102,24 @@ class FrogPilotPlanner:
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1
       self.lead_departing &= v_lead > 1
-      self.params_memory.put_int("KeyAcce",30)
+      if self.lead_departing:
+        self.autoacce = True
+      else:
+        self.autoacce = False
     else:
       self.lead_departing = False
-      if not self.params_memory.get_int("KeyAcce") == 0:
-        self.params_memory.put_int("KeyAcce",0)
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
+    if self.model_length > TRAJECTORY_SIZE and not self.tracking_lead and carState.standstill and controlsState.enabled:
+      self.autoacce = True
+    else:
+      self.autoacce = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
+
+    if self.autoacce:
+      self.params_memory.put_int("KeyAcce",30)
+    else:
+      self.params_memory.put_int("KeyAcce",0)
 
     if frogpilot_toggles.random_events:
       self.taking_curve_quickly = v_ego > (1 / self.road_curvature)**0.5 * 2 > CRUISING_SPEED * 2 and abs(carState.steeringAngleDeg) > 30

@@ -1023,7 +1023,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "Light turned green",
       "",
       AlertStatus.frogpilot, AlertSize.small,
-      Priority.MID, VisualAlert.none, AudibleAlert.none, 3.),
+      Priority.MID, VisualAlert.none, AudibleAlert.prompt, 3.),
   },
 
   EventName.holidayActive: {
@@ -1043,7 +1043,7 @@ EVENTS: dict[int, dict[str, Alert | AlertCallbackType]] = {
       "Lead departed",
       "",
       AlertStatus.frogpilot, AlertSize.small,
-      Priority.MID, VisualAlert.none, AudibleAlert.none, 3.),
+      Priority.MID, VisualAlert.none, AudibleAlert.prompt, 3.),
   },
 
   EventName.noLaneAvailable : {
