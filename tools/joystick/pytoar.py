@@ -49,11 +49,11 @@ def main():
             a12 = 0
         else:
             a12 = 1
-        if mp.get_int("CEStatus") == 12 or mp.get_int("CEStatus") == 13:
+        if mp.get_int("CEStatus") == 13 or mp.get_int("CEStatus") == 14:
             a13 = 0
-        elif mp.get_int("CEStatus") == 16:
+        elif mp.get_int("CEStatus") == 15:
             a13 = 1
-        elif mp.get_int("CEStatus") == 8 or mp.get_int("CEStatus") == 7:
+        elif mp.get_int("CEStatus") == 10 or mp.get_int("CEStatus") == 11:
             a13 = 3
         else:
             a13 = 2

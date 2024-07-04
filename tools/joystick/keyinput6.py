@@ -100,12 +100,13 @@ def main():
                     override_value = 0 if conditional_status in {1, 2, 3, 4, 5, 6} else 1 if conditional_status >= 7 else 2
                     mem_params.put_int("CEStatus", override_value)
                 elif event.code == 300 :
-                    if mem_params.get_int("DetectSpeedLimit") != 0:
-                        key_setspeed = mem_params.get_int("DetectSpeedLimit")
+                    alongenabled = mem_params.get_bool("AutoLong")
+                    mem_params.put_bool("AutoLong", not alongenabled)
                 elif event.code == 301 :
-                    long_per = int(params.get('LongitudinalPersonality'))
+                    long_per = int(params.get("LongitudinalPersonality"))
                     long_per = (long_per + 1) % 3
                     params.put("LongitudinalPersonality", str(long_per))
+                    mem_params.put_bool("AutoLong",False)
             elif event.type == 3:
                 if event.code == 2:
                     range_index = (65535-event.value) // 5042

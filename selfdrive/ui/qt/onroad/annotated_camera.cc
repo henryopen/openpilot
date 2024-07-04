@@ -467,7 +467,7 @@ void AnnotatedCameraWidget::drawLaneLines(QPainter &painter, const UIState *s, c
     for (int i = 0; i < acceleration_const.size(); i++) {
       acceleration.push_back(acceleration_const[i]);
     }
-    
+
     const float hue_shift_speed = 0.5; // Adjust this value to control the speed of the rainbow scroll
     static float hue_base = 0.0; // Base hue that changes over time
     hue_base = fmod(hue_base + v_ego * hue_shift_speed, 360.0); // Update base hue to create scrolling effect
@@ -1450,8 +1450,8 @@ void AnnotatedCameraWidget::drawStatusBar(QPainter &p) {
     {10, tr("NAV Intersection")},
     {11, tr("NAV Upcoming Turn")},
     {12, tr("Curve")},
-    {13, tr("Slower Lead")},
-    {14, tr("Stopped Lead")},
+    {13, tr("Stopped Lead")},
+    {14, tr("Slower Lead")},
     {15, tr("Stop Light")},
     {16, tr("No Speed Limit")},
   };

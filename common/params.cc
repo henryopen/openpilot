@@ -240,6 +240,7 @@ std::unordered_map<std::string, uint32_t> keys = {
     {"IsPrebuilt", PERSISTENT},
     {"ALight", CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION},
     {"SLC", CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION},
+    {"AutoLong", CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION},
 
     // FrogPilot parameters
     {"AccelerationPath", PERSISTENT | FROGPILOT_STORAGE | FROGPILOT_VISUALS},
