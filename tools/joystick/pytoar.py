@@ -38,9 +38,13 @@ def main():
         a03, a04, a05 = mp.get_int("ASpeed"), mp.get_int("AdvRatio"), mp.get_int("ADF")
         a06, a07 = mp.get_int("ADrel"), mp.get_int("ASO")
         a08, a09 = mp.get_int("ALight"), mp.get_int("AAccel")
-        lvalue = 2 if a08 < 40 else 1 if a08 < 70 else 0
-        if not lvalue == lpvalue:
-            pa.put("LongitudinalPersonality", str(lvalue))
+        if mp.get_bool("AutoLong"):
+            a18 = 0
+            lvalue = 2 if a08 < 40 else 1 if a08 < 70 else 0
+            if not lvalue == lpvalue:
+                pa.put("LongitudinalPersonality", str(lvalue))
+        else:
+            a18 = 1
         if mp.get_bool("IsLockOn"):
             a11 = 1
         else:
@@ -73,10 +77,6 @@ def main():
             a17 = 1
         else:
             a17 = 0
-        if a03 < 50:
-            a18 = 0
-        else:
-            a18 = 1
         a19, a20 = pa.get_int("LongitudinalPersonality"), mp.get_int("KeyTurn")
         xa21 = mp.get_int("ATvol")
         ma22 = mp.get_int("AKvs")
