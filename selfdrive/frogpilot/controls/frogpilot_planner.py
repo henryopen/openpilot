@@ -98,11 +98,14 @@ class FrogPilotPlanner:
       self.lane_width_left = 0
       self.lane_width_right = 0
 
-    if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill:
+    if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1
       self.lead_departing &= v_lead > 1
+      self.params_memory.put_int("KeyAcce",30)
     else:
       self.lead_departing = False
+      if not self.params_memory.get_int("KeyAcce") == 0:
+        self.params_memory.put_int("KeyAcce",0)
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
