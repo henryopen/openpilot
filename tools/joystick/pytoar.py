@@ -20,6 +20,7 @@ def main():
         ser = serial.Serial("/dev/ttyACM0", 115200)
         time.sleep(2)
     while True:
+        lpvalue = int(pa.get("LongitudinalPersonality"))
         keyturnlight = mp.get_int("KeyTurnLight")
         if keyturnlight == 1 and not turnlight:
             a10 = 1
@@ -37,6 +38,9 @@ def main():
         a03, a04, a05 = mp.get_int("ASpeed"), mp.get_int("AdvRatio"), mp.get_int("ADF")
         a06, a07 = mp.get_int("ADrel"), mp.get_int("ASO")
         a08, a09 = mp.get_int("ALight"), mp.get_int("AAccel")
+        lvalue = 2 if a08 < 40 else 1 if a08 < 70 else 0
+        if not lvalue == lpvalue:
+            pa.put("LongitudinalPersonality", str(lvalue))
         if mp.get_bool("IsLockOn"):
             a11 = 1
         else:
