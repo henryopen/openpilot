@@ -94,7 +94,7 @@ def main():
                     params.remove("NavDestination")
                     mem_params.put_bool("AutoTurn",False)
                     mem_params.put_int("KeyTurnLight", 0)
-                elif event.code == 707 and event.value == 1:
+                elif event.code == 714 and event.value == 1:
                     slcenabled = mem_params.get_bool("SLC")
                     mem_params.put_bool("SLC", not slcenabled)
                 elif event.code == 706 and event.value == 1:
@@ -110,7 +110,7 @@ def main():
                 elif event.code == 715 and event.value == 1:
                     aacceenabled = mem_params.get_bool("AutoAcce")
                     mem_params.put_bool("AutoAcce", not aacceenabled)
-                elif event.code == 714 and event.value == 1:
+                elif event.code == 707 and event.value == 1:
                     long_per = int(params.get("LongitudinalPersonality"))
                     long_per = (long_per + 1) % 3
                     params.put("LongitudinalPersonality", str(long_per))
