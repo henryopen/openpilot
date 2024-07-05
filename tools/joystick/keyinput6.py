@@ -49,6 +49,7 @@ def main():
                 if event.code == 288 :
                     if mem_params.get_bool("AutoAcce"):
                         mem_params.put_bool("AutoAcce", False)
+                        mem_params.put_int("KeyAcce", 0)
                     else:
                         mem_params.put_bool("AutoAcce", True)
                 elif event.code == 289:
@@ -122,6 +123,7 @@ def main():
                     if mem_params.get_bool("IsLockOn"):
                         key_setspeed = mapped_value
                 elif event.code == 1:
+                    mem_params.put_bool("AutoAcce", False)
                     if event.value < 512:
                         out_abs_b = interp(event.value, [0,511], [-1., 0.])
                     elif event.value > 512:

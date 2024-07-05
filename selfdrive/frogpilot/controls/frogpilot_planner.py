@@ -20,7 +20,7 @@ from openpilot.selfdrive.frogpilot.controls.lib.frogpilot_variables import CITY_
 from openpilot.selfdrive.frogpilot.controls.lib.map_turn_speed_controller import MapTurnSpeedController
 from openpilot.selfdrive.frogpilot.controls.lib.speed_limit_controller import SpeedLimitController
 
-A_CRUISE_MIN_ECO = A_CRUISE_MIN / 5
+A_CRUISE_MIN_ECO = A_CRUISE_MIN
 A_CRUISE_MIN_SPORT = A_CRUISE_MIN / 2
                   # MPH = [ 0.,  11,  22,  34,  45,  56,  89]
 A_CRUISE_MAX_BP_CUSTOM =  [ 0.,  5., 10., 15., 20., 25., 40.]
@@ -109,9 +109,10 @@ class FrogPilotPlanner:
         self.autoaccel = False
     else:
       self.lead_departing = False
+      self.autoaccel = False
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    if self.model_length > TRAJECTORY_SIZE and not self.tracking_lead and carState.standstill and controlsState.enabled:
+    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
       self.autoacceg = True
     else:
       self.autoacceg = False
@@ -119,7 +120,7 @@ class FrogPilotPlanner:
 
     if self.params_memory.get_bool("AutoAcce"):
       if self.autoaccel or self.autoacceg:
-        self.params_memory.put_int("KeyAcce",50)
+        self.params_memory.put_int("KeyAcce",30)
       else:
         self.params_memory.put_int("KeyAcce",0)
 
