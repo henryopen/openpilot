@@ -28,30 +28,32 @@ def find_usb_device_event(device_name):
 
 def main():
     # 指定要檢查的USB裝置名稱
-    usb_device_name = 'Thrustmaster TWCS Throttle'
+    usb_device_name = 'VKB-Sim (C) Alex Oz 2023  VKBsim Gladiator EVO L'
     # 尋找USB裝置對應的事件檔案
     event_file = find_usb_device_event(usb_device_name)
     if event_file is not None:
         # 創建InputDevice物件
         device = evdev.InputDevice(event_file)
     turnon = False
+    safetys = False
+    safetyat = False
     for event in device.read_loop():
             set_speed = mem_params.get_int("KeySetSpeed")
             key_setspeed = set_speed
             #data = evdev.categorize(event)
-            if event.type == 1 and event.value == 1:
-                if event.code == 288 :
+            if event.type == 1:
+                if event.code == 291 and event.value == 1 :
                     if mem_params.get_bool("IsLockOn"):
                         mem_params.put_bool("IsLockOn", False)
                     else:
                         mem_params.put_bool("IsLockOn", True)
                         key_setspeed = mem_params.get_int("KeyThSpeed")
-                elif event.code == 289:
+                elif event.code == 292 and event.value == 1:
                      if turnon:
                         mem_params.put_int("KeyTurnLight", 0)
                         mem_params.put_bool("AutoTurn",True)
                         turnon = False
-                elif event.code == 290:
+                elif event.code == 708 and event.value == 1:
                     if params.get_bool("IsEngaged"):
                         mem_params.put_bool("KeyResume", False)
                         mem_params.put_bool("KeyCancel", True)
@@ -60,7 +62,7 @@ def main():
                         mem_params.put_bool("KeyCancel", False)
                         if mem_params.get_bool("IsLockOn"):
                             key_setspeed = mem_params.get_int("KeyThSpeed")
-                elif event.code == 291:
+                elif event.code == 300 and event.value == 1:
                     if mem_params.get_int("KeyTurnLight") == 1 and turnon:
                         mem_params.put_int("KeyTurnLight", 0)
                         mem_params.put_bool("AutoTurn",True)
@@ -69,7 +71,7 @@ def main():
                         mem_params.put_int("KeyTurnLight", 1)
                         mem_params.put_bool("AutoTurn",False)
                         turnon = True
-                elif event.code == 292:
+                elif event.code == 298 and event.value == 1:
                     if mem_params.get_int("KeyTurnLight") == 2 and turnon:
                         mem_params.put_int("KeyTurnLight", 0)
                         mem_params.put_bool("AutoTurn",True)
@@ -78,60 +80,80 @@ def main():
                         mem_params.put_int("KeyTurnLight", 2)
                         mem_params.put_bool("AutoTurn",False)
                         turnon = True
-                elif event.code == 297 :
+                elif event.code == 295 and event.value == 1:
                     if mem_params.get_bool("AutoTurn"):
                         mem_params.put_bool("AutoTurn",False)
                         mem_params.put_int("KeyTurnLight", 0)
                     else:
                         mem_params.put_bool("AutoTurn",True)
-                elif event.code == 294 :
+                elif event.code == 296 and event.value == 1:
                         params.put("NavDestination", "{\"latitude\": %f, \"longitude\": %f, \"place_name\": \"%s\"}" % (24.9489724, 121.348714, "\u5c16\u5c71\u8def101\u5df77\u5f04"))
-                elif event.code == 295 :
+                elif event.code == 293 and event.value == 1:
                     params.put("NavDestination", "{\"latitude\": %f, \"longitude\": %f, \"place_name\": \"%s\"}" % (25.038796, 121.563405, "\u561f\u561f\u623f\u5e9c\u524d\u5ee3\u5834\u5730\u4e0b\u505c\u8eca\u5834"))
-                elif event.code == 296 :
+                elif event.code == 294 and event.value == 1:
                     params.remove("NavDestination")
                     mem_params.put_bool("AutoTurn",False)
                     mem_params.put_int("KeyTurnLight", 0)
-                elif event.code == 298 :
+                elif event.code == 707 and event.value == 1:
                     slcenabled = mem_params.get_bool("SLC")
                     mem_params.put_bool("SLC", not slcenabled)
-                elif event.code == 299 :
+                elif event.code == 706 and event.value == 1:
+                    if mem_params.get_int("DetectSpeedLimit") != 0:
+                        key_setspeed = mem_params.get_int("DetectSpeedLimit")
+                elif event.code == 709 and event.value == 1:
                     conditional_status = mem_params.get_int("CEStatus")
                     override_value = 0 if conditional_status in {1, 2, 3, 4, 5, 6} else 1 if conditional_status >= 7 else 2
                     mem_params.put_int("CEStatus", override_value)
-                elif event.code == 300 :
+                elif event.code == 716 and event.value == 1:
                     alongenabled = mem_params.get_bool("AutoLong")
                     mem_params.put_bool("AutoLong", not alongenabled)
-                elif event.code == 301 :
+                elif event.code == 715 and event.value == 1:
+                    aacceenabled = mem_params.get_bool("AutoAcce")
+                    mem_params.put_bool("AutoAcce", not aacceenabled)
+                elif event.code == 714 and event.value == 1:
                     long_per = int(params.get("LongitudinalPersonality"))
                     long_per = (long_per + 1) % 3
                     params.put("LongitudinalPersonality", str(long_per))
                     mem_params.put_bool("AutoLong",False)
+                elif event.code == 288:
+                    if event.value == 1:
+                        safetyat = True
+                    else:
+                        safetyat = False
+                elif event.code == 290:
+                    if event.value == 1:
+                        safetys = True
+                    else:
+                        safetys = False
             elif event.type == 3:
-                if event.code == 2:
-                    range_index = (65535-event.value) // 5042
+                if event.code == 1:
+                    range_index = (4096-event.value) // 315
                     mapped_value = range_index * 10
                     if mapped_value < 0:
                         mapped_value = 0
                     mem_params.put_int("KeyThSpeed", mapped_value)
-                    if mem_params.get_bool("IsLockOn"):
+                    # if mem_params.get_bool("IsLockOn"):
+                    if safetys:
                         key_setspeed = mapped_value
-                elif event.code == 1:
-                    if event.value < 512:
-                        out_abs_b = interp(event.value, [0,511], [-1., 0.])
-                    elif event.value > 512:
-                        out_abs_b = interp(event.value, [513,1023], [0., 1.])
-                    else:
-                        out_abs_b = 0
-                    mem_params.put_int("KeyAcce", out_abs_b*100)
                 elif event.code == 5:
-                    if event.value < 448:
-                        out_abs_c = interp(event.value, [0,447], [1., 0.])
-                    elif event.value > 576:
-                        out_abs_c = interp(event.value, [577,1023], [0., -1.])
-                    else:
-                        out_abs_c = 0
-                    mem_params.put_int("KeyTurn", out_abs_c*100)
+                    if safetyat:
+                        mem_params.put_bool("AutoAcce",False)
+                        if event.value > 1300:
+                            out_abs_b = interp(event.value, [2047,1301], [-1., 0.])
+                        elif event.value < 750:
+                            out_abs_b = interp(event.value, [751,0], [0., 1.])
+                        else:
+                            out_abs_b = 0
+                        mem_params.put_int("KeyAcce", out_abs_b*100)
+                elif event.code == 0:
+                    if safetyat:
+                        if event.value > 2796:
+                            out_abs_c = interp(event.value, [0,2797], [1., 0.])
+                        elif event.value < 1300:
+                            out_abs_c = interp(event.value, [1301,0], [0., -1.])
+                        else:
+                            out_abs_c = 0
+                        mem_params.put_int("KeyTurn", out_abs_c*100)
             new_setspeed = key_setspeed
             if new_setspeed != set_speed:
                 mem_params.put_int("KeySetSpeed", new_setspeed)

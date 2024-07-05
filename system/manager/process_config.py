@@ -51,7 +51,7 @@ def ext_ard(started, params, CP: car.CarParams) -> bool:
     return False
 
 def ext_con(started, params, CP: car.CarParams) -> bool:
-  usb_device_name = "Thrustmaster TWCS Throttle"
+  usb_device_name = "VKB-Sim (C) Alex Oz 2023  VKBsim Gladiator EVO L"
   devices = [evdev.InputDevice(path) for path in evdev.list_devices()]
   for device in devices:
       if usb_device_name in device.name:
