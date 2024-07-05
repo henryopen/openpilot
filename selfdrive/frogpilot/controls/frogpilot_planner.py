@@ -65,7 +65,8 @@ class FrogPilotPlanner:
     self.v_cruise = 0
     self.vtsc_target = 0
     self.detect_speed_prev = 0
-    self.autoacce = False
+    self.autoaccel = False
+    self.autoacceg = False
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -103,22 +104,22 @@ class FrogPilotPlanner:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1
       self.lead_departing &= v_lead > 1
       if self.lead_departing:
-        self.autoacce = True
+        self.autoaccel = True
       else:
-        self.autoacce = False
+        self.autoaccel = False
     else:
       self.lead_departing = False
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
     if self.model_length > TRAJECTORY_SIZE and not self.tracking_lead and carState.standstill and controlsState.enabled:
-      self.autoacce = True
+      self.autoacceg = True
     else:
-      self.autoacce = False
+      self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
     if self.params_memory.get_bool("AutoAcce"):
-      if self.autoacce:
-        self.params_memory.put_int("KeyAcce",30)
+      if self.autoaccel or self.autoacceg:
+        self.params_memory.put_int("KeyAcce",50)
       else:
         self.params_memory.put_int("KeyAcce",0)
 
