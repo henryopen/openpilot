@@ -103,13 +103,9 @@ class FrogPilotPlanner:
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1
       self.lead_departing &= v_lead > 1
-      if self.lead_departing:
-        self.autoaccel = True
-      else:
-        self.autoaccel = False
     else:
       self.lead_departing = False
-      self.autoaccel = False
+    self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
     if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
