@@ -40,12 +40,17 @@ def main():
             key_setspeed = set_speed
             #data = evdev.categorize(event)
             if event.type == 1 and event.value == 1:
+                # if event.code == 288 :
+                #     if mem_params.get_bool("IsLockOn"):
+                #         mem_params.put_bool("IsLockOn", False)
+                #     else:
+                #         mem_params.put_bool("IsLockOn", True)
+                #         key_setspeed = mem_params.get_int("KeyThSpeed")
                 if event.code == 288 :
-                    if mem_params.get_bool("IsLockOn"):
-                        mem_params.put_bool("IsLockOn", False)
+                    if mem_params.get_bool("AutoAcce"):
+                        mem_params.put_bool("AutoAcce", False)
                     else:
-                        mem_params.put_bool("IsLockOn", True)
-                        key_setspeed = mem_params.get_int("KeyThSpeed")
+                        mem_params.put_bool("AutoAcce", True)
                 elif event.code == 289:
                      if turnon:
                         mem_params.put_int("KeyTurnLight", 0)

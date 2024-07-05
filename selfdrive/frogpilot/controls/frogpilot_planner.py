@@ -116,10 +116,11 @@ class FrogPilotPlanner:
       self.autoacce = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
-    if self.autoacce:
-      self.params_memory.put_int("KeyAcce",30)
-    else:
-      self.params_memory.put_int("KeyAcce",0)
+    if self.params_memory.get_bool("AutoAcce"):
+      if self.autoacce:
+        self.params_memory.put_int("KeyAcce",30)
+      else:
+        self.params_memory.put_int("KeyAcce",0)
 
     if frogpilot_toggles.random_events:
       self.taking_curve_quickly = v_ego > (1 / self.road_curvature)**0.5 * 2 > CRUISING_SPEED * 2 and abs(carState.steeringAngleDeg) > 30
