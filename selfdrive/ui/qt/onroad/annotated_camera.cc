@@ -161,7 +161,7 @@ void AnnotatedCameraWidget::updateState(const UIState &s) {
     fn += typetext;
   }
 
-  paramsMemory.put("ANav", (fn + " " + primary_str + " " + secondary_str).toUtf8().toStdString());
+  //paramsMemory.put("ANav", (fn + " " + primary_str + " " + secondary_str).toUtf8().toStdString());
   int distancetoturn = 101;
   if (v_ego*3.6 > 60) {
     if (type == "off ramp") {
@@ -1315,7 +1315,7 @@ void AnnotatedCameraWidget::drawLeadInfo(QPainter &p) {
 
   QRect adjustedRect = insightsRect.adjusted(0, 27, 0, 27);
   int textBaseLine = adjustedRect.y() + (adjustedRect.height() + p.fontMetrics().height()) / 2 - p.fontMetrics().descent();
-
+  paramsMemory.put("ANav", ("Obstacle:" + obstacleText + "-Stop:" + stopText + "Follow:" + followText).toUtf8().toStdString());
   QStringList texts = {accelText, maxAccSuffix, obstacleText, createDiffText(obstacleDistance, obstacleDistanceStock), stopText, followText};
   QList<QColor> colors = {Qt::white, isFiveSecondsPassed ? Qt::white : redColor(), Qt::white, (obstacleDistance - obstacleDistanceStock) > 0 ? Qt::green : Qt::red, Qt::white, Qt::white};
 
