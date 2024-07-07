@@ -108,14 +108,14 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
+    if self.model_length > TRAJECTORY_SIZE and not self.tracking_lead and carState.standstill and controlsState.enabled:
       self.autoacceg = True
     else:
       self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
     if self.params_memory.get_bool("AutoAcce"):
-      if self.autoaccel or self.autoacceg:
+      if self.autoacceg:
         self.params_memory.put_int("KeyAcce",30)
       else:
         self.params_memory.put_int("KeyAcce",0)
