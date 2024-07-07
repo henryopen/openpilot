@@ -1282,7 +1282,7 @@ void AnnotatedCameraWidget::drawLeadInfo(QPainter &p) {
   }
 
   auto createText = [&](const QString &title, double data) {
-    return title + QString::number(std::round(data * distanceConversion)) + " " + leadDistanceUnit;
+    return title + QString::number(std::round(data * distanceConversion));
   };
 
   QString accelText = QString(tr("Accel: %1%2"))
@@ -1296,9 +1296,9 @@ void AnnotatedCameraWidget::drawLeadInfo(QPainter &p) {
                       .arg(accelerationUnit);
   }
 
-  QString obstacleText = createText(mapOpen ? tr(" | Obstacle: ") : tr("  |  Obstacle Factor: "), obstacleDistance);
-  QString stopText = createText(mapOpen ? tr(" - Stop: ") : tr("  -  Stop Factor: "), stoppedEquivalence);
-  QString followText = " = " + createText(mapOpen ? tr("Follow: ") : tr("Follow Distance: "), desiredFollow);
+  QString obstacleText = createText(mapOpen ? tr("Obstacle:") : tr("Obstacle:"), obstacleDistance);
+  QString stopText = createText(mapOpen ? tr("Stop:") : tr("Stop:"), stoppedEquivalence);
+  QString followText = " = " + createText(mapOpen ? tr("Follow:") : tr("Follow:"), desiredFollow);
 
   auto createDiffText = [&](double data, double stockData) {
     double difference = std::round((data - stockData) * distanceConversion);
@@ -1315,7 +1315,7 @@ void AnnotatedCameraWidget::drawLeadInfo(QPainter &p) {
 
   QRect adjustedRect = insightsRect.adjusted(0, 27, 0, 27);
   int textBaseLine = adjustedRect.y() + (adjustedRect.height() + p.fontMetrics().height()) / 2 - p.fontMetrics().descent();
-  paramsMemory.put("ANav", ("Obstacle:" + obstacleText + "-Stop:" + stopText + "Follow:" + followText).toUtf8().toStdString());
+  paramsMemory.put("ANav", (obstacleText + stopText + followText).toUtf8().toStdString());
   QStringList texts = {accelText, maxAccSuffix, obstacleText, createDiffText(obstacleDistance, obstacleDistanceStock), stopText, followText};
   QList<QColor> colors = {Qt::white, isFiveSecondsPassed ? Qt::white : redColor(), Qt::white, (obstacleDistance - obstacleDistanceStock) > 0 ? Qt::green : Qt::red, Qt::white, Qt::white};
 
