@@ -24,7 +24,7 @@ A_CRUISE_MIN_ECO = A_CRUISE_MIN
 A_CRUISE_MIN_SPORT = A_CRUISE_MIN / 2
                   # MPH = [ 0.,  11,  22,  34,  45,  56,  89]
 A_CRUISE_MAX_BP_CUSTOM =  [ 0.,  5., 10., 15., 20., 25., 40.]
-A_CRUISE_MAX_VALS_ECO =   [2.5, 2, 0.8, 0.6, 0.5, 0.4, 0.3]
+A_CRUISE_MAX_VALS_ECO =   [1.6, 1.4, 0.7, 0.6, 0.5, 0.4, 0.3]
 A_CRUISE_MAX_VALS_SPORT = [4.0, 3.0, 2.0, 1.0, 0.9, 0.8, 0.6]
 
 TRAFFIC_MODE_BP = [0., CITY_SPEED_LIMIT]
@@ -108,15 +108,15 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    if self.model_length > TRAJECTORY_SIZE and not self.tracking_lead and carState.standstill and controlsState.enabled:
+    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
       self.autoacceg = True
     else:
       self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
     if self.params_memory.get_bool("AutoAcce"):
-      if self.autoacceg:
-        self.params_memory.put_int("KeyAcce",30)
+      if self.autoacceg or self.autoaccel:
+        self.params_memory.put_int("KeyAcce",20)
       else:
         self.params_memory.put_int("KeyAcce",0)
 
