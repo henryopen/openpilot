@@ -111,7 +111,8 @@ class FrogPilotPlanner:
     if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
       self.autoacceg = True
     else:
-      self.autoacceg = False
+      if self.autoacceg and v_ego > 1:
+        self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
     if self.params_memory.get_bool("AutoAcce"):
