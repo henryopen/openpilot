@@ -86,7 +86,7 @@ class FrogPilotPlanner:
 
     distance_offset = max(frogpilot_toggles.increased_stopping_distance + min(CITY_SPEED_LIMIT - v_ego, 0), 0) if not frogpilotCarState.trafficModeActive else 0
     lead_distance = self.lead_one.dRel - distance_offset
-    dvratio = lead_distance/np.where(v_ego_kph < 1, 1, v_ego_kph)
+    dvratio = self.lead_one.dRel/np.where(v_ego_kph < 1, 1, v_ego_kph)
     stopping_distance = STOP_DISTANCE + distance_offset
 
     if frogpilot_toggles.conditional_experimental_mode and controlsState.enabled:
@@ -108,15 +108,15 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled and not self.lead_one.status:
+    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
       self.autoacceg = True
     else:
-      if (self.autoacceg and v_ego > 1) or self.lead_one.status:
+      if self.autoacceg and v_ego > 1:
         self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
     if self.params_memory.get_bool("AutoAcce"):
-      if self.autoacceg or self.autoaccel:
+      if (self.autoacceg or self.autoaccel) and self.lead_one.drel > 5:
         self.params_memory.put_int("KeyAcce",25)
       else:
         self.params_memory.put_int("KeyAcce",0)
