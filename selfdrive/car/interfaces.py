@@ -465,7 +465,7 @@ class CarInterfaceBase(ABC):
     if cs_out.brakePressed and cs_out.standstill:
       events.add(EventName.preEnableStandstill)
     if cs_out.gasPressed:
-      self.params_memory.put_int("KeyAccel",0)
+      self.params_memory.put_int("KeyAcce",0)
       events.add(EventName.gasPressedOverride)
     if cs_out.gearShifter == GearShifter.drive:
       self.params_memory.put_int("NowGear",1)
