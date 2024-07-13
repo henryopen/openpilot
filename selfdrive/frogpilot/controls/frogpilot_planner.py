@@ -6,6 +6,7 @@ from openpilot.common.conversions import Conversions as CV
 from openpilot.common.numpy_fast import interp
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.common.filter_simple import StreamingMovingAverage
 
 from openpilot.selfdrive.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.selfdrive.controls.lib.drive_helpers import V_CRUISE_UNSET
@@ -67,6 +68,12 @@ class FrogPilotPlanner:
     self.detect_speed_prev = 0
     self.autoaccel = False
     self.autoacceg = False
+    self.trafficState = 0
+    self.startSignCount = 0
+    self.stopSignCount = 0
+    self.xStopFilter = StreamingMovingAverage(3)
+    self.xStopFilter2 = StreamingMovingAverage(15)
+    self.vFilter = StreamingMovingAverage(10)
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -108,18 +115,25 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
-      self.autoacceg = True
-    else:
-      if self.autoacceg and v_ego > 1:
-        self.autoacceg = False
+    # if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
+    #   self.autoacceg = True
+    # else:
+    #   if self.autoacceg and v_ego > 1:
+    #     self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
-    if self.params_memory.get_bool("AutoAcce"):
-      if (self.autoacceg or self.autoaccel) and self.lead_one.drel > 5:
-        self.params_memory.put_int("KeyAcce",25)
-      else:
-        self.params_memory.put_int("KeyAcce",0)
+    x = modelData.position.x
+    y = modelData.position.y
+    v = modelData.position.v
+    self.xStop = self._update_stop_dist(x[31])
+    self._check_model_stopping(self.xStop, y, v, v_ego_kph)
+    # self.params_memory.put_int("TrafficState",self.trafficState)
+
+    # if self.params_memory.get_bool("AutoAcce"):
+    #   if (self.autoacceg or self.autoaccel) and self.lead_one.dRel > 5:
+    #     self.params_memory.put_int("KeyAcce",25)
+    #   else:
+    #     self.params_memory.put_int("KeyAcce",0)
 
     if frogpilot_toggles.random_events:
       self.taking_curve_quickly = v_ego > (1 / self.road_curvature)**0.5 * 2 > CRUISING_SPEED * 2 and abs(carState.steeringAngleDeg) > 30
@@ -139,6 +153,33 @@ class FrogPilotPlanner:
     self.set_follow_values(controlsState, frogpilotCarState, v_ego, v_lead, frogpilot_toggles)
     self.update_follow_values(lead_distance, stopping_distance, v_ego, v_lead, frogpilot_toggles)
     self.update_v_cruise(carState, controlsState, frogpilotCarState, frogpilotNavigation, modelData, v_cruise, v_ego, frogpilot_toggles)
+
+  def _update_stop_dist(self, stop_x):
+    stop_x = self.xStopFilter.process(stop_x, median=True)
+    stop_x = self.xStopFilter2.process(stop_x)
+    return stop_x
+
+  def _check_model_stopping(self, model_x, y, v, v_ego_kph):
+    # v_ego_kph = v_ego * CV.MS_TO_KPH
+    model_v = self.vFilter.process(v[-1])
+    startSign = model_v > 5.0 or model_v > (v[0] + 2)
+
+    if v_ego_kph < 1.0:
+      stopSign = model_x < 20.0 and model_v < 10.0
+    elif v_ego_kph < 82.0:
+      stopSign = (model_x < interp(v[0], [60 / 3.6, 80 / 3.6], [120.0, 150]) and ((model_v < 3.0) or (model_v < v[0] * 0.7)) and abs(y[-1]) < 5.0)
+    else:
+      stopSign = False
+
+    self.stopSignCount = self.stopSignCount + 1 if stopSign else 0
+    self.startSignCount = self.startSignCount + 1 if startSign else 0
+
+    if self.stopSignCount * DT_MDL > 0.0:
+      self.trafficState = 1  # "RED"
+    elif self.startSignCount * DT_MDL > 0.3:
+      self.trafficState = 2  # "GREEN"
+    else:
+      self.trafficState = 0  # "OFF"
 
   def set_acceleration(self, controlsState, frogpilotCarState, v_cruise, v_ego, frogpilot_toggles):
     eco_gear = frogpilotCarState.ecoGear
@@ -319,7 +360,9 @@ class FrogPilotPlanner:
     frogpilotPlan.safeObstacleDistanceStock = self.safe_obstacle_distance_stock
     frogpilotPlan.stoppedEquivalenceFactor = self.stopped_equivalence_factor
 
-    frogpilotPlan.greenLight = self.model_length > TRAJECTORY_SIZE
+    #frogpilotPlan.greenLight = self.model_length > TRAJECTORY_SIZE
+
+    frogpilotPlan.greenLight = self.trafficState == 2
 
     frogpilotPlan.laneWidthLeft = self.lane_width_left
     frogpilotPlan.laneWidthRight = self.lane_width_right
