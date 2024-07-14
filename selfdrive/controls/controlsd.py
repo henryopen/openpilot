@@ -963,7 +963,8 @@ class Controls:
 
   def update_frogpilot_events(self, CS):
     if self.frogpilot_toggles.green_light_alert and self.previously_enabled and CS.standstill:
-      if self.sm['frogpilotPlan'].greenLight and not self.sm['longitudinalPlan'].hasLead:
+      # if self.sm['frogpilotPlan'].greenLight and not self.sm['longitudinalPlan'].hasLead:
+      if self.sm['frogpilotPlan'].greenLight:
         self.events.add(EventName.greenLight)
 
     if not self.holiday_theme_alerted and self.frogpilot_toggles.current_holiday_theme != 0 and self.sm.frame * DT_CTRL >= 10:

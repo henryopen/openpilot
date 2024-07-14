@@ -127,7 +127,7 @@ class FrogPilotPlanner:
     v = modelData.velocity.x
     self.xStop = self._update_stop_dist(x[31])
     self._check_model_stopping(self.xStop, y, v, v_ego_kph)
-    # self.params_memory.put_int("TrafficState",self.trafficState)
+    self.params_memory.put_int("TrafficState",self.trafficState)
 
     # if self.params_memory.get_bool("AutoAcce"):
     #   if (self.autoacceg or self.autoaccel) and self.lead_one.dRel > 5:
