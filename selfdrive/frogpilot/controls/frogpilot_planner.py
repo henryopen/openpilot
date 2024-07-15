@@ -391,7 +391,7 @@ class FrogPilotPlanner:
 
     #frogpilotPlan.greenLight = self.model_length > TRAJECTORY_SIZE
 
-    frogpilotPlan.greenLight = self.trafficState == 2
+    frogpilotPlan.greenLight = (self.trafficState == 2) or (self.trafficState == 4)
 
     frogpilotPlan.laneWidthLeft = self.lane_width_left
     frogpilotPlan.laneWidthRight = self.lane_width_right
