@@ -74,6 +74,9 @@ class FrogPilotPlanner:
     self.xStopFilter = StreamingMovingAverage(3)
     self.xStopFilter2 = StreamingMovingAverage(15)
     self.vFilter = StreamingMovingAverage(10)
+    self.signal_scan_ct = 0
+    self.path_x_old_signal = 0
+    self.path_x_old_signal_check = 0
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -127,6 +130,7 @@ class FrogPilotPlanner:
     v = modelData.velocity.x
     self.xStop = self._update_stop_dist(x[31])
     self._check_model_stopping(self.xStop, y, v, v_ego_kph)
+    self.prog_green_light(self, modelData)
     self.params_memory.put_int("TrafficState",self.trafficState)
 
     # if self.params_memory.get_bool("AutoAcce"):
@@ -180,6 +184,31 @@ class FrogPilotPlanner:
       self.trafficState = 2  # "GREEN"
     else:
       self.trafficState = 0  # "OFF"
+
+  def prog_green_light(self, md):
+    if len(md.position.x) == TRAJECTORY_SIZE and len(md.orientation.x) == TRAJECTORY_SIZE: #ワンペダルならある程度ハンドルが正面を向いていること。
+        path_x = md.position.x #path_xyz[:,0]
+        if (self.path_x_old_signal < 2) and path_x[TRAJECTORY_SIZE -1] > 40:
+          self.path_x_old_signal_check = path_x[TRAJECTORY_SIZE -1] #ゆっくり立ち上がったらこれはTrueにならない。
+        path_x_base_limit = 64.0 #70.0 , この座標値超で青信号スタート発火。
+        if path_x[TRAJECTORY_SIZE -1] > path_x_base_limit or self.path_x_old_signal_check > 40: #青信号判定の瞬間
+          self.path_x_old_signal_check += path_x[TRAJECTORY_SIZE -1] #最初の立ち上がりは2倍される
+          self.signal_scan_ct += 1 #横道からの進入車でパスが伸びたのを勘違いするので、バッファを設ける。
+          limit_8 = 8 if path_x[TRAJECTORY_SIZE -1] > path_x_base_limit else 16
+          if self.signal_scan_ct > limit_8 and self.signal_scan_ct < 100 and (path_x[TRAJECTORY_SIZE -1] > path_x_base_limit or (self.path_x_old_signal_check-40) > 50*limit_8):
+            self.trafficState = 4 #青信号発生
+          else:
+            self.signal_scan_ct = 200 #2回鳴るのを防止
+            self.path_x_old_signal_check = 0
+            self.trafficState = 0
+        else:
+          self.signal_scan_ct = 0 if self.signal_scan_ct < 4 else self.signal_scan_ct - 4
+          self.path_x_old_signal_check = 0
+        self.path_x_old_signal = path_x[TRAJECTORY_SIZE -1]
+    # else:
+    #   self.signal_scan_ct = 0 if self.signal_scan_ct < 4 else self.signal_scan_ct - 4
+    # if self.path_x_old_signal < 30:
+    #   self.path_x_old_signal_check = 0
 
   def set_acceleration(self, controlsState, frogpilotCarState, v_cruise, v_ego, frogpilot_toggles):
     eco_gear = frogpilotCarState.ecoGear
