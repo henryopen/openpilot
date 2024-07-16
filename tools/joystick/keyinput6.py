@@ -122,6 +122,8 @@ def main():
                     mem_params.put_int("KeyThSpeed", mapped_value)
                     if mem_params.get_bool("IsLockOn"):
                         key_setspeed = mapped_value
+                    if mapped_value == 0:
+                        params.put_bool("ExperimentalMode", False)
                 elif event.code == 1:
                     mem_params.put_bool("AutoAcce", False)
                     if event.value < 512:

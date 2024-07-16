@@ -118,9 +118,11 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    # if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
+    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
+      self.trafficState = 4
     #   self.autoacceg = True
-    # else:
+    else:
+      self.trafficState = 0
     #   if self.autoacceg and v_ego > 1:
     #     self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
@@ -128,9 +130,9 @@ class FrogPilotPlanner:
     x = modelData.position.x
     y = modelData.position.y
     v = modelData.velocity.x
-    # self.xStop = self._update_stop_dist(x[31])
-    # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
-    self.prog_green_light(modelData)
+    self.xStop = self._update_stop_dist(x[31])
+    self._check_model_stopping(self.xStop, y, v, v_ego_kph)
+    #self.prog_green_light(modelData)
     self.params_memory.put_int("TrafficState",self.trafficState)
 
     # if self.params_memory.get_bool("AutoAcce"):
@@ -183,7 +185,9 @@ class FrogPilotPlanner:
     elif self.startSignCount * DT_MDL > 0.3:
       self.trafficState = 2  # "GREEN"
     else:
-      self.trafficState = 0  # "OFF"
+      if not self.trafficState == 4:
+        self.trafficState = 0  # "OFF"
+      #self.trafficState = 0  # "OFF"
 
   def prog_green_light(self, md):
     if len(md.position.x) == TRAJECTORY_SIZE and len(md.orientation.x) == TRAJECTORY_SIZE: #ワンペダルならある程度ハンドルが正面を向いていること。
