@@ -128,8 +128,8 @@ class FrogPilotPlanner:
     x = modelData.position.x
     y = modelData.position.y
     v = modelData.velocity.x
-    self.xStop = self._update_stop_dist(x[31])
-    self._check_model_stopping(self.xStop, y, v, v_ego_kph)
+    # self.xStop = self._update_stop_dist(x[31])
+    # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
     self.prog_green_light(modelData)
     self.params_memory.put_int("TrafficState",self.trafficState)
 
