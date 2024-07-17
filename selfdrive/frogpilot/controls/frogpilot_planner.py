@@ -118,20 +118,22 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
-      self.trafficState = 4
+    self.trafficState = int(self.model_length*10)
+
+    # if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
+    #   self.trafficState = 4
     #   self.autoacceg = True
-    else:
-      self.trafficState = 0
+    # else:
+    #   self.trafficState = 0
     #   if self.autoacceg and v_ego > 1:
     #     self.autoacceg = False
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
-    x = modelData.position.x
-    y = modelData.position.y
-    v = modelData.velocity.x
-    self.xStop = self._update_stop_dist(x[31])
-    self._check_model_stopping(self.xStop, y, v, v_ego_kph)
+    # x = modelData.position.x
+    # y = modelData.position.y
+    # v = modelData.velocity.x
+    # self.xStop = self._update_stop_dist(x[31])
+    # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
     #self.prog_green_light(modelData)
     self.params_memory.put_int("TrafficState",self.trafficState)
 
