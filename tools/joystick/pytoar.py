@@ -80,7 +80,8 @@ def main():
             a17 = 1
         else:
             a17 = 0
-        a19, a20 = pa.get_int("LongitudinalPersonality"), mp.get_int("KeyTurn")
+        a19 = mp.get_int("TrafficState1")
+        a20 = mp.get_int("KeyTurn")
         xa21 = mp.get_int("ATvol")
         ma22 = mp.get_int("AKvs")
         if xa21 / 10 > 65.8:

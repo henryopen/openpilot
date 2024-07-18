@@ -69,6 +69,7 @@ class FrogPilotPlanner:
     self.autoaccel = False
     self.autoacceg = False
     self.trafficState = 0
+    self.trafficState1 = 0
     self.startSignCount = 0
     self.stopSignCount = 0
     self.xStopFilter = StreamingMovingAverage(3)
@@ -118,7 +119,7 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    self.trafficState = int(self.model_length*10)
+    self.trafficState1 = int(self.model_length*10)
 
     # if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
     #   self.trafficState = 4
@@ -134,8 +135,9 @@ class FrogPilotPlanner:
     # v = modelData.velocity.x
     # self.xStop = self._update_stop_dist(x[31])
     # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
-    #self.prog_green_light(modelData)
+    self.prog_green_light(modelData)
     self.params_memory.put_int("TrafficState",self.trafficState)
+    self.params_memory.put_int("TrafficState1",self.trafficState1)
 
     # if self.params_memory.get_bool("AutoAcce"):
     #   if (self.autoacceg or self.autoaccel) and self.lead_one.dRel > 5:
