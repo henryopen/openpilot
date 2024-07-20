@@ -119,6 +119,9 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
+    if self.model_length < 10 and carState.standstill:
+      self.trafficState = 1
+      self.signal_scan_ct = 0
     self.trafficState1 = int(self.model_length*10)
 
     # if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
@@ -128,7 +131,7 @@ class FrogPilotPlanner:
     #   self.trafficState = 0
     #   if self.autoacceg and v_ego > 1:
     #     self.autoacceg = False
-    self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
+    self.road_curvature = calculate_road_curvature(modelData, v_ego) if v_ego > CRUISING_SPEED else 1
 
     # x = modelData.position.x
     # y = modelData.position.y
@@ -196,23 +199,30 @@ class FrogPilotPlanner:
   def prog_green_light(self, md):
     if len(md.position.x) == TRAJECTORY_SIZE and len(md.orientation.x) == TRAJECTORY_SIZE: #ワンペダルならある程度ハンドルが正面を向いていること。
         path_x = md.position.x #path_xyz[:,0]
-        if (self.path_x_old_signal < 2) and path_x[TRAJECTORY_SIZE -1] > 40:
-          self.path_x_old_signal_check = path_x[TRAJECTORY_SIZE -1] #ゆっくり立ち上がったらこれはTrueにならない。
-        path_x_base_limit = 64.0 #70.0 , この座標値超で青信号スタート発火。
-        if path_x[TRAJECTORY_SIZE -1] > path_x_base_limit or self.path_x_old_signal_check > 40: #青信号判定の瞬間
-          self.path_x_old_signal_check += path_x[TRAJECTORY_SIZE -1] #最初の立ち上がりは2倍される
-          self.signal_scan_ct += 1 #横道からの進入車でパスが伸びたのを勘違いするので、バッファを設ける。
-          limit_8 = 8 if path_x[TRAJECTORY_SIZE -1] > path_x_base_limit else 16
-          if self.signal_scan_ct > limit_8 and self.signal_scan_ct < 100 and (path_x[TRAJECTORY_SIZE -1] > path_x_base_limit or (self.path_x_old_signal_check-40) > 50*limit_8):
-            self.trafficState = 4 #青信号発生
-          else:
-            self.signal_scan_ct = 200 #2回鳴るのを防止
-            self.path_x_old_signal_check = 0
-            self.trafficState = 0
-        else:
-          self.signal_scan_ct = 0 if self.signal_scan_ct < 4 else self.signal_scan_ct - 4
-          self.path_x_old_signal_check = 0
-        self.path_x_old_signal = path_x[TRAJECTORY_SIZE -1]
+        # if (self.path_x_old_signal < 2) and path_x[TRAJECTORY_SIZE -1] > 40:
+        #   self.path_x_old_signal_check = path_x[TRAJECTORY_SIZE -1] #ゆっくり立ち上がったらこれはTrueにならない。
+        if path_x[TRAJECTORY_SIZE -1] > 39.0:
+           if self.trafficState == 1:
+            self.trafficState = 2
+            self.signal_scan_ct += 1
+            if self.signal_scan_ct > 20:
+              self.signal_scan_ct = 0
+              self.trafficState = 0
+        # path_x_base_limit = 64.0 #70.0 , この座標値超で青信号スタート発火。
+        # if path_x[TRAJECTORY_SIZE -1] > path_x_base_limit or self.path_x_old_signal_check > 40: #青信号判定の瞬間
+        #   self.path_x_old_signal_check += path_x[TRAJECTORY_SIZE -1] #最初の立ち上がりは2倍される
+        #   self.signal_scan_ct += 1 #横道からの進入車でパスが伸びたのを勘違いするので、バッファを設ける。
+        #   limit_8 = 8 if path_x[TRAJECTORY_SIZE -1] > path_x_base_limit else 16
+        #   if self.signal_scan_ct > limit_8 and self.signal_scan_ct < 100 and (path_x[TRAJECTORY_SIZE -1] > path_x_base_limit or (self.path_x_old_signal_check-40) > 50*limit_8):
+        #     self.trafficState = 4 #青信号発生
+        #   else:
+        #     self.signal_scan_ct = 200 #2回鳴るのを防止
+        #     self.path_x_old_signal_check = 0
+        #     self.trafficState = 0
+        # else:
+        #   self.signal_scan_ct = 0 if self.signal_scan_ct < 4 else self.signal_scan_ct - 4
+        #   self.path_x_old_signal_check = 0
+        # self.path_x_old_signal = path_x[TRAJECTORY_SIZE -1]
     # else:
     #   self.signal_scan_ct = 0 if self.signal_scan_ct < 4 else self.signal_scan_ct - 4
     # if self.path_x_old_signal < 30:
