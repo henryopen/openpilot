@@ -119,10 +119,22 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
-    if self.model_length < 10 and carState.standstill:
+    if self.model_length < 10 and carState.standstill and self.trafficState == 0 :
       self.trafficState = 1
       self.signal_scan_ct = 0
     self.trafficState1 = int(self.model_length*10)
+    if self.trafficState1 == 1:
+      if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
+        if self.model_length > 39.0:
+          self.trafficState = 2
+          self.signal_scan_ct += 1
+    elif self.trafficState1 == 2:
+          self.signal_scan_ct += 1
+          if self.signal_scan_ct > 20:
+            self.trafficState = 0
+            self.signal_scan_ct = 0
+    self.params_memory.put_int("TrafficState",self.trafficState)
+    self.params_memory.put_int("TrafficState1",self.trafficState1)
 
     # if self.model_length > TRAJECTORY_SIZE and carState.standstill and controlsState.enabled:
     #   self.trafficState = 4
@@ -138,9 +150,7 @@ class FrogPilotPlanner:
     # v = modelData.velocity.x
     # self.xStop = self._update_stop_dist(x[31])
     # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
-    self.prog_green_light(modelData)
-    self.params_memory.put_int("TrafficState",self.trafficState)
-    self.params_memory.put_int("TrafficState1",self.trafficState1)
+    # self.prog_green_light(modelData)
 
     # if self.params_memory.get_bool("AutoAcce"):
     #   if (self.autoacceg or self.autoaccel) and self.lead_one.dRel > 5:
