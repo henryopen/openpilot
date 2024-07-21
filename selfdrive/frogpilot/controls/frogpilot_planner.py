@@ -131,7 +131,7 @@ class FrogPilotPlanner:
     #   self.trafficState = 0
     #   if self.autoacceg and v_ego > 1:
     #     self.autoacceg = False
-    self.road_curvature = calculate_road_curvature(modelData, v_ego) if v_ego > CRUISING_SPEED else 1
+    self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
     # x = modelData.position.x
     # y = modelData.position.y
