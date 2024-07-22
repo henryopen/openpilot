@@ -123,12 +123,12 @@ class FrogPilotPlanner:
       self.trafficState = 1
       self.signal_scan_ct = 0
     self.trafficState1 = int(self.model_length*10)
-    if self.trafficState1 == 1:
+    if self.trafficState == 1:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
           self.signal_scan_ct += 1
-    elif self.trafficState1 == 2:
+    elif self.trafficState == 2:
           self.signal_scan_ct += 1
           if self.signal_scan_ct > 20:
             self.trafficState = 0
