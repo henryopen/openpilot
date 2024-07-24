@@ -24,8 +24,9 @@ from openpilot.selfdrive.frogpilot.controls.lib.speed_limit_controller import Sp
 A_CRUISE_MIN_ECO = A_CRUISE_MIN
 A_CRUISE_MIN_SPORT = A_CRUISE_MIN / 2
                   # MPH = [ 0.,  11,  22,  34,  45,  56,  89]
+                  # KPH = [ 0.,  18,  36,  54,  72,  90,  144]
 A_CRUISE_MAX_BP_CUSTOM =  [ 0.,  5., 10., 15., 20., 25., 40.]
-A_CRUISE_MAX_VALS_ECO =   [1.6, 1.4, 0.7, 0.6, 0.5, 0.4, 0.3]
+A_CRUISE_MAX_VALS_ECO =   [2.5, 1.5, 0.7, 0.6, 0.5, 0.4, 0.3]
 A_CRUISE_MAX_VALS_SPORT = [4.0, 3.0, 2.0, 1.0, 0.9, 0.8, 0.6]
 
 TRAFFIC_MODE_BP = [0., CITY_SPEED_LIMIT]
@@ -130,7 +131,7 @@ class FrogPilotPlanner:
           self.signal_scan_ct += 1
     elif self.trafficState == 2:
           self.signal_scan_ct += 1
-          if self.signal_scan_ct > 20:
+          if self.signal_scan_ct > 30:
             self.trafficState = 0
             self.signal_scan_ct = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
@@ -152,11 +153,11 @@ class FrogPilotPlanner:
     # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
     # self.prog_green_light(modelData)
 
-    # if self.params_memory.get_bool("AutoAcce"):
-    #   if (self.autoacceg or self.autoaccel) and self.lead_one.dRel > 5:
-    #     self.params_memory.put_int("KeyAcce",25)
-    #   else:
-    #     self.params_memory.put_int("KeyAcce",0)
+    if self.params_memory.get_bool("AutoAcce") and self.lead_one.dRel > 6 and self.lead_one.dRel < 15:
+      if not self.trafficState == 0 and self.signal_scan_ct < 30 and self.signal_scan_ct > 0:
+        self.params_memory.put_int("KeyAcce",25)
+      else:
+        self.params_memory.put_int("KeyAcce",0)
 
     if frogpilot_toggles.random_events:
       self.taking_curve_quickly = v_ego > (1 / self.road_curvature)**0.5 * 2 > CRUISING_SPEED * 2 and abs(carState.steeringAngleDeg) > 30

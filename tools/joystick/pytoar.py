@@ -38,13 +38,13 @@ def main():
         a03, a04, a05 = mp.get_int("ASpeed"), mp.get_int("AdvRatio"), mp.get_int("ADF")
         a06, a07 = mp.get_int("ADrel"), mp.get_int("ASO")
         x08, a09 = mp.get_int("ALight"), mp.get_int("AAccel")
-        if mp.get_bool("AutoLong"):
+        #if mp.get_bool("AutoLong"):
+            #a18 = 0
+        lvalue = 2 if x08 < 40 else 1 if x08 < 70 else 0
+        if not lvalue == lpvalue:
+            pa.put("LongitudinalPersonality", str(lvalue))
+        if mp.get_bool("AutoAcce"):
             a18 = 0
-            lvalue = 2 if x08 < 40 else 1 if x08 < 70 else 0
-            if not lvalue == lpvalue:
-                pa.put("LongitudinalPersonality", str(lvalue))
-        # if mp.get_bool("AutoAcce"):
-        #     a18 = 0
         else:
             a18 = 1
         a08 = mp.get_int("TrafficState")
