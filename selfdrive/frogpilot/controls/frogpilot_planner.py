@@ -153,8 +153,8 @@ class FrogPilotPlanner:
     # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
     # self.prog_green_light(modelData)
 
-    if self.params_memory.get_bool("AutoAcce") and self.lead_one.dRel > 6 and self.lead_one.dRel < 15:
-      if not self.trafficState == 0 and self.signal_scan_ct < 30 and self.signal_scan_ct > 0:
+    if self.params_memory.get_bool("AutoAcce") and (6 < self.lead_one.dRel < 15 or not self.lead_one.status):
+      if not self.trafficState == 0 and 0 < self.signal_scan_ct < 30:
         self.params_memory.put_int("KeyAcce",25)
       else:
         self.params_memory.put_int("KeyAcce",0)
