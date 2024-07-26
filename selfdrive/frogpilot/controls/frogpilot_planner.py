@@ -76,7 +76,7 @@ class FrogPilotPlanner:
     self.xStopFilter = StreamingMovingAverage(3)
     self.xStopFilter2 = StreamingMovingAverage(15)
     self.vFilter = StreamingMovingAverage(10)
-    self.signal_scan_ct = 0
+    self.autoacce_ct = 0
     self.path_x_old_signal = 0
     self.path_x_old_signal_check = 0
 
@@ -120,20 +120,13 @@ class FrogPilotPlanner:
     self.autoaccel = self.lead_departing
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
+    self.trafficState1 = int(self.model_length*10)
     if self.model_length < 10 and carState.standstill and self.trafficState == 0 :
       self.trafficState = 1
-      self.signal_scan_ct = 0
-    self.trafficState1 = int(self.model_length*10)
     if self.trafficState == 1:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
-        if self.model_length > 39.0:
+        if self.model_length > 39.0 and v_ego_kph < 5:
           self.trafficState = 2
-          self.signal_scan_ct += 1
-    elif self.trafficState == 2:
-          self.signal_scan_ct += 1
-          if self.signal_scan_ct > 30:
-            self.trafficState = 0
-            self.signal_scan_ct = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
     self.params_memory.put_int("TrafficState1",self.trafficState1)
 
@@ -153,10 +146,22 @@ class FrogPilotPlanner:
     # self._check_model_stopping(self.xStop, y, v, v_ego_kph)
     # self.prog_green_light(modelData)
 
-    if self.params_memory.get_bool("AutoAcce") and (6 < self.lead_one.dRel < 15 or not self.lead_one.status):
-      if not self.trafficState == 0 and 0 < self.signal_scan_ct < 30:
-        self.params_memory.put_int("KeyAcce",25)
+    if self.params_memory.get_bool("AutoAcce"):
+      if (6 < self.lead_one.dRel < 15 or not self.lead_one.status) and controlsState.enabled:
+        if not self.trafficState == 0 and v_ego_kph < 15:
+          self.autoacce_ct += 1
+          self.params_memory.put_int("KeyAcce",25)
+          if self.autoacce_ct > 30:
+            self.autoacce_ct = 0
+            self.trafficState = 0
+            self.params_memory.put_int("KeyAcce",0)
+        else:
+          self.trafficState = 0
+          self.autoacce_ct = 0
+          self.params_memory.put_int("KeyAcce",0)
       else:
+        self.trafficState = 0
+        self.autoacce_ct = 0
         self.params_memory.put_int("KeyAcce",0)
 
     if frogpilot_toggles.random_events:
