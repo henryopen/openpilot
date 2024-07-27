@@ -648,7 +648,7 @@ class Controls:
 
       if keyacce != 0:
           actuators.longControlState = LongCtrlState.pid
-          if keyacce > 0:
+          if keyacce > 0 and actuators.accel < 2.0 * keyacce:
             actuators.accel = 2.0 * keyacce
           elif keyacce < 0:
             actuators.accel = 3.0 * keyacce
