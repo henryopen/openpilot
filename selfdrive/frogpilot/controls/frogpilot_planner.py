@@ -26,7 +26,7 @@ A_CRUISE_MIN_SPORT = A_CRUISE_MIN / 2
                   # MPH = [ 0.,  11,  22,  34,  45,  56,  89]
                   # KPH = [ 0.,  18,  36,  54,  72,  90,  144]
 A_CRUISE_MAX_BP_CUSTOM =  [ 0.,  5., 10., 15., 20., 25., 40.]
-A_CRUISE_MAX_VALS_ECO =   [2.5, 1.5, 0.7, 0.6, 0.5, 0.4, 0.3]
+A_CRUISE_MAX_VALS_ECO =   [2.5, 1.5, 1.0, 0.6, 0.5, 0.4, 0.3]
 A_CRUISE_MAX_VALS_SPORT = [4.0, 3.0, 2.0, 1.0, 0.9, 0.8, 0.6]
 
 TRAFFIC_MODE_BP = [0., CITY_SPEED_LIMIT]
@@ -132,7 +132,7 @@ class FrogPilotPlanner:
           if self.lead_one.status and 6 < self.lead_one.dRel < 12:
             self.autoacce_ct += 1
             self.params_memory.put_int("KeyAcce",25)
-            if self.autoacce_ct > 30:
+            if self.autoacce_ct > 50:
               self.autoacce_ct = 0
               self.params_memory.put_int("KeyAcce",0)
           else:
