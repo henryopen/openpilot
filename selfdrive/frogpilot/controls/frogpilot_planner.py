@@ -141,8 +141,8 @@ class FrogPilotPlanner:
         elif self.trafficState == 2:
           if not self.lead_one.status or self.lead_one.dRel > 6:
             self.autoacce_ct += 1
-            self.params_memory.put_int("KeyAcce",50)
-            if self.autoacce_ct > 20:
+            self.params_memory.put_int("KeyAcce",60)
+            if self.autoacce_ct > 50:
               self.autoacce_ct = 0
               self.params_memory.put_int("KeyAcce",0)
           else:
