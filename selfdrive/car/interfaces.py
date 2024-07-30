@@ -421,7 +421,7 @@ class CarInterfaceBase(ABC):
     fp_ret.alwaysOnLateralDisabled = self.always_on_lateral_disabled
     distance_button = self.CS.distance_button or self.params_memory.get_bool("OnroadDistanceButtonPressed")
     fp_ret.distanceLongPressed = self.frogpilot_distance_functions(distance_button, self.prev_distance_button, frogpilot_toggles)
-    fp_ret.ecoGear |= ret.gearShifter == GearShifter.eco
+    fp_ret.ecoGear |= ret.gearShifter in (GearShifter.eco, GearShifter.drive)
     fp_ret.sportGear |= ret.gearShifter == GearShifter.sport
     fp_ret.trafficModeActive = frogpilot_toggles.traffic_mode and (self.traffic_mode_active or ret.vEgo * 3.6 < 65)
     self.prev_distance_button = distance_button
@@ -472,6 +472,9 @@ class CarInterfaceBase(ABC):
       indrive = True
     elif cs_out.gearShifter == GearShifter.eco:
       self.params_memory.put_int("NowGear",2)
+      indrive = True
+    elif cs_out.gearShifter == GearShifter.sport:
+      self.params_memory.put_int("NowGear",3)
       indrive = True
     else:
       self.params_memory.put_int("NowGear",0)
