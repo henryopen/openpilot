@@ -127,33 +127,33 @@ class FrogPilotPlanner:
     self.params_memory.put_int("TrafficState1",self.trafficState1)
 
     if self.params_memory.get_bool("AutoAcce"):
-      if controlsState.enabled and frogpilotCarState.ecoGear:
+      if controlsState.enabled and frogpilotCarState.ecoGear and self.lead_one.dRel > 7.0:
         if self.trafficState == 1:
-          if self.lead_one.status and 7.0 < self.lead_one.dRel < 12.0:
-            self.autoacce_ct += 1
+          if self.lead_one.status and self.lead_one.dRel < 12.0:
+            # self.autoacce_ct += 1
             self.params_memory.put_int("KeyAcce",30)
-            if self.autoacce_ct > 50:
-              self.autoacce_ct = 0
-              self.params_memory.put_int("KeyAcce",0)
+            # if self.autoacce_ct > 50:
+            #   self.autoacce_ct = 0
+            #   self.params_memory.put_int("KeyAcce",0)
           else:
-              self.autoacce_ct = 0
-              self.params_memory.put_int("KeyAcce",0)
+              # self.autoacce_ct = 0
+            self.params_memory.put_int("KeyAcce",0)
         elif self.trafficState == 2:
-          if not self.lead_one.status or self.lead_one.dRel > 7.0:
-            self.autoacce_ct += 1
+          if not self.lead_one.status:
+            # self.autoacce_ct += 1
             self.params_memory.put_int("KeyAcce",60)
-            if self.autoacce_ct > 50:
-              self.autoacce_ct = 0
-              self.params_memory.put_int("KeyAcce",0)
+            # if self.autoacce_ct > 50:
+            #   self.autoacce_ct = 0
+            #   self.params_memory.put_int("KeyAcce",0)
           else:
-              self.autoacce_ct = 0
-              self.params_memory.put_int("KeyAcce",0)
+              # self.autoacce_ct = 0
+            self.params_memory.put_int("KeyAcce",0)
         else:
-          self.autoacce_ct = 0
+          # self.autoacce_ct = 0
           self.params_memory.put_int("KeyAcce",0)
       else:
         self.trafficState = 0
-        self.autoacce_ct = 0
+        # self.autoacce_ct = 0
         self.params_memory.put_int("KeyAcce",0)
 
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
