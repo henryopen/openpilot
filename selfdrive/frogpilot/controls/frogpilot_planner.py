@@ -111,49 +111,27 @@ class FrogPilotPlanner:
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
     self.trafficState1 = int(self.model_length*10)
+
     if self.model_length < 10.0 and carState.standstill and self.trafficState == 0 :
       self.trafficState = 1
     if self.trafficState == 1:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
-        if self.model_length > 39.0:
-          if v_ego_kph < 5.0:
-            self.trafficState = 2
-          else:
-            self.trafficState = 0
+        if self.model_length > 39.0 or (self.lead_one.status and self.lead_one.dRel > 7.0):
+          self.trafficState = 2
     if self.trafficState == 2:
-      if v_ego_kph > 10.0:
+      if v_ego_kph > 10.0 or (self.lead_one.status and self.lead_one.dRel < 7.0):
           self.trafficState = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
     self.params_memory.put_int("TrafficState1",self.trafficState1)
 
     if self.params_memory.get_bool("AutoAcce"):
-      if controlsState.enabled and frogpilotCarState.ecoGear and self.lead_one.dRel > 7.0:
-        if self.trafficState == 1:
-          if self.lead_one.status and self.lead_one.dRel < 12.0:
-            # self.autoacce_ct += 1
-            self.params_memory.put_int("KeyAcce",30)
-            # if self.autoacce_ct > 50:
-            #   self.autoacce_ct = 0
-            #   self.params_memory.put_int("KeyAcce",0)
-          else:
-              # self.autoacce_ct = 0
-            self.params_memory.put_int("KeyAcce",0)
-        elif self.trafficState == 2:
-          if not self.lead_one.status:
-            # self.autoacce_ct += 1
-            self.params_memory.put_int("KeyAcce",60)
-            # if self.autoacce_ct > 50:
-            #   self.autoacce_ct = 0
-            #   self.params_memory.put_int("KeyAcce",0)
-          else:
-              # self.autoacce_ct = 0
-            self.params_memory.put_int("KeyAcce",0)
+      if controlsState.enabled and frogpilotCarState.ecoGear:
+        if self.trafficState == 2:
+          self.params_memory.put_int("KeyAcce",60)
         else:
-          # self.autoacce_ct = 0
           self.params_memory.put_int("KeyAcce",0)
       else:
         self.trafficState = 0
-        # self.autoacce_ct = 0
         self.params_memory.put_int("KeyAcce",0)
 
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
