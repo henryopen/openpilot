@@ -116,11 +116,18 @@ class FrogPilotPlanner:
       self.trafficState = 1
     if self.trafficState == 1:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
-        if self.model_length > 39.0 or (self.lead_one.status and self.lead_one.dRel > 7.0):
+        if self.model_length > 39.0:
           self.trafficState = 2
+      if self.lead_one.status and self.lead_one.dRel > 7.0:
+        self.trafficState = 2
+        self.approchlead = True
+      else:
+        self.approchlead = False
     if self.trafficState == 2:
-      if v_ego_kph > 10.0 or (self.lead_one.status and self.lead_one.dRel < 7.0):
+      if v_ego_kph > 10.0:
           self.trafficState = 0
+      if self.approchlead and self.lead_one.status and self.lead_one.dRel < 7.0:
+        self.trafficState = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
     self.params_memory.put_int("TrafficState1",self.trafficState1)
 
