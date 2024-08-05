@@ -186,8 +186,12 @@ class FrogPilotPlanner:
       else:
         self.max_accel = get_max_accel(v_ego)
 
-    if not self.tracking_lead:
-      self.max_accel = float(min(self.max_accel, self.max_accel * (self.v_cruise / CITY_SPEED_LIMIT)))
+    # if not self.tracking_lead:
+    #   self.max_accel = float(min(self.max_accel, self.max_accel * (self.v_cruise / CITY_SPEED_LIMIT)))
+
+    max_speed_difference = self.v_cruise - v_ego
+    if v_ego < CITY_SPEED_LIMIT and max_speed_difference < self.v_cruise / CRUISING_SPEED:
+      self.max_accel /= max(CRUISING_SPEED - max_speed_difference, 1)
 
     if controlsState.experimentalMode:
       self.min_accel = ACCEL_MIN
