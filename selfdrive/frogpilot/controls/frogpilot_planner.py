@@ -128,18 +128,16 @@ class FrogPilotPlanner:
           self.trafficState = 0
       if self.approchlead and self.lead_one.status and self.lead_one.dRel < 7.0:
         self.trafficState = 0
+    if not (controlsState.enabled and frogpilotCarState.ecoGear):
+      self.trafficState = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
     self.params_memory.put_int("TrafficState1",self.trafficState1)
 
     if self.params_memory.get_bool("AutoAcce"):
-      if controlsState.enabled and frogpilotCarState.ecoGear:
         if self.trafficState == 2:
           self.params_memory.put_int("KeyAcce",60)
         else:
           self.params_memory.put_int("KeyAcce",0)
-      else:
-        self.trafficState = 0
-        self.params_memory.put_int("KeyAcce",0)
 
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
