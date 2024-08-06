@@ -103,6 +103,13 @@ class FrogPilotPlanner:
       self.lane_width_left = 0
       self.lane_width_right = 0
 
+    if self.params_memory.get_bool("AutoTurn"):
+      if v_cruise-v_ego > 6 and v_ego > 22 and self.tracking_lead and dvratio > 0.4:
+        if self.lane_width_left > 3.0 and not carState.leftBlindspot:
+          self.params_memory.put("KeyTurnLight", 1)
+        elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
+          self.params_memory.put("KeyTurnLight", 2)
+
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1.0
       self.lead_departing &= v_lead > 1.0
