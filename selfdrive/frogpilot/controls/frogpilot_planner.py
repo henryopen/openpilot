@@ -106,9 +106,9 @@ class FrogPilotPlanner:
     if self.params_memory.get_bool("AutoTurn"):
       if v_cruise-v_ego > 6 and v_ego > 22 and self.tracking_lead and dvratio > 0.4:
         if self.lane_width_left > 3.0 and not carState.leftBlindspot:
-          self.params_memory.put("KeyTurnLight", 1)
+          self.params_memory.put_int("KeyTurnLight", 1)
         elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
-          self.params_memory.put("KeyTurnLight", 2)
+          self.params_memory.put_int("KeyTurnLight", 2)
 
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1.0
@@ -125,16 +125,17 @@ class FrogPilotPlanner:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
-      if self.lead_one.status and self.lead_one.dRel > 8.0:
+      if self.lead_one.status and self.lead_one.dRel > 9.0:
         self.trafficState = 2
         self.approchlead = True
       else:
         self.approchlead = False
     if self.trafficState == 2:
-      if v_ego_kph > 10.0:
+      if v_ego_kph > 5.0:
           self.trafficState = 0
-      if self.approchlead and self.lead_one.status and self.lead_one.dRel < 8.0:
+      if self.approchlead and self.lead_one.status and self.lead_one.dRel < 9.0:
         self.trafficState = 0
+        self.approchlead = False
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
       self.trafficState = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
