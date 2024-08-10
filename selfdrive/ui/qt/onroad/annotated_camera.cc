@@ -722,8 +722,8 @@ void AnnotatedCameraWidget::drawLead(QPainter &painter, const cereal::ModelDataV
   const float d_rel = lead_data.getX()[0];
   const float v_rel = lead_data.getV()[0] - v_ego;
 
-  paramsMemory.putIntNonBlocking("AdvRatio",(d_rel/std::max(1.0f, v_ego))*100);
-  paramsMemory.putIntNonBlocking("ADrel",d_rel);
+  //paramsMemory.putIntNonBlocking("AdvRatio",(d_rel/std::max(1.0f, v_ego))*100);
+  // paramsMemory.putIntNonBlocking("ADrel",d_rel);
 
   float fillAlpha = 0;
   if (d_rel < leadBuff) {

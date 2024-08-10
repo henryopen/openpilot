@@ -91,6 +91,8 @@ class FrogPilotPlanner:
     lead_distance = self.lead_one.dRel - distance_offset
     dvratio = self.lead_one.dRel/np.where(v_ego_kph < 1, 1, v_ego_kph)
     stopping_distance = STOP_DISTANCE + distance_offset
+    self.params_memory.put_int("ADrel",self.lead_one.dRel)
+    self.params_memory.put_int("ADvRatio",(self.lead_one.dRel/np.where(v_ego < 1, 1, v_ego))*100)
 
     if frogpilot_toggles.conditional_experimental_mode and controlsState.enabled:
       self.cem.update(carState, frogpilotNavigation, self.lead_one, modelData, self.model_length, self.road_curvature, self.slower_lead, self.tracking_lead, self.v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, self.lead_one.status)
@@ -104,7 +106,7 @@ class FrogPilotPlanner:
       self.lane_width_right = 0
 
     if self.params_memory.get_bool("AutoTurn"):
-      if v_cruise-v_ego > 6 and v_ego > 22 and self.tracking_lead and dvratio > 0.4 and self.params_memory.get_int("KeyTurnLight") == 0:
+      if v_cruise-v_ego > 6 and v_ego > 22 and self.lead_one.status and (0.4 < dvratio < 0.8) and self.params_memory.get_int("KeyTurnLight") == 0:
         if self.lane_width_left > 3.0 and not carState.leftBlindspot:
           self.params_memory.put_int("KeyTurnLight", 1)
         elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
@@ -124,7 +126,7 @@ class FrogPilotPlanner:
     if self.model_length < 10.0 and carState.standstill and self.trafficState == 0 :
       self.trafficState = 1
     if self.trafficState == 1:
-      if self.lead_one.status and 10.0 < self.lead_one.dRel < 15.0:
+      if (10.0 < self.lead_one.dRel < 15.0):
         self.trafficState = 2
         self.approchlead = True
       else:
@@ -133,7 +135,7 @@ class FrogPilotPlanner:
         if self.model_length > 39.0:
           self.trafficState = 2
     if self.trafficState == 2:
-      if self.approchlead and self.lead_one.status and self.lead_one.dRel < 9.0:
+      if self.approchlead and (self.lead_one.dRel < 9.0):
         self.trafficState = 0
         self.approchlead = False
       if v_ego_kph > 5.0:
