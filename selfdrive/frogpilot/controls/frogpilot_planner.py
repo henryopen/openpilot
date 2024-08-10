@@ -92,7 +92,7 @@ class FrogPilotPlanner:
     dvratio = self.lead_one.dRel/np.where(v_ego_kph < 1, 1, v_ego_kph)
     stopping_distance = STOP_DISTANCE + distance_offset
     self.params_memory.put_int("ADrel",self.lead_one.dRel)
-    self.params_memory.put_int("ADvRatio",(self.lead_one.dRel/np.where(v_ego < 1, 1, v_ego))*100)
+    self.params_memory.put_int("AdvRatio",(self.lead_one.dRel/np.where(v_ego < 1, 1, v_ego))*100)
 
     if frogpilot_toggles.conditional_experimental_mode and controlsState.enabled:
       self.cem.update(carState, frogpilotNavigation, self.lead_one, modelData, self.model_length, self.road_curvature, self.slower_lead, self.tracking_lead, self.v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, self.lead_one.status)
