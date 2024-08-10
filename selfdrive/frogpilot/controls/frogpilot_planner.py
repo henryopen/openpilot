@@ -122,32 +122,33 @@ class FrogPilotPlanner:
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
     self.trafficState1 = int(self.model_length*10)
+    self.params_memory.put_int("TrafficState1",self.trafficState1)
 
     if self.model_length < 10.0 and carState.standstill and self.trafficState == 0 :
       self.trafficState = 1
     if self.trafficState == 1:
-      if (10.0 < self.lead_one.dRel < 15.0):
-        self.trafficState = 2
-        self.approchlead = True
-      else:
-        self.approchlead = False
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
     if self.trafficState == 2:
-      if self.approchlead and (self.lead_one.dRel < 9.0):
-        self.trafficState = 0
-        self.approchlead = False
       if v_ego_kph > 5.0:
           self.trafficState = 0
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
       self.trafficState = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
-    self.params_memory.put_int("TrafficState1",self.trafficState1)
 
     if self.params_memory.get_bool("AutoAcce"):
+        if self.trafficState == 1:
+          if self.lead_one.status and (7.0 < self.lead_one.dRel < 12.0):
+            self.trafficState = 2
         if self.trafficState == 2:
-          self.params_memory.put_int("KeyAcce",50)
+          if self.lead_one.status:
+            if (7.0 < self.lead_one.dRel < 12.0):
+              self.params_memory.put_int("KeyAcce",50)
+            else:
+              self.params_memory.put_int("KeyAcce",0)
+          else:
+            self.params_memory.put_int("KeyAcce",50)
         else:
           self.params_memory.put_int("KeyAcce",0)
 
