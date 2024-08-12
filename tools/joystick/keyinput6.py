@@ -14,7 +14,7 @@ mem_params.put_bool("KeyCancel", False)
 params.put_bool("SpeedLimitController",True)
 mem_params.put_bool("SLC",True)
 mem_params.put_bool("IsLockOn", True)
-mem_params.put_bool("AutoTurn", True)
+mem_params.put_bool("AutoTurn", False)
 
 event_file = None
 
@@ -55,7 +55,7 @@ def main():
                 elif event.code == 289:
                      if turnon:
                         mem_params.put_int("KeyTurnLight", 0)
-                        mem_params.put_bool("AutoTurn",True)
+                        # mem_params.put_bool("AutoTurn",True)
                         turnon = False
                 elif event.code == 290:
                     if params.get_bool("IsEngaged"):
@@ -69,20 +69,20 @@ def main():
                 elif event.code == 291:
                     if mem_params.get_int("KeyTurnLight") == 1 and turnon:
                         mem_params.put_int("KeyTurnLight", 0)
-                        mem_params.put_bool("AutoTurn",True)
+                        # mem_params.put_bool("AutoTurn",True)
                         turnon = False
                     else:
                         mem_params.put_int("KeyTurnLight", 1)
-                        mem_params.put_bool("AutoTurn",False)
+                        # mem_params.put_bool("AutoTurn",False)
                         turnon = True
                 elif event.code == 292:
                     if mem_params.get_int("KeyTurnLight") == 2 and turnon:
                         mem_params.put_int("KeyTurnLight", 0)
-                        mem_params.put_bool("AutoTurn",True)
+                        # mem_params.put_bool("AutoTurn",True)
                         turnon = False
                     else:
                         mem_params.put_int("KeyTurnLight", 2)
-                        mem_params.put_bool("AutoTurn",False)
+                        # mem_params.put_bool("AutoTurn",False)
                         turnon = True
                 elif event.code == 297 :
                     if mem_params.get_bool("AutoTurn"):

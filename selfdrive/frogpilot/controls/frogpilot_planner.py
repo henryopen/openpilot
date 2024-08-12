@@ -111,8 +111,8 @@ class FrogPilotPlanner:
           self.params_memory.put_int("KeyTurnLight", 1)
         elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
           self.params_memory.put_int("KeyTurnLight", 2)
-        else:
-          self.params_memory.put_int("KeyTurnLight", 0)
+      else:
+        self.params_memory.put_int("KeyTurnLight", 0)
 
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1.0
@@ -139,13 +139,14 @@ class FrogPilotPlanner:
 
     if self.params_memory.get_bool("AutoAcce"):
         if self.trafficState == 1:
-          if self.lead_one.status and (7.0 < self.lead_one.dRel < 12.0):
+          if self.lead_one.status and (6.0 < self.lead_one.dRel < 12.0):
             self.trafficState = 2
         if self.trafficState == 2:
           if self.lead_one.status:
-            if (7.0 < self.lead_one.dRel < 12.0):
+            if (6.0 < self.lead_one.dRel < 12.0):
               self.params_memory.put_int("KeyAcce",50)
             else:
+              self.trafficState = 0
               self.params_memory.put_int("KeyAcce",0)
           else:
             self.params_memory.put_int("KeyAcce",50)
