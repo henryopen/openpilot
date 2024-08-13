@@ -70,6 +70,8 @@ class FrogPilotPlanner:
     self.trafficState = 0
     self.trafficState1 = 0
     self.autoacce_ct = 0
+    self.changelane_ct = 0
+    self.changelane = False
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -106,13 +108,17 @@ class FrogPilotPlanner:
       self.lane_width_right = 0
 
     if self.params_memory.get_bool("AutoTurn"):
-      if v_cruise-v_ego > 6 and v_ego > 22 and self.lead_one.status and (0.4 < dvratio < 0.8) and self.params_memory.get_int("KeyTurnLight") == 0:
-        if self.lane_width_left > 3.0 and not carState.leftBlindspot:
-          self.params_memory.put_int("KeyTurnLight", 1)
-        elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
-          self.params_memory.put_int("KeyTurnLight", 2)
-      else:
-        self.params_memory.put_int("KeyTurnLight", 0)
+      if v_cruise-v_ego > 6 and v_ego > 22 and self.lead_one.status and (0.4 < dvratio < 0.8) and not self.changelane:
+        self.changelane_ct += 1
+        if self.changelane_ct > 100 and self.params_memory.get_int("KeyTurnLight") == 0:
+          if self.lane_width_left > 3.0 and not carState.leftBlindspot:
+            self.params_memory.put_int("KeyTurnLight", 1)
+          elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
+            self.params_memory.put_int("KeyTurnLight", 2)
+          self.changelane = True
+          self.changelane_ct = 0
+        else:
+          self.changelane = False
 
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1.0
