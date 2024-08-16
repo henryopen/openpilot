@@ -110,7 +110,7 @@ class FrogPilotPlanner:
     if self.params_memory.get_bool("AutoTurn"):
       if v_cruise-v_ego > 6 and v_ego > 22 and self.lead_one.status and (0.4 < dvratio < 0.8) and not self.changelane:
         self.changelane_ct += 1
-        if self.changelane_ct > 100 and self.params_memory.get_int("KeyTurnLight") == 0:
+        if self.changelane_ct > 60 and self.params_memory.get_int("KeyTurnLight") == 0:
           if self.lane_width_left > 3.0 and not carState.leftBlindspot:
             self.params_memory.put_int("KeyTurnLight", 1)
           elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
@@ -145,14 +145,14 @@ class FrogPilotPlanner:
 
     if self.params_memory.get_bool("AutoAcce"):
         if self.trafficState == 1:
-          if self.lead_one.status and (6.0 < self.lead_one.dRel < 12.0):
+          if self.lead_one.status and (6 < self.lead_one.dRel < 12.0):
             self.trafficState = 2
         if self.trafficState == 2:
           if self.lead_one.status:
-            if (6.0 < self.lead_one.dRel < 12.0):
-              self.params_memory.put_int("KeyAcce",50)
+            if (6 < self.lead_one.dRel < 12.0):
+              self.params_memory.put_int("KeyAcce",60)
             else:
-              #self.trafficState = 0
+              self.trafficState = 0
               self.params_memory.put_int("KeyAcce",0)
           else:
             self.params_memory.put_int("KeyAcce",60)
