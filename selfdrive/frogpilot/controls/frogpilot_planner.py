@@ -152,7 +152,7 @@ class FrogPilotPlanner:
             if (6 < self.lead_one.dRel < 12.0):
               self.params_memory.put_int("KeyAcce",60)
             else:
-              self.trafficState = 0
+              self.trafficState = 1
               self.params_memory.put_int("KeyAcce",0)
           else:
             self.params_memory.put_int("KeyAcce",60)
