@@ -139,25 +139,27 @@ class FrogPilotPlanner:
           self.trafficState = 2
     if self.trafficState == 2:
       if v_ego_kph > 5.0:
-          self.trafficState = 0
+        self.trafficState = 0
+      elif carState.standstill:
+        self.trafficState = 1
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
       self.trafficState = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
 
     if self.params_memory.get_bool("AutoAcce"):
         if self.trafficState == 1:
-          self.stopdrel = self.lead_one.dRel
+          self.stopdrel = max(self.lead_one.dRel,1)
           if self.lead_one.status and (6 < self.lead_one.dRel < 12.0):
             self.trafficState = 2
         if self.trafficState == 2:
           if self.lead_one.status:
-            if (self.stopdrel+1.0 < self.lead_one.dRel < self.stopdrel+7.0):
-              self.params_memory.put_int("KeyAcce",60)
+            if (self.stopdrel+0.8 < self.lead_one.dRel < self.stopdrel+7.0):
+              self.params_memory.put_int("KeyAcce",70)
             else:
               #self.trafficState = 1
               self.params_memory.put_int("KeyAcce",0)
           else:
-            self.params_memory.put_int("KeyAcce",60)
+            self.params_memory.put_int("KeyAcce",70)
         else:
           self.params_memory.put_int("KeyAcce",0)
 
