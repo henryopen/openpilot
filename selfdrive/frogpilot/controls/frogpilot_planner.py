@@ -72,6 +72,7 @@ class FrogPilotPlanner:
     self.autoacce_ct = 0
     self.changelane_ct = 0
     self.changelane = False
+    self.stopdrel = 5.0
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -145,11 +146,12 @@ class FrogPilotPlanner:
 
     if self.params_memory.get_bool("AutoAcce"):
         if self.trafficState == 1:
+          self.stopdrel = self.lead_one.dRel
           if self.lead_one.status and (6 < self.lead_one.dRel < 12.0):
             self.trafficState = 2
         if self.trafficState == 2:
           if self.lead_one.status:
-            if (6 < self.lead_one.dRel < 12.0):
+            if (self.stopdrel+1.0 < self.lead_one.dRel < self.stopdrel+7.0):
               self.params_memory.put_int("KeyAcce",60)
             else:
               #self.trafficState = 1
