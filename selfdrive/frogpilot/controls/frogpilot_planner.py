@@ -140,8 +140,8 @@ class FrogPilotPlanner:
     if self.trafficState == 2:
       if v_ego_kph > 5.0:
         self.trafficState = 0
-      elif carState.standstill:
-        self.trafficState = 1
+      #elif carState.standstill:
+        #self.trafficState = 1
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
       self.trafficState = 0
     self.params_memory.put_int("TrafficState",self.trafficState)
