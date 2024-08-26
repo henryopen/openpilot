@@ -130,7 +130,7 @@ class FrogPilotPlanner:
     self.trafficState1 = int(self.model_length*10)
     self.params_memory.put_int("TrafficState1",self.trafficState1)
 
-    if self.model_length < 10.0 and carState.standstill:
+    if self.model_length < 10.0 and carState.standstill and self.trafficState == 0:
       self.trafficState = 1
       self.stopdrel = max(self.lead_one.dRel,2.0)
     if self.trafficState == 1:
@@ -145,21 +145,25 @@ class FrogPilotPlanner:
     self.params_memory.put_int("TrafficState",self.trafficState)
 
     if self.params_memory.get_bool("AutoAcce"):
+        outputaccel_prev = self.params_memory.get_int("AutoAcce")
         if self.trafficState == 1:
           if self.lead_one.status and (6 < self.lead_one.dRel < 12.0):
-            self.params_memory.put_int("KeyAcce",50)
+            outputaccel = 50
           else:
-            self.params_memory.put_int("KeyAcce",0)
+            outputaccel = 0
         if self.trafficState == 2:
           if self.lead_one.status:
             if (self.stopdrel+0.6 < self.lead_one.dRel < self.stopdrel+7.0):
-              self.params_memory.put_int("KeyAcce",70)
+              outputaccel = 70
             else:
-              self.params_memory.put_int("KeyAcce",0)
+              outputaccel = 0
           else:
-            self.params_memory.put_int("KeyAcce",70)
+            outputaccel = 70
         else:
-          self.params_memory.put_int("KeyAcce",0)
+          outputaccel = 0
+
+        if outputaccel != outputaccel_prev:
+          self.params_memory.put_int("KeyAcce",outputaccel)
 
     self.road_curvature = abs(float(calculate_road_curvature(modelData, v_ego)))
 
