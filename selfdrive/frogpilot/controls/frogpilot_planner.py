@@ -108,7 +108,7 @@ class FrogPilotPlanner:
       self.lane_width_right = 0
 
     if self.params_memory.get_bool("AutoTurn"):
-      if v_cruise-v_ego > 4 and v_ego > 20 and self.lead_one.status and (0.4 < dvratio < 0.8) and not self.changelane:
+      if v_cruise-v_ego > 4 and v_ego > 20 and self.lead_one.status and (0.4 < dvratio < 0.8) and not self.params_memory.get_bool("AutoChange"):
         self.changelane_ct += 1
         if self.changelane_ct > 60:
           if self.params_memory.get_int("KeyTurnLight") == 0:
@@ -116,13 +116,8 @@ class FrogPilotPlanner:
               self.params_memory.put_int("KeyTurnLight", 1)
             elif self.lane_width_right > 3.0 and not carState.rightBlindspot:
               self.params_memory.put_int("KeyTurnLight", 2)
-            self.changelane = True
+            self.params_memory.put_bool("AutoChange", True)
             self.changelane_ct = 0
-          else:
-            self.changelane = False
-            self.changelane_ct = 0
-        else:
-          self.changelane = False
 
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1.0
@@ -136,13 +131,15 @@ class FrogPilotPlanner:
 
     if self.model_length < 10.0 and carState.standstill and self.trafficState == 0:
       self.trafficState = 1
-      self.stopdrel = max(self.lead_one.dRel,2.0)
+      self.stopdrel = max(self.lead_one.dRel,3.0)
     if self.trafficState == 1:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
+      # if self.lead_one.status and self.lead_one.dRel > 6.0 and self.lead_one.dRel < 12.0:
+      #   self.trafficState = 3
     if self.trafficState == 2:
-      if v_ego_kph > 8.0:
+      if v_ego_kph > 8.0 or self.lead_one.dRel < 3.6:
         self.trafficState = 0
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
       self.trafficState = 0
@@ -150,18 +147,16 @@ class FrogPilotPlanner:
 
     if self.params_memory.get_bool("AutoAcce"):
         outputaccel_prev = self.params_memory.get_int("AutoAcce")
-        if self.trafficState == 1:
-          if self.lead_one.status and (6.0 < self.lead_one.dRel < 12.0):
-            outputaccel = 50
-          else:
-            outputaccel = 0
+        # if self.trafficState == 3:
+        #   if self.lead_one.status and self.lead_one.dRel > 3.6:
+        #     outputaccel = 50
+        #   else:
+        #     outputaccel = 0
         if self.trafficState == 2:
           if self.lead_one.status:
-            if (self.stopdrel+0.6 < self.lead_one.dRel < self.stopdrel+7.0):
+            if self.lead_one.dRel > self.stopdrel+0.6 and self.lead_one.dRel < self.stopdrel+7.0:
               outputaccel = 70
             else:
-              outputaccel = 0
-            if self.lead_one.dRel < 2.6:
               outputaccel = 0
           else:
             outputaccel = 70

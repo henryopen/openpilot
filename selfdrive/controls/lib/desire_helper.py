@@ -126,7 +126,7 @@ class DesireHelper:
         self.lane_change_ll_prob = min(self.lane_change_ll_prob + DT_MDL, 1.0)
         if not self.params_memory.get_int("KeyTurnLight") == 0:
           self.params_memory.put_int("KeyTurnLight", 0)
-          #self.params_memory.put_bool("AutoTurn", True)
+        self.params_memory.put_bool("AutoChange", False)
 
         if self.lane_change_ll_prob > 0.99:
           self.lane_change_direction = LaneChangeDirection.none
