@@ -153,15 +153,15 @@ class FrogPilotPlanner:
         if self.trafficState == 1:
           if self.lead_one.status and (6.0 < self.lead_one.dRel < 12.0):
             outputaccel = 50
-            self.stopdrel = max(self.lead_one.dRel,2.0)
           else:
             outputaccel = 0
         if self.trafficState == 2:
           if self.lead_one.status:
             if (self.stopdrel+0.6 < self.lead_one.dRel < self.stopdrel+7.0):
               outputaccel = 70
-              self.stopdrel = max(self.lead_one.dRel,2.0)
             else:
+              outputaccel = 0
+            if self.lead_one.dRel < 2.6:
               outputaccel = 0
           else:
             outputaccel = 70
