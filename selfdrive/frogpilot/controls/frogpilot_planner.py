@@ -136,10 +136,8 @@ class FrogPilotPlanner:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
-      # if self.lead_one.status and self.lead_one.dRel > 6.0 and self.lead_one.dRel < 12.0:
-      #   self.trafficState = 3
     if self.trafficState == 2:
-      if v_ego_kph > 8.0:
+      if v_ego_kph > 8.0 or self.lead_one.dRel < 2.6:
         self.trafficState = 0
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
       self.trafficState = 0
@@ -147,11 +145,11 @@ class FrogPilotPlanner:
 
     if self.params_memory.get_bool("AutoAcce"):
         outputaccel_prev = self.params_memory.get_int("AutoAcce")
-        # if self.trafficState == 3:
-        #   if self.lead_one.status and self.lead_one.dRel > 3.6:
-        #     outputaccel = 50
-        #   else:
-        #     outputaccel = 0
+        if self.trafficState == 1:
+          if self.lead_one.status and self.lead_one.dRel > 6.0 and self.lead_one.dRel < 12.0:
+            outputaccel = 50
+          else:
+            outputaccel = 0
         if self.trafficState == 2:
           if self.lead_one.status:
             if self.lead_one.dRel > self.stopdrel+0.6 and self.lead_one.dRel < self.stopdrel+7.0 and self.lead_one.dRel > 2.6:
