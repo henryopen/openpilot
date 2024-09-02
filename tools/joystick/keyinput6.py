@@ -90,6 +90,7 @@ def main():
                         mem_params.put_int("KeyTurnLight", 0)
                     else:
                         mem_params.put_bool("AutoTurn",True)
+                        mem_params.put_bool("AutoChange",False)
                 elif event.code == 294 :
                         params.put("NavDestination", "{\"latitude\": %f, \"longitude\": %f, \"place_name\": \"%s\"}" % (24.9489724, 121.348714, "\u5c16\u5c71\u8def101\u5df77\u5f04"))
                 elif event.code == 295 :

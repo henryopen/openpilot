@@ -118,6 +118,9 @@ class FrogPilotPlanner:
               self.params_memory.put_int("KeyTurnLight", 2)
             self.params_memory.put_bool("AutoChange", True)
             self.changelane_ct = 0
+      else:
+        self.changelane_ct = 0
+        self.params_memory.put_bool("AutoChange", False)
 
     if frogpilot_toggles.lead_departing_alert and self.tracking_lead and carState.standstill and controlsState.enabled:
       self.lead_departing = self.lead_one.dRel - self.tracking_lead_distance > 1.0
@@ -135,7 +138,7 @@ class FrogPilotPlanner:
         if self.model_length > 39.0:
           self.trafficState = 2
     if self.trafficState == 2:
-      if v_ego_kph > 8.0 or self.lead_one.dRel < 2.6:
+      if v_ego_kph > 8.0:
         self.trafficState = 0
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
       self.trafficState = 0
@@ -153,7 +156,7 @@ class FrogPilotPlanner:
         if self.trafficState == 2:
           if self.lead_one.status:
             if self.lead_one.dRel > self.stopdrel+0.6 and self.lead_one.dRel < self.stopdrel+7.0 and self.lead_one.dRel > 2.6:
-              outputaccel = 60
+              outputaccel = 50
             else:
               outputaccel = 0
           else:
