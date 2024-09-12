@@ -32,7 +32,7 @@ class ConditionalExperimentalMode:
       self.experimental_mode = self.status_value in {2, 4, 6} or carState.standstill and self.experimental_mode
 
   def check_conditions(self, carState, frogpilotNavigation, modelData, tracking_lead, v_ego, v_lead, frogpilot_toggles):
-    if (tracking_lead and v_ego <= frogpilot_toggles.conditional_limit_lead and self.detect_turtle) or (not tracking_lead and v_ego <= frogpilot_toggles.conditional_limit):
+    if (tracking_lead and (v_ego <= frogpilot_toggles.conditional_limit_lead or self.detect_turtle)) or (not tracking_lead and v_ego <= frogpilot_toggles.conditional_limit):
       self.status_value = 7 if tracking_lead else 8
       return True
 
@@ -71,7 +71,7 @@ class ConditionalExperimentalMode:
 
   def detect_turtlef(self, lead_detect, dvratio, v_ego_kph):
     if lead_detect:
-      self.detect_turtle_mac.add_data(dvratio < 0.65 and dvratio > 0.05 and v_ego_kph > 5)
+      self.detect_turtle_mac.add_data(dvratio < 0.5 and dvratio > 0.05 and v_ego_kph > 5)
       self.detect_turtle = self.detect_turtle_mac.get_moving_average() >= 0.5
     else:
       self.detect_turtle_mac.reset_data()
