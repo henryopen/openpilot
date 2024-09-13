@@ -130,8 +130,7 @@ class FrogPilotPlanner:
 
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
 
-    # if self.model_length < 10.0 and carState.standstill and self.trafficState == 0:
-    if carState.standstill and not self.trafficState == 1:
+    if self.model_length < 10.0 and carState.standstill and not self.trafficState == 1:
       self.trafficState = 1
       self.stopdrel = max(self.lead_one.dRel,2.0)
     if self.trafficState == 1:
@@ -154,12 +153,14 @@ class FrogPilotPlanner:
             outputaccel = 30
           else:
             outputaccel = 0
+            self.stopdrel = max(self.lead_one.dRel,2.0)
         elif self.trafficState == 2:
           if self.lead_one.status:
             if self.lead_one.dRel > self.stopdrel+0.6 and self.lead_one.dRel < self.stopdrel+7.0 and self.lead_one.dRel > 2.6 and v_lead > v_ego:
               outputaccel = 40
             else:
               outputaccel = 0
+              self.stopdrel = max(self.lead_one.dRel,2.0)
           else:
             outputaccel = 70
         else:
