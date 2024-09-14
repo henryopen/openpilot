@@ -72,6 +72,7 @@ class FrogPilotPlanner:
     self.changelane_ct = 0
     self.changelane = False
     self.stopdrel = 5.0
+    self.traffic_previous = 0
 
   def update(self, carState, controlsState, frogpilotCarControl, frogpilotCarState, frogpilotNavigation, modelData, radarState, frogpilot_toggles):
     if frogpilot_toggles.radarless_model:
@@ -131,13 +132,16 @@ class FrogPilotPlanner:
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
 
     if self.model_length < 10.0 and carState.standstill and not self.trafficState == 1:
-      self.stopdrel = max(self.lead_one.dRel,2.0)
       self.trafficState = 1
+      if not self.trafficState == self.traffic_previous:
+        self.stopdrel = max(self.lead_one.dRel,2.0)
     if self.trafficState == 1:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
     if self.trafficState == 2:
+      if carState.standstill and not self.trafficState == self.traffic_previous:
+        self.stopdrel = max(self.lead_one.dRel,2.0)
       if v_ego_kph > 8.0:
         self.trafficState = 0
     if not (controlsState.enabled and frogpilotCarState.ecoGear):
@@ -145,6 +149,7 @@ class FrogPilotPlanner:
     self.params_memory.put_int("TrafficState",self.trafficState)
     self.trafficState1 = int(self.stopdrel*100)
     self.params_memory.put_int("TrafficState1",self.trafficState1)
+    self.traffic_previous = self.trafficState
 
     if self.params_memory.get_bool("AutoAcce"):
         outputaccel_prev = self.params_memory.get_int("KeyAcce")
@@ -155,8 +160,8 @@ class FrogPilotPlanner:
             outputaccel = 0
         elif self.trafficState == 2:
           if self.lead_one.status:
-            if self.lead_one.dRel > self.stopdrel+0.6 and self.lead_one.dRel < self.stopdrel+7.0 and self.lead_one.dRel > 2.6 and v_lead > v_ego:
-              outputaccel = 40
+            if self.lead_one.dRel > self.stopdrel+0.5 and self.lead_one.dRel < self.stopdrel+7.0 and self.lead_one.dRel > 2.4 and v_lead > v_ego:
+              outputaccel = 50
             else:
               outputaccel = 0
           else:
