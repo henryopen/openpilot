@@ -135,10 +135,10 @@ def main():
                         out_abs_b = 0
                     mem_params.put_int("KeyAcce", out_abs_b*100)
                 elif event.code == 5:
-                    if event.value < 448:
-                        out_abs_c = interp(event.value, [0,447], [1., 0.])
-                    elif event.value > 576:
-                        out_abs_c = interp(event.value, [577,1023], [0., -1.])
+                    if event.value < 201:
+                        out_abs_c = interp(event.value, [0,200], [1., 0.])
+                    elif event.value > 822:
+                        out_abs_c = interp(event.value, [823,1023], [0., -1.])
                     else:
                         out_abs_c = 0
                     mem_params.put_int("KeyTurn", out_abs_c*100)
