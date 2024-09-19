@@ -67,15 +67,11 @@ class ConditionalExperimentalMode:
     self.road_curvature(road_curvature, v_ego, frogpilot_toggles)
     self.slow_lead(slower_lead, tracking_lead, v_lead, frogpilot_toggles)
     self.stop_sign_and_light(lead_distance, model_length, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles)
-    self.detect_turtlef(lead_detect, dvratio, v_ego_kph)
+    self.detect_turtlef(lead_detect, dvratio, v_ego_kph, lead_distance)
 
-  def detect_turtlef(self, lead_detect, dvratio, v_ego_kph):
+  def detect_turtlef(self, lead_detect, dvratio, v_ego_kph, lead_distance):
     if lead_detect:
-      if v_ego_kph < 65:
-        xratio = 0.2
-      else:
-        xratio = 0.4
-      self.detect_turtle_mac.add_data(dvratio < xratio and dvratio > 0.05 and v_ego_kph > 5)
+      self.detect_turtle_mac.add_data((dvratio < 0.4 and dvratio > 0.05 and v_ego_kph > 5) or lead_distance < 20)
       self.detect_turtle = self.detect_turtle_mac.get_moving_average() >= 0.5
     else:
       self.detect_turtle_mac.reset_data()

@@ -21,7 +21,7 @@ from openpilot.selfdrive.frogpilot.controls.lib.frogpilot_variables import CITY_
 from openpilot.selfdrive.frogpilot.controls.lib.map_turn_speed_controller import MapTurnSpeedController
 from openpilot.selfdrive.frogpilot.controls.lib.speed_limit_controller import SpeedLimitController
 
-A_CRUISE_MIN_ECO = A_CRUISE_MIN / 4
+A_CRUISE_MIN_ECO = A_CRUISE_MIN / 2
 A_CRUISE_MIN_SPORT = A_CRUISE_MIN / 2
                   # MPH = [ 0.,  11,  22,  34,  45,  56,  89]
                   # KPH = [ 0.,  18,  36,  54,  72,  90,  144]
@@ -134,14 +134,14 @@ class FrogPilotPlanner:
 
     if self.model_length < 10.0 and carState.standstill and not self.trafficState == 1:
       self.trafficState = 1
-      if not self.trafficState == self.traffic_previous:
+      if not self.trafficState == self.traffic_previous or self.lead_one.dRel < self.stopdrel:
         self.stopdrel = max(self.lead_one.dRel,2.0)
     if self.trafficState == 1:
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
     if self.trafficState == 2:
-      if carState.standstill and not self.trafficState == self.traffic_previous:
+      if (carState.standstill and not self.trafficState == self.traffic_previous) or self.lead_one.dRel < self.stopdrel:
         self.stopdrel = max(self.lead_one.dRel,2.0)
       if v_ego_kph > 8.0:
         self.trafficState = 0
@@ -225,7 +225,7 @@ class FrogPilotPlanner:
 
     if controlsState.experimentalMode:
       self.min_accel = ACCEL_MIN
-    elif min(self.mtsc_target, self.vtsc_target) < v_cruise:
+    elif v_cruise == 0:
       self.min_accel = A_CRUISE_MIN
     elif frogpilot_toggles.map_deceleration and (eco_gear or sport_gear):
       if eco_gear:
