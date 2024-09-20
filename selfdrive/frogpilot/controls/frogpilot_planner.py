@@ -21,7 +21,7 @@ from openpilot.selfdrive.frogpilot.controls.lib.frogpilot_variables import CITY_
 from openpilot.selfdrive.frogpilot.controls.lib.map_turn_speed_controller import MapTurnSpeedController
 from openpilot.selfdrive.frogpilot.controls.lib.speed_limit_controller import SpeedLimitController
 
-A_CRUISE_MIN_ECO = A_CRUISE_MIN / 2
+A_CRUISE_MIN_ECO = A_CRUISE_MIN
 A_CRUISE_MIN_SPORT = A_CRUISE_MIN / 2
                   # MPH = [ 0.,  11,  22,  34,  45,  56,  89]
                   # KPH = [ 0.,  18,  36,  54,  72,  90,  144]
@@ -137,6 +137,8 @@ class FrogPilotPlanner:
       if not self.trafficState == self.traffic_previous or self.lead_one.dRel < self.stopdrel:
         self.stopdrel = max(self.lead_one.dRel,2.0)
     if self.trafficState == 1:
+      if self.lead_one.dRel < self.stopdrel:
+        self.stopdrel = max(self.lead_one.dRel,2.0)
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
@@ -155,13 +157,13 @@ class FrogPilotPlanner:
     if self.params_memory.get_bool("AutoAcce"):
         outputaccel_prev = self.params_memory.get_int("KeyAcce")
         if self.trafficState == 1:
-          if self.lead_one.status and self.lead_one.dRel > 6.5 and self.lead_one.dRel < 12.0:
+          if self.lead_one.status and self.lead_one.dRel > 7.0 and self.lead_one.dRel < 12.0:
             outputaccel = 30
           else:
             outputaccel = 0
         elif self.trafficState == 2:
           if self.lead_one.status:
-            if self.lead_one.dRel > self.stopdrel+0.5 and self.lead_one.dRel < self.stopdrel+7.0 and self.lead_one.dRel > 2.4 and v_lead > v_ego:
+            if self.lead_one.dRel > self.stopdrel+0.4 and self.lead_one.dRel < self.stopdrel+7.0 and self.lead_one.dRel > 2.4 and v_lead > v_ego:
               outputaccel = 55
             else:
               outputaccel = 0
