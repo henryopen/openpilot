@@ -86,8 +86,8 @@ def main():
         ma22 = mp.get_int("AKvs")
         if xa21 / 10 > 65.8:
             if ma21 == 0:
-                pa.put_int("ALTvol", 770)
-                ma21 = 770
+                pa.put_int("ALTvol", 800)
+                ma21 = 800
             else:
                 pa.put_int("ALTvol", (ma21/10 - ma22 / 100) * 10)
             a21 = (ma21/10 - ma22 / 100)
