@@ -201,7 +201,7 @@ class LongitudinalPlanner:
     if self.mpc.mode == 'acc':
       accel_limits_turns = limit_accel_in_turns(v_ego, sm['carState'].steeringAngleDeg, accel_limits, self.CP)
     else:
-      accel_limits_turns = [ACCEL_MIN, ACCEL_MAX]
+      accel_limits_turns = [ACCEL_MIN, accel_limits[1]]
 
     if reset_state:
       self.v_desired_filter.x = v_ego
