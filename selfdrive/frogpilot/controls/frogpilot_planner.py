@@ -90,6 +90,7 @@ class FrogPilotPlanner:
     v_ego = max(carState.vEgo, 0)
     v_ego_kph = v_ego *3.6
     v_lead = self.lead_one.vLead
+    alight=self.params_memory.get_int("ALight")
 
     distance_offset = max(frogpilot_toggles.increased_stopping_distance + min(CITY_SPEED_LIMIT - v_ego, 0), 0) if not frogpilotCarState.trafficModeActive else 0
     lead_distance = self.lead_one.dRel - distance_offset
@@ -99,7 +100,7 @@ class FrogPilotPlanner:
     self.params_memory.put_int("AdvRatio",(self.lead_one.dRel/np.where(v_ego < 1, 1, v_ego))*100)
 
     if frogpilot_toggles.conditional_experimental_mode and controlsState.enabled:
-      self.cem.update(carState, frogpilotNavigation, self.lead_one, modelData, self.model_length, self.road_curvature, self.slower_lead, self.tracking_lead, self.v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, self.lead_one.status)
+      self.cem.update(carState, frogpilotNavigation, self.lead_one, modelData, self.model_length, self.road_curvature, self.slower_lead, self.tracking_lead, self.v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, self.lead_one.status, alight)
 
     check_lane_width = frogpilot_toggles.adjacent_lanes or frogpilot_toggles.blind_spot_path or frogpilot_toggles.lane_detection
     if check_lane_width and v_ego >= frogpilot_toggles.minimum_lane_change_speed:
@@ -157,7 +158,7 @@ class FrogPilotPlanner:
     if self.params_memory.get_bool("AutoAcce"):
         outputaccel_prev = self.params_memory.get_int("KeyAcce")
         if self.trafficState == 1:
-          if self.lead_one.status and self.lead_one.dRel > 7.0 and self.lead_one.dRel < 12.0:
+          if self.lead_one.status and self.lead_one.dRel > self.stopdrel+2 and self.lead_one.dRel < 12.0:
             outputaccel = 15
           else:
             outputaccel = 0

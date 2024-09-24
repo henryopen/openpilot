@@ -18,14 +18,14 @@ class ConditionalExperimentalMode:
     self.stop_light_mac = MovingAverageCalculator()
     self.detect_turtle_mac = MovingAverageCalculator()
 
-  def update(self, carState, frogpilotNavigation, lead, modelData, model_length, road_curvature, slower_lead, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, lead_detect):
+  def update(self, carState, frogpilotNavigation, lead, modelData, model_length, road_curvature, slower_lead, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, lead_detect, alight):
     if frogpilot_toggles.experimental_mode_via_press:
       self.status_value = self.params_memory.get_int("CEStatus")
     else:
       self.status_value = 0
 
     if self.status_value not in {1, 2, 3, 4, 5, 6} and not carState.standstill:
-      self.update_conditions(lead.dRel, model_length, road_curvature, slower_lead, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, lead_detect)
+      self.update_conditions(lead.dRel, model_length, road_curvature, slower_lead, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, lead_detect, alight)
       self.experimental_mode = self.check_conditions(carState, frogpilotNavigation, modelData, tracking_lead, v_ego, v_lead, frogpilot_toggles)
       self.params_memory.put_int("CEStatus", self.status_value if self.experimental_mode else 0)
     else:
@@ -63,15 +63,16 @@ class ConditionalExperimentalMode:
 
     return False
 
-  def update_conditions(self, lead_distance, model_length, road_curvature, slower_lead, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, lead_detect):
+  def update_conditions(self, lead_distance, model_length, road_curvature, slower_lead, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles, dvratio, v_ego_kph, lead_detect, alight):
     self.road_curvature(road_curvature, v_ego, frogpilot_toggles)
     self.slow_lead(slower_lead, tracking_lead, v_lead, frogpilot_toggles)
     self.stop_sign_and_light(lead_distance, model_length, tracking_lead, v_cruise, v_ego, v_lead, frogpilot_toggles)
-    self.detect_turtlef(lead_detect, dvratio, v_ego_kph, lead_distance)
+    self.detect_turtlef(lead_detect, dvratio, v_ego_kph, lead_distance, alight)
 
-  def detect_turtlef(self, lead_detect, dvratio, v_ego_kph, lead_distance):
+  def detect_turtlef(self, lead_detect, dvratio, v_ego_kph, lead_distance, alight):
+    xratio = 0.6 if alight < 40 else 0.5 if alight < 80 else 0.4
     if lead_detect:
-      self.detect_turtle_mac.add_data((dvratio < 0.4 and dvratio > 0.05 and v_ego_kph > 5.0) or lead_distance < 20.0)
+      self.detect_turtle_mac.add_data((dvratio < xratio and dvratio > 0.05 and v_ego_kph > 5.0) or lead_distance < 20.0)
       self.detect_turtle = self.detect_turtle_mac.get_moving_average() >= 0.5
     else:
       self.detect_turtle_mac.reset_data()
