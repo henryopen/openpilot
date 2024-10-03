@@ -135,16 +135,16 @@ class FrogPilotPlanner:
 
     if self.model_length < 10.0 and carState.standstill and not self.trafficState == 1:
       self.trafficState = 1
-      if not self.trafficState == self.traffic_previous:
+      if self.lead_one.status and not self.trafficState == self.traffic_previous:
         self.stopdrel = max(self.lead_one.dRel,2.0)
     if self.trafficState == 1:
-      if self.lead_one.dRel < self.stopdrel or self.lead_one.dRel > self.stopdrel+1.0:
+      if self.lead_one.status and (self.lead_one.dRel < self.stopdrel or self.lead_one.dRel > self.stopdrel+1.0):
         self.stopdrel = max(self.lead_one.dRel,2.0)
       if len(modelData.position.x) == TRAJECTORY_SIZE and len(modelData.orientation.x) == TRAJECTORY_SIZE:
         if self.model_length > 39.0:
           self.trafficState = 2
     if self.trafficState == 2:
-      if (carState.standstill and not self.trafficState == self.traffic_previous) or self.lead_one.dRel < self.stopdrel:
+      if (self.lead_one.status and carState.standstill and not self.trafficState == self.traffic_previous) or self.lead_one.dRel < self.stopdrel:
         self.stopdrel = max(self.lead_one.dRel,2.0)
       if v_ego_kph > 8.0:
         self.trafficState = 0
