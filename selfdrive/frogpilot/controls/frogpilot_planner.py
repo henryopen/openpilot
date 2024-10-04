@@ -134,9 +134,9 @@ class FrogPilotPlanner:
     self.model_length = modelData.position.x[TRAJECTORY_SIZE - 1]
 
     if self.model_length < 10.0 and carState.standstill and not self.trafficState == 1:
-      self.trafficState = 1
       if self.lead_one.status and not self.trafficState == self.traffic_previous:
         self.stopdrel = max(self.lead_one.dRel,2.0)
+      self.trafficState = 1
     if self.trafficState == 1:
       if self.lead_one.status and (self.lead_one.dRel < self.stopdrel or self.lead_one.dRel > self.stopdrel+1.0):
         self.stopdrel = max(self.lead_one.dRel,2.0)
@@ -144,7 +144,7 @@ class FrogPilotPlanner:
         if self.model_length > 39.0:
           self.trafficState = 2
     if self.trafficState == 2:
-      if (self.lead_one.status and carState.standstill and not self.trafficState == self.traffic_previous) or self.lead_one.dRel < self.stopdrel:
+      if carState.standstill and not self.trafficState == self.traffic_previous and self.lead_one.status and self.lead_one.dRel < self.stopdrel:
         self.stopdrel = max(self.lead_one.dRel,2.0)
       if v_ego_kph > 8.0:
         self.trafficState = 0
@@ -158,7 +158,7 @@ class FrogPilotPlanner:
     if self.params_memory.get_bool("AutoAcce"):
         outputaccel_prev = self.params_memory.get_int("KeyAcce")
         if self.trafficState == 1:
-          if self.lead_one.status and self.stopdrel > 6 and self.lead_one.dRel < 12.0:
+          if self.lead_one.status and self.stopdrel > 7.0 and self.lead_one.dRel < 12.0:
             outputaccel = 15
           else:
             outputaccel = 0
