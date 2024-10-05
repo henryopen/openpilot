@@ -423,7 +423,7 @@ class CarInterfaceBase(ABC):
     fp_ret.distanceLongPressed = self.frogpilot_distance_functions(distance_button, self.prev_distance_button, frogpilot_toggles)
     fp_ret.ecoGear |= ret.gearShifter in (GearShifter.eco, GearShifter.drive)
     fp_ret.sportGear |= ret.gearShifter == GearShifter.sport
-    fp_ret.trafficModeActive = frogpilot_toggles.traffic_mode and (self.traffic_mode_active or ret.vEgo * 3.6 < 65)
+    fp_ret.trafficModeActive = frogpilot_toggles.traffic_mode and (self.traffic_mode_active or ret.vEgo * 3.6 < 55.0)
     self.prev_distance_button = distance_button
 
     # copy back for next iteration
