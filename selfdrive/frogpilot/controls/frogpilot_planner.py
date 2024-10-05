@@ -158,7 +158,7 @@ class FrogPilotPlanner:
     if self.params_memory.get_bool("AutoAcce"):
         outputaccel_prev = self.params_memory.get_int("KeyAcce")
         if self.trafficState == 1:
-          if self.lead_one.status and self.stopdrel > 7.0 and self.lead_one.dRel < 12.0:
+          if self.lead_one.status and self.stopdrel > 6.5 and self.lead_one.dRel < 12.0:
             outputaccel = 15
           else:
             outputaccel = 0

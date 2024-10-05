@@ -70,9 +70,9 @@ class ConditionalExperimentalMode:
     self.detect_turtlef(lead_detect, dvratio, v_ego_kph, lead_distance, alight)
 
   def detect_turtlef(self, lead_detect, dvratio, v_ego_kph, lead_distance, alight):
-    xratio = 0.6 if alight < 40 else 0.5 if alight < 80 else 0.4
+    xratio = 0.65 if alight < 40 else 0.55 if alight < 80 else 0.45
     if lead_detect:
-      self.detect_turtle_mac.add_data((dvratio < xratio and dvratio > 0.05 and v_ego_kph > 5.0) or lead_distance < 20.0)
+      self.detect_turtle_mac.add_data((dvratio < xratio and dvratio > 0.05 and v_ego_kph > 5.0) or lead_distance < 15.0)
       self.detect_turtle = self.detect_turtle_mac.get_moving_average() >= 0.5
     else:
       self.detect_turtle_mac.reset_data()
