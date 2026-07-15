@@ -1,0 +1,86 @@
+from types import SimpleNamespace
+
+import pytest
+
+from cereal import custom
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelControllerState, AccelProfile
+from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP, LongitudinalPlanSource
+
+
+def test_legacy_profile_enum_keeps_toyota_importable():
+  expected = {"eco": 0, "normal": 1, "sport": 2}
+  legacy_profile = custom.LongitudinalPlanSP.AccelerationPersonality
+
+  assert legacy_profile.schema.enumerants == expected
+  assert custom.LongitudinalPlanSP.AccelController.Profile.schema.enumerants == expected
+
+  from opendbc.car.toyota.carstate import AccelPersonality, CarState
+
+  assert AccelPersonality.schema.enumerants == expected
+  assert CarState.__module__ == "opendbc.car.toyota.carstate"
+
+
+def test_shadow_target_telemetry_publishes_filtered_cap():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.source = LongitudinalPlanSource.cruise
+  planner.output_v_target = 20.0
+  planner.output_a_target = 0.0
+  planner.events_sp = SimpleNamespace(to_msg=list)
+  planner.dec = SimpleNamespace(mode=lambda: "acc", enabled=lambda: False, active=lambda: False)
+  planner.accel_controller_result = SimpleNamespace(
+    enabled=True,
+    active=False,
+    shadow_active=True,
+    profile=AccelProfile.normal,
+    state=AccelControllerState.inactive,
+    shadow_state=AccelControllerState.restrict,
+    base_speed=20.0,
+    raw_energy_cap=15.0,
+    live_filtered_cap=99.0,
+    shadow_filtered_cap=12.5,
+    shadow_pace=7.25,
+    selected_lead=1,
+    usable_gap=30.0,
+    closing_speed=5.0,
+    required_decel=0.4,
+  )
+  planner.scc = SimpleNamespace(
+    vision=SimpleNamespace(
+      state=0,
+      output_v_target=20.0,
+      output_a_target=0.0,
+      current_lat_acc=0.0,
+      max_pred_lat_acc=0.0,
+      is_enabled=False,
+      is_active=False,
+    ),
+    map=SimpleNamespace(state=0, output_v_target=20.0, output_a_target=0.0, is_enabled=False, is_active=False),
+  )
+  planner.resolver = SimpleNamespace(
+    speed_limit=0.0,
+    speed_limit_last=0.0,
+    speed_limit_final=0.0,
+    speed_limit_final_last=0.0,
+    speed_limit_valid=False,
+    speed_limit_last_valid=False,
+    speed_limit_offset=0.0,
+    distance=0.0,
+    source=custom.LongitudinalPlanSP.SpeedLimit.Source.none,
+  )
+  planner.sla = SimpleNamespace(
+    state=custom.LongitudinalPlanSP.SpeedLimit.AssistState.disabled,
+    is_enabled=False,
+    is_active=False,
+    output_v_target=20.0,
+    output_a_target=0.0,
+  )
+  planner.e2e_alerts_helper = SimpleNamespace(green_light_alert=False, lead_depart_alert=False)
+
+  sent = {}
+  sm = SimpleNamespace(all_checks=lambda service_list: True)
+  pm = SimpleNamespace(send=lambda service, message: sent.update({service: message}))
+  planner.publish_longitudinal_plan_sp(sm, pm)
+
+  telemetry = sent["longitudinalPlanSP"].longitudinalPlanSP.accelController
+  assert telemetry.vTargetShadow == pytest.approx(planner.accel_controller_result.shadow_filtered_cap)
+  assert telemetry.vTargetShadow != pytest.approx(planner.accel_controller_result.shadow_pace)

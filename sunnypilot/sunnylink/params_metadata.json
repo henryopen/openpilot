@@ -1,4 +1,26 @@
 {
+  "AccelPersonality": {
+    "title": "Acceleration Profile",
+    "description": "Eco slows earliest and recovers gently, Normal balances comfort and response, and Sport reacts and recovers more quickly.",
+    "options": [
+      {
+        "value": 0,
+        "label": "Eco"
+      },
+      {
+        "value": 1,
+        "label": "Normal"
+      },
+      {
+        "value": 2,
+        "label": "Sport"
+      }
+    ]
+  },
+  "AccelPersonalityEnabled": {
+    "title": "Enable Accel Controller",
+    "description": "Begin slowing early and smoothly behind lead vehicles. Stock longitudinal control retains braking and stopping authority."
+  },
   "AccessToken": {
     "title": "AccessTokenIsNice",
     "description": ""

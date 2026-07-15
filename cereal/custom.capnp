@@ -194,6 +194,7 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   aTarget @5 :Float32;
   events @6 :List(OnroadEventSP.Event);
   e2eAlerts @7 :E2eAlerts;
+  accelController @8 :AccelController;
 
   struct DynamicExperimentalControl {
     state @0 :DynamicExperimentalControlState;
@@ -295,6 +296,45 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
   struct E2eAlerts {
     greenLightAlert @0 :Bool;
     leadDepartAlert @1 :Bool;
+  }
+
+  struct AccelController {
+    enabled @0 :Bool;
+    active @1 :Bool;
+    shadowOnly @2 :Bool;
+    profile @3 :Profile;
+    state @4 :State;
+    vTargetBase @5 :Float32;
+    vTargetRaw @6 :Float32;
+    vTargetFiltered @7 :Float32;
+    vTargetShadow @8 :Float32;
+    leadIndex @9 :Int8 = -1;
+    usableGap @10 :Float32;
+    closingSpeed @11 :Float32;
+    requiredDecel @12 :Float32;
+
+    enum Profile {
+      eco @0;
+      normal @1;
+      sport @2;
+    }
+
+    enum State {
+      inactive @0;
+      free @1;
+      restrict @2;
+      hold @3;
+      release @4;
+      stopHold @5;
+    }
+  }
+
+  # Compatibility type for vehicle integrations that map physical drive modes
+  # onto AccelPersonality. New controller telemetry uses AccelController.Profile.
+  enum AccelerationPersonality {
+    eco @0;
+    normal @1;
+    sport @2;
   }
 }
 

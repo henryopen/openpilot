@@ -8,7 +8,11 @@ See the LICENSE.md file in the root directory for more details.
 from cereal import messaging, custom
 from opendbc.car import structs
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
+from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+from openpilot.sunnypilot import get_sanitize_int_param
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelController, AccelProfile
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -22,7 +26,8 @@ LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
 
 class LongitudinalPlannerSP:
-  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
+  def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc, dt: float = DT_MDL):
+    self.params = Params()
     self.events_sp = EventsSP()
     self.resolver = SpeedLimitResolver()
     self.dec = DynamicExperimentalController(CP, mpc)
@@ -32,9 +37,25 @@ class LongitudinalPlannerSP:
     self.generation = int(model_bundle.generation) if (model_bundle := get_active_bundle()) else None
     self.source = LongitudinalPlanSource.cruise
     self.e2e_alerts_helper = E2EAlertsHelper()
+    self.accel_controller = AccelController(CP, dt=dt)
+    self.accel_controller_result = None
+
+    self._param_read_frames = max(1, int(round(1.0 / dt)))
+    self._param_frame = 0
+    self.accel_personality_enabled = False
+    self.accel_personality = int(AccelProfile.normal)
 
     self.output_v_target = 0.
     self.output_a_target = 0.
+
+  def _read_accel_controller_params(self) -> None:
+    if self._param_frame % self._param_read_frames == 0:
+      self.accel_personality_enabled = self.params.get_bool("AccelPersonalityEnabled")
+      self.accel_personality = get_sanitize_int_param(
+        "AccelPersonality", int(AccelProfile.eco), int(AccelProfile.sport), self.params,
+      )
+
+    self._param_frame += 1
 
   def is_e2e(self, sm: messaging.SubMaster) -> bool:
     experimental_mode = sm['selfdriveState'].experimentalMode
@@ -73,7 +94,29 @@ class LongitudinalPlannerSP:
     self.output_v_target, self.output_a_target = targets[self.source]
     return self.output_v_target, self.output_a_target
 
+  def update_accel_controller(self, sm: messaging.SubMaster, base_speed: float, engaged: bool, cruise_initialized: bool,
+                              acc_selected: bool, planner_speed: float, previous_mpc_source, previous_should_stop: bool,
+                              controller_fault: bool = False) -> float:
+    self.accel_controller_result = self.accel_controller.update(
+      sm['radarState'],
+      base_speed=base_speed,
+      v_ego=sm['carState'].vEgo,
+      a_ego=sm['carState'].aEgo,
+      profile=self.accel_personality,
+      follow_personality=sm['selfdriveState'].personality,
+      enabled=self.accel_personality_enabled,
+      acc_selected=acc_selected,
+      engaged=engaged,
+      cruise_initialized=cruise_initialized,
+      previous_mpc_source=previous_mpc_source,
+      planner_speed=planner_speed,
+      previous_should_stop=previous_should_stop,
+      controller_fault=controller_fault,
+    )
+    return self.accel_controller_result.target_speed
+
   def update(self, sm: messaging.SubMaster) -> None:
+    self._read_accel_controller_params()
     self.events_sp.clear()
     self.dec.update(sm)
     self.e2e_alerts_helper.update(sm, self.events_sp)
@@ -94,6 +137,24 @@ class LongitudinalPlannerSP:
     dec.state = DecState.blended if self.dec.mode() == 'blended' else DecState.acc
     dec.enabled = self.dec.enabled()
     dec.active = self.dec.active()
+
+    # Accel Controller relative-pace governor
+    if self.accel_controller_result is not None:
+      result = self.accel_controller_result
+      accel_controller = longitudinalPlanSP.accelController
+      accel_controller.enabled = result.enabled
+      accel_controller.active = result.active
+      accel_controller.shadowOnly = result.shadow_active and not result.active
+      accel_controller.profile = int(result.profile)
+      accel_controller.state = int(result.state if result.active else result.shadow_state)
+      accel_controller.vTargetBase = float(result.base_speed)
+      accel_controller.vTargetRaw = float(result.raw_energy_cap)
+      accel_controller.vTargetFiltered = float(result.live_filtered_cap)
+      accel_controller.vTargetShadow = float(result.shadow_filtered_cap)
+      accel_controller.leadIndex = result.selected_lead
+      accel_controller.usableGap = float(result.usable_gap)
+      accel_controller.closingSpeed = float(result.closing_speed)
+      accel_controller.requiredDecel = float(result.required_decel)
 
     # Smart Cruise Control
     smartCruiseControl = longitudinalPlanSP.smartCruiseControl

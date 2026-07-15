@@ -51,7 +51,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
   def __init__(self, CP, CP_SP, init_v=0.0, init_a=0.0, dt=DT_MDL):
     self.CP = CP
     self.mpc = LongitudinalMpc(dt=dt)
-    LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc)
+    LongitudinalPlannerSP.__init__(self, self.CP, CP_SP, self.mpc, dt=dt)
     self.fcw = False
     self.dt = dt
     self.allow_throttle = True
@@ -133,6 +133,14 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
     v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
 
+    # DEC is the sole ACC/e2e authority. Cache its decision once for both the governor and output arbitration.
+    is_e2e = self.is_e2e(sm)
+    v_cruise = LongitudinalPlannerSP.update_accel_controller(
+      self, sm, v_cruise, engaged=not reset_state, cruise_initialized=v_cruise_initialized, acc_selected=not is_e2e,
+      planner_speed=self.v_desired_filter.x, previous_mpc_source=self.mpc.source, previous_should_stop=self.output_should_stop,
+      controller_fault=self.mpc.solution_status != 0,
+    )
+
     if force_slow_decel:
       v_cruise = 0.0
 
@@ -160,7 +168,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    if self.is_e2e(sm):
+    if is_e2e:
       output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
