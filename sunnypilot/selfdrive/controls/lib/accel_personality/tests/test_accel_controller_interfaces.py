@@ -5,7 +5,7 @@ import pytest
 
 from cereal import custom, messaging
 from opendbc.car.interfaces import ACCEL_MAX, ACCEL_MIN
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import N, LongitudinalMpc
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelControllerState, AccelProfile
 from openpilot.sunnypilot.selfdrive.controls.lib.longitudinal_planner import LongitudinalPlannerSP, LongitudinalPlanSource
 
@@ -23,21 +23,64 @@ def test_legacy_profile_enum_keeps_toyota_importable():
   assert CarState.__module__ == "opendbc.car.toyota.carstate"
 
 
-def test_mpc_profile_shapes_only_the_cruise_reference():
+def test_mpc_profile_preshapes_accel_bound_and_reachable_cruise_reference():
   radar_state = messaging.new_message('radarState').radarState
   mpc = LongitudinalMpc()
   mpc.set_cur_state(10.0, 0.0)
   mpc.run = lambda: None
+  accel_max = np.linspace(0.4, 1.0, N + 1)
 
-  mpc.update(radar_state, 30.0, cruise_accel_max=0.5)
+  mpc.update(radar_state, 30.0, accel_max=accel_max, shape_accel_max_in_cruise=True)
   shaped_params = mpc.params.copy()
   mpc.update(radar_state, 30.0)
   stock_params = mpc.params.copy()
-  mpc.update(radar_state, 30.0, cruise_accel_max=np.inf)
 
   np.testing.assert_array_equal(shaped_params[:, 0], ACCEL_MIN)
-  np.testing.assert_array_equal(shaped_params[:, 1], ACCEL_MAX)
+  np.testing.assert_array_equal(shaped_params[:, 1], accel_max)
   assert np.any(shaped_params[:, 2] < stock_params[:, 2])
+  np.testing.assert_array_equal(shaped_params[:, 3:], stock_params[:, 3:])
+  np.testing.assert_array_equal(stock_params[:, 0], ACCEL_MIN)
+  np.testing.assert_array_equal(stock_params[:, 1], ACCEL_MAX)
+
+
+def test_mpc_preshape_keeps_current_accel_feasible_only_at_initial_node():
+  radar_state = messaging.new_message('radarState').radarState
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(10.0, 0.8)
+  mpc.run = lambda: None
+
+  mpc.update(radar_state, 30.0, accel_max=np.full(N + 1, 0.3))
+  shaped_params = mpc.params.copy()
+  mpc.update(radar_state, 30.0)
+  stock_params = mpc.params.copy()
+
+  assert shaped_params[0, 1] == pytest.approx(0.8)
+  np.testing.assert_array_equal(shaped_params[1:, 1], 0.3)
+  np.testing.assert_array_equal(shaped_params[:, 0], ACCEL_MIN)
+  np.testing.assert_array_equal(shaped_params[:, 2:], stock_params[:, 2:])
+
+
+def test_mpc_last_solve_failure_survives_internal_solver_reset():
+  mpc = LongitudinalMpc()
+  mpc.last_solution_status = 3
+
+  mpc.reset()
+
+  assert mpc.solution_status == 0
+  assert mpc.last_solution_status == 3
+
+
+@pytest.mark.parametrize("accel_max", [None, np.inf, np.nan, np.ones(N), np.r_[np.ones(N), np.nan]])
+def test_mpc_missing_or_invalid_preshape_is_exact_stock(accel_max):
+  radar_state = messaging.new_message('radarState').radarState
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(10.0, 0.0)
+  mpc.run = lambda: None
+  mpc.update(radar_state, 30.0)
+  stock_params = mpc.params.copy()
+
+  mpc.update(radar_state, 30.0, accel_max=accel_max)
+
   np.testing.assert_array_equal(mpc.params, stock_params)
 
 
@@ -67,8 +110,8 @@ def test_shadow_target_telemetry_publishes_filtered_cap():
     required_decel=0.4,
     profile_accel_max=1.0,
     effective_accel_max=0.85,
-    output_accel_max=0.85,
-    mpc_cruise_accel_max=0.85,
+    mpc_accel_max=tuple(np.full(N + 1, 0.85)),
+    mpc_shape_cruise=True,
   )
   planner.scc = SimpleNamespace(
     vision=SimpleNamespace(

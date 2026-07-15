@@ -36,18 +36,19 @@ class AccelControllerState(IntEnum):
 @dataclass(frozen=True)
 class ProfileConfig:
   comfort_decel: float
+  release_rate: float
   release_confirm: float
 
 
 PROFILE_CONFIGS = {
-  AccelProfile.eco: ProfileConfig(comfort_decel=0.25, release_confirm=0.50),
-  AccelProfile.normal: ProfileConfig(comfort_decel=0.35, release_confirm=0.35),
-  AccelProfile.sport: ProfileConfig(comfort_decel=0.50, release_confirm=0.20),
+  AccelProfile.eco: ProfileConfig(comfort_decel=0.25, release_rate=0.65, release_confirm=0.50),
+  AccelProfile.normal: ProfileConfig(comfort_decel=0.335, release_rate=0.85, release_confirm=0.35),
+  AccelProfile.sport: ProfileConfig(comfort_decel=0.50, release_rate=1.10, release_confirm=0.20),
 }
 
 ACCEL_PROFILE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
 ACCEL_PROFILE_MAX_V = {
-  AccelProfile.eco: [1.00, 0.75, 0.45, 0.30],
+  AccelProfile.eco: [0.95, 0.70, 0.42, 0.28],
   AccelProfile.normal: [1.30, 1.00, 0.65, 0.45],
   AccelProfile.sport: [1.55, 1.15, 0.78, 0.58],
 }
@@ -61,10 +62,14 @@ STOP_HOLD_CAP = 0.50
 STOPPED_LEAD_SPEED = 0.30
 STOP_HOLD_EXIT_CAP = 0.80
 STOP_HOLD_EXIT_FRAMES = 4
-CLEAR_ROAD_PROFILE_SPEED = 0.10
+CLEAR_ROAD_PROFILE_SPEED = 0.20
 ACCEL_LIMIT_JERK = 1.0
 LAUNCH_ACCEL_JERK = 3.0
 LAUNCH_PACE_RATE = 5.0
+MPC_LAUNCH_BOUND_NODES = 2
+MPC_STOP_WARM_BLEND = 0.0
+MPC_CONFIRM_WARM_BLEND = 0.10
+MPC_DEPART_WARM_BLEND = 0.25
 
 
 @dataclass(frozen=True)
@@ -87,8 +92,8 @@ class AccelControllerResult:
   profile: AccelProfile
   profile_accel_max: float
   effective_accel_max: float
-  output_accel_max: float
-  mpc_cruise_accel_max: float
+  mpc_accel_max: tuple[float, ...] | None
+  mpc_shape_cruise: bool
   state: AccelControllerState
   shadow_state: AccelControllerState
   base_speed: float
@@ -247,7 +252,6 @@ class AccelController:
     base_speed: float,
     v_ego: float,
     config: ProfileConfig,
-    accel_rate: float,
     previous_mpc_source,
     planner_speed: float,
     previous_should_stop: bool,
@@ -329,7 +333,7 @@ class AccelController:
       release_allowed = path.relief_time >= config.release_confirm
 
     if release_allowed:
-      pace_rate = LAUNCH_PACE_RATE if path.departing_from_stop else accel_rate
+      pace_rate = LAUNCH_PACE_RATE if path.departing_from_stop else config.release_rate
       path.pace = min(ceiling, path.pace + pace_rate * self.dt)
       path.state = AccelControllerState.release
     elif relief <= RELIEF_DEADBAND:
@@ -345,20 +349,22 @@ class AccelController:
     planner_accel: float,
     profile_accel_max: float,
   ) -> tuple[float, float]:
-    """Return the raw stock/controller minimum and the controller-owned positive ceiling."""
+    """Return telemetry effective max and the controller's pre-MPC positive bound."""
     requested_limit = float(np.clip(profile_accel_max, 0.0, ACCEL_MAX))
 
     if path.state == AccelControllerState.stopHold:
       path.accel_limit = 0.0
-      # Keep stock MPC warm while the output ceiling prevents an early launch
-      # during the four-frame lead-departure confirmation.
       return min(stock_accel_max, 0.0), 0.0
 
     if path.departing_from_stop:
-      # Start commanding acceleration on the first confirmed frame, then open
-      # quickly enough to avoid launch delay without a step in requested accel.
-      previous_limit = path.accel_limit if path.accel_limit is not None else 0.0
-      path.accel_limit = min(requested_limit, previous_limit + LAUNCH_ACCEL_JERK * self.dt)
+      if path.stopped_lead_hold:
+        # A confirmed lead departure opens quickly but continuously from zero.
+        previous_limit = path.accel_limit if path.accel_limit is not None else 0.0
+        path.accel_limit = min(requested_limit, previous_limit + LAUNCH_ACCEL_JERK * self.dt)
+      else:
+        # The MPC stays completely stock for the first few centimeters of a
+        # clear-road launch. Seed the selected table value for a smooth handoff.
+        path.accel_limit = requested_limit
       return min(stock_accel_max, path.accel_limit), path.accel_limit
 
     if path.accel_limit is None:
@@ -372,6 +378,53 @@ class AccelController:
 
     effective_limit = min(stock_accel_max, path.accel_limit)
     return effective_limit, path.accel_limit
+
+  def _build_mpc_accel_max(
+    self,
+    path: _PacePath,
+    envelope: EnergyEnvelope,
+    filtered_cap: float,
+    previous_mpc_source,
+    accel_limit: float,
+  ) -> tuple[float, ...] | None:
+    """Build a short pre-MPC bound while leaving the future horizon stock-warm."""
+    # Stock tip-in removes launch delay and gives every profile the same initial
+    # response. The lookup table becomes active once the car is barely rolling.
+    if path.departing_from_stop and not path.stopped_lead_hold:
+      return None
+
+    # A short total-lead dropout has no obstacle to hold stock MPC at zero.
+    # Bound the whole horizon only while the median guard still says "stopped";
+    # genuine loss transitions to the tapered confirmation path below.
+    if path.state == AccelControllerState.stopHold and envelope.selected_lead < 0 and path.departure_frames == 0:
+      return tuple(0.0 for _ in T_IDXS)
+
+    special_launch_state = path.state == AccelControllerState.stopHold or path.departing_from_stop
+
+    # Ordinary lead following must retain stock MPC constraints and obstacle
+    # behavior. Include filtered and previous-source state so a radar dropout
+    # cannot switch the profile bound on for only one or two frames.
+    lead_guarded = envelope.selected_lead >= 0 or math.isfinite(filtered_cap) or self._lead_source(previous_mpc_source)
+    if not special_launch_state and lead_guarded:
+      return None
+
+    if not math.isfinite(accel_limit):
+      return None
+
+    bounded_limit = float(np.clip(accel_limit, 0.0, ACCEL_MAX))
+    accel_max = np.full(len(T_IDXS), bounded_limit, dtype=float)
+    if special_launch_state:
+      # A hard low bound across the full action-delay horizon cold-soaks the
+      # stop solver. Two bounded nodes plus one tapered warm-up node holds the
+      # vehicle through confirmation while preserving a ready future solution.
+      accel_max[MPC_LAUNCH_BOUND_NODES:] = ACCEL_MAX
+      if len(accel_max) > MPC_LAUNCH_BOUND_NODES:
+        if path.state == AccelControllerState.stopHold:
+          warm_blend = MPC_CONFIRM_WARM_BLEND if path.departure_frames > 0 else MPC_STOP_WARM_BLEND
+        else:
+          warm_blend = MPC_DEPART_WARM_BLEND
+        accel_max[MPC_LAUNCH_BOUND_NODES] = bounded_limit + warm_blend * (ACCEL_MAX - bounded_limit)
+    return tuple(float(value) for value in accel_max)
 
   @staticmethod
   def _valid_context(
@@ -445,7 +498,6 @@ class AccelController:
         base_speed,
         v_ego,
         config,
-        profile_accel_max,
         previous_mpc_source,
         planner_speed,
         previous_should_stop,
@@ -467,24 +519,30 @@ class AccelController:
         base_speed,
         v_ego,
         config,
-        profile_accel_max,
         previous_mpc_source,
         planner_speed,
         previous_should_stop,
         envelope.has_nearly_stopped_lead,
         launch_delta_v,
       )
-      effective_accel_max, output_accel_max = self._update_accel_limit(
+      effective_accel_max, controller_accel_max = self._update_accel_limit(
         self.live, stock_accel_max, planner_accel, profile_accel_max
       )
-      # Stock cruise shaping during a confirmed stop/departure keeps takeoff
-      # immediate. Once rolling, the profile rate shapes MPC's cruise horizon.
-      mpc_cruise_accel_max = (
-        math.inf if self.live.state == AccelControllerState.stopHold or self.live.departing_from_stop else output_accel_max
+      # Feed only the controller-owned ceiling into MPC. Stock's speed, turn,
+      # coast, and no-throttle limits remain in their original output clip.
+      mpc_accel_max = self._build_mpc_accel_max(
+        self.live, envelope, live_filtered_cap, previous_mpc_source, controller_accel_max,
       )
+      mpc_shape_cruise = (
+        mpc_accel_max is not None
+        and self.live.state != AccelControllerState.stopHold
+        and not self.live.departing_from_stop
+      )
+      if mpc_accel_max is None:
+        effective_accel_max = stock_accel_max
       if self.live.state == AccelControllerState.stopHold:
-        # Keep stock MPC warm while the zero output ceiling pins a confirmed stop
-        # and confirms four moving-lead frames before allowing takeoff.
+        # Bounds provide the dropout/creep guard while the stock cruise target
+        # keeps the solver ready for a confirmed departure.
         target_speed = base_speed
       elif self.live.departing_from_stop and v_ego < STOP_HOLD_EGO_SPEED and envelope.selected_lead >= 0:
         # A moving lead keeps stock MPC well-conditioned during a confirmed
@@ -498,8 +556,8 @@ class AccelController:
       # Preserve the stock target bit-for-bit on every bypass, including stock's own invalid-value handling.
       target_speed = base_speed
       effective_accel_max = math.inf
-      output_accel_max = math.inf
-      mpc_cruise_accel_max = math.inf
+      mpc_accel_max = None
+      mpc_shape_cruise = False
 
     return AccelControllerResult(
       target_speed=target_speed,
@@ -510,8 +568,8 @@ class AccelController:
       profile=profile,
       profile_accel_max=profile_accel_max if live_active else math.inf,
       effective_accel_max=effective_accel_max,
-      output_accel_max=output_accel_max,
-      mpc_cruise_accel_max=mpc_cruise_accel_max,
+      mpc_accel_max=mpc_accel_max,
+      mpc_shape_cruise=mpc_shape_cruise,
       state=self.live.state,
       shadow_state=self.shadow.state,
       base_speed=base_speed,

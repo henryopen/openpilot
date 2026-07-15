@@ -217,6 +217,7 @@ class LongitudinalMpc:
   def __init__(self, dt=DT_MDL):
     self.dt = dt
     self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
+    self.last_solution_status = 0
     self.reset()
     self.source = LongitudinalPlanSource.cruise
 
@@ -313,7 +314,8 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, cruise_accel_max: float | None = None):
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
+             accel_max: float | tuple[float, ...] | np.ndarray | None = None, shape_accel_max_in_cruise: bool = False):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -327,17 +329,25 @@ class LongitudinalMpc:
     lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
+    custom_accel_max = False
+    accel_max_traj = ACCEL_MAX * np.ones(N + 1)
+    if accel_max is not None:
+      accel_max_input = np.asarray(accel_max, dtype=float)
+      if accel_max_input.ndim == 0:
+        accel_max_input = np.full(N + 1, float(accel_max_input))
+      custom_accel_max = accel_max_input.shape == (N + 1,) and np.all(np.isfinite(accel_max_input))
+      if custom_accel_max:
+        accel_max_traj = np.clip(accel_max_input, 0.0, ACCEL_MAX)
+
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
-    # sunnypilot can optionally shape only this cruise reference; this hook does
-    # not alter lead obstacles, braking constraints, or the MPC jerk cost.
-    if cruise_accel_max is None or not np.isfinite(cruise_accel_max):
-      cruise_accel_max = CRUISE_MAX_ACCEL
-    else:
-      cruise_accel_max = float(np.clip(cruise_accel_max, 0.0, CRUISE_MAX_ACCEL))
     v_lower = v_ego + (T_IDXS * CRUISE_MIN_ACCEL * 1.05)
     # TODO does this make sense when max_a is negative?
-    v_upper = v_ego + (T_IDXS * cruise_accel_max * 1.05)
+    if custom_accel_max and shape_accel_max_in_cruise:
+      cruise_accel_max_traj = np.minimum(accel_max_traj, CRUISE_MAX_ACCEL)
+      v_upper = v_ego + (np.cumsum(T_DIFFS * cruise_accel_max_traj) * 1.05)
+    else:
+      v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
 
@@ -350,7 +360,11 @@ class LongitudinalMpc:
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
     self.params[:,0] = ACCEL_MIN
-    self.params[:,1] = ACCEL_MAX
+    if custom_accel_max:
+      self.params[:,1] = accel_max_traj
+      self.params[0,1] = max(accel_max_traj[0], self.x0[2])
+    else:
+      self.params[:,1] = ACCEL_MAX
     self.params[:,2] = np.min(x_obstacles, axis=1)
     self.params[:,3] = np.copy(self.a_prev)
     self.params[:,4] = t_follow
@@ -370,6 +384,7 @@ class LongitudinalMpc:
     self.solver.constraints_set(0, "ubx", self.x0)
 
     self.solution_status = self.solver.solve()
+    self.last_solution_status = self.solution_status
     self.solve_time = float(self.solver.get_stats('time_tot')[0])
     self.time_qp_solution = float(self.solver.get_stats('time_qp')[0])
     self.time_linearization = float(self.solver.get_stats('time_lin')[0])

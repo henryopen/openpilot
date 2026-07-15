@@ -2,18 +2,22 @@
 import math
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from cereal import log
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource, STOP_DISTANCE, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import N, LongitudinalPlanSource, STOP_DISTANCE, get_T_FOLLOW
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import (
   ACCEL_LIMIT_JERK,
   ACCEL_PROFILE_MAX_BP,
   ACCEL_PROFILE_MAX_V,
   LAUNCH_ACCEL_JERK,
   LAUNCH_DELTA_V,
+  MPC_CONFIRM_WARM_BLEND,
+  MPC_DEPART_WARM_BLEND,
+  MPC_LAUNCH_BOUND_NODES,
   AccelController,
   AccelControllerState,
   AccelProfile,
@@ -54,6 +58,11 @@ def update(governor, radar_state=None, **overrides):
   return governor.update(radar_state or make_radar(), **args)
 
 
+def assert_profile_trajectory(result, expected: float) -> None:
+  assert result.mpc_accel_max is not None
+  np.testing.assert_array_equal(result.mpc_accel_max, expected)
+
+
 class TestAccelProfileLimits:
   @pytest.mark.parametrize("profile", list(AccelProfile))
   def test_profile_accel_max_matches_lookup_table(self, profile):
@@ -85,7 +94,58 @@ class TestAccelProfileLimits:
 
     result = update(governor, profile=AccelProfile.eco, v_ego=17.5, planner_speed=17.5)
 
-    assert result.profile_accel_max == pytest.approx(0.60)
+    assert result.profile_accel_max == pytest.approx(0.56)
+
+  def test_clear_road_profile_is_a_separate_pre_mpc_trajectory(self):
+    governor = make_governor()
+
+    result = update(governor, profile=AccelProfile.normal, v_ego=10.0, planner_speed=10.0, stock_accel_max=1.4)
+
+    assert result.mpc_accel_max is not None
+    assert result.mpc_shape_cruise
+    assert len(result.mpc_accel_max) == N + 1
+    assert_profile_trajectory(result, 1.0)
+
+  def test_ordinary_lead_keeps_stock_mpc_accel_bounds(self):
+    governor = make_governor()
+    radar_state = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=15.0))
+
+    result = update(governor, radar_state)
+
+    assert result.active
+    assert result.selected_lead == 0
+    assert result.mpc_accel_max is None
+    assert not result.mpc_shape_cruise
+
+  def test_filtered_lead_history_keeps_stock_mpc_bounds_through_two_dropouts(self):
+    governor = make_governor()
+    radar_state = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=15.0))
+    for _ in range(3):
+      update(governor, radar_state)
+
+    dropouts = [update(governor), update(governor)]
+
+    assert all(math.isfinite(result.live_filtered_cap) for result in dropouts)
+    assert all(result.mpc_accel_max is None for result in dropouts)
+
+  def test_stop_hold_warms_only_after_departure_evidence(self):
+    governor = make_governor()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+    moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
+
+    held = update(governor, stopped, base_speed=5.0, v_ego=0.1, planner_speed=0.1)
+    confirming = update(governor, moving, base_speed=5.0, v_ego=0.1, planner_speed=0.1)
+
+    assert held.state == AccelControllerState.stopHold
+    assert held.mpc_accel_max is not None
+    assert not held.mpc_shape_cruise
+    np.testing.assert_array_equal(held.mpc_accel_max[:MPC_LAUNCH_BOUND_NODES + 1], 0.0)
+    assert confirming.state == AccelControllerState.stopHold
+    assert confirming.mpc_accel_max is not None
+    assert not confirming.mpc_shape_cruise
+    np.testing.assert_array_equal(confirming.mpc_accel_max[:MPC_LAUNCH_BOUND_NODES], 0.0)
+    assert confirming.mpc_accel_max[MPC_LAUNCH_BOUND_NODES] == pytest.approx(MPC_CONFIRM_WARM_BLEND * 2.0)
+    np.testing.assert_array_equal(confirming.mpc_accel_max[MPC_LAUNCH_BOUND_NODES + 1:], 2.0)
 
   def test_normal_active_limits_are_bounded_by_stock_and_profile(self):
     governor = make_governor()
@@ -94,8 +154,7 @@ class TestAccelProfileLimits:
 
     assert result.profile_accel_max == 1.0
     assert result.effective_accel_max == 1.0
-    assert result.output_accel_max == 1.0
-    assert result.mpc_cruise_accel_max == 1.0
+    assert_profile_trajectory(result, 1.0)
 
   def test_first_enable_seeds_from_positive_planner_accel_within_stock(self):
     governor = make_governor()
@@ -118,7 +177,7 @@ class TestAccelProfileLimits:
     )
 
     assert result.effective_accel_max == 1.10
-    assert result.output_accel_max == 1.80
+    assert_profile_trajectory(result, 1.80)
 
   def test_profile_switch_slews_at_one_meter_per_second_cubed(self):
     governor = make_governor()
@@ -138,17 +197,17 @@ class TestAccelProfileLimits:
     released = update(governor, profile=AccelProfile.normal, v_ego=10.0, planner_speed=10.0, stock_accel_max=1.40)
 
     assert tightened.effective_accel_max == 0.40
-    assert tightened.output_accel_max == 1.0
+    assert_profile_trajectory(tightened, 1.0)
     assert released.effective_accel_max == 1.0
-    assert released.output_accel_max == 1.0
+    assert_profile_trajectory(released, 1.0)
 
-  def test_negative_stock_max_never_becomes_positive(self):
+  def test_negative_stock_max_remains_authoritative_outside_the_mpc_profile_bound(self):
     governor = make_governor()
 
     result = update(governor, v_ego=10.0, planner_speed=10.0, stock_accel_max=-0.20, planner_accel=1.0)
 
     assert result.effective_accel_max == -0.20
-    assert result.output_accel_max == 1.0
+    assert_profile_trajectory(result, 1.0)
 
   def test_profile_tightening_can_converge_below_positive_planner_accel(self):
     governor = make_governor()
@@ -158,12 +217,12 @@ class TestAccelProfileLimits:
 
     results = [
       update(governor, profile=AccelProfile.eco, v_ego=10.0, planner_speed=10.0, stock_accel_max=2.0, planner_accel=1.15)
-      for _ in range(8)
+      for _ in range(10)
     ]
 
-    assert results[-1].output_accel_max == pytest.approx(ACCEL_PROFILE_MAX_V[AccelProfile.eco][1])
-    assert results[-1].output_accel_max < 1.15
-    assert all(math.isfinite(result.output_accel_max) for result in results)
+    assert results[-1].effective_accel_max == pytest.approx(ACCEL_PROFILE_MAX_V[AccelProfile.eco][1])
+    assert results[-1].effective_accel_max < 1.15
+    assert all(result.mpc_accel_max is not None for result in results)
 
   @pytest.mark.parametrize("bypass", [{"enabled": False}, {"acc_selected": False}])
   def test_bypass_does_not_expose_an_active_accel_limit(self, bypass):
@@ -173,8 +232,8 @@ class TestAccelProfileLimits:
 
     assert math.isinf(result.profile_accel_max)
     assert math.isinf(result.effective_accel_max)
-    assert math.isinf(result.output_accel_max)
-    assert math.isinf(result.mpc_cruise_accel_max)
+    assert result.mpc_accel_max is None
+    assert not result.mpc_shape_cruise
 
   @pytest.mark.parametrize("invalid", [{"stock_accel_max": math.nan}, {"planner_accel": math.nan}])
   def test_invalid_accel_input_bypasses_and_resets_limits(self, invalid):
@@ -186,6 +245,7 @@ class TestAccelProfileLimits:
     assert not result.active
     assert governor.live.accel_limit is None
     assert math.isinf(result.effective_accel_max)
+    assert not result.mpc_shape_cruise
 
 
 class TestEnergyEnvelope:
@@ -331,7 +391,7 @@ class TestAccelControllerState:
       assert confirmation_updates < 20
 
     assert confirmation_updates >= 6
-    expected_rate = AccelController.get_profile_accel_max(AccelProfile.normal, 20.0)
+    expected_rate = PROFILE_CONFIGS[AccelProfile.normal].release_rate
     assert result.live_pace == pytest.approx(held_pace + expected_rate * DT_MDL)
 
   def test_live_state_never_adopts_shadow_history(self):
@@ -373,8 +433,7 @@ class TestAccelControllerState:
       assert result.live_pace == 0.0
       assert result.target_speed == stop_args["base_speed"]
       assert result.effective_accel_max == 0.0
-      assert result.output_accel_max == 0.0
-      assert math.isinf(result.mpc_cruise_accel_max)
+      assert result.mpc_accel_max is not None
 
     for _ in range(3):
       result = update(governor, moving, **stop_args)
@@ -383,8 +442,7 @@ class TestAccelControllerState:
       assert result.live_pace == 0.0
       assert result.target_speed == stop_args["base_speed"]
       assert result.effective_accel_max == 0.0
-      assert result.output_accel_max == 0.0
-      assert math.isinf(result.mpc_cruise_accel_max)
+      assert result.mpc_accel_max is not None
 
     departed = update(governor, moving, **stop_args)
     assert departed.state == AccelControllerState.release
@@ -392,8 +450,9 @@ class TestAccelControllerState:
     assert departed.live_pace == pytest.approx(stop_args["v_ego"] + LAUNCH_DELTA_V)
     assert departed.target_speed == stop_args["base_speed"]
     assert departed.effective_accel_max == pytest.approx(LAUNCH_ACCEL_JERK * DT_MDL)
-    assert departed.output_accel_max == departed.effective_accel_max
-    assert math.isinf(departed.mpc_cruise_accel_max)
+    np.testing.assert_allclose(departed.mpc_accel_max[:MPC_LAUNCH_BOUND_NODES], departed.effective_accel_max)
+    expected_warm = departed.effective_accel_max + MPC_DEPART_WARM_BLEND * (2.0 - departed.effective_accel_max)
+    assert departed.mpc_accel_max[MPC_LAUNCH_BOUND_NODES] == pytest.approx(expected_warm)
 
   def test_second_nearly_stopped_lead_blocks_departure_confirmation(self):
     governor = make_governor()
@@ -428,7 +487,7 @@ class TestAccelControllerState:
     assert departure[-1].live_pace == pytest.approx(expected_launch_pace)
     assert departure[-1].target_speed == args["base_speed"]
     assert departure[-1].effective_accel_max == pytest.approx(LAUNCH_ACCEL_JERK * DT_MDL)
-    assert departure[-1].output_accel_max == departure[-1].effective_accel_max
+    assert departure[-1].mpc_accel_max is not None
 
   def test_stopped_lead_departure_releases_while_mpc_source_remains_lead(self):
     governor = make_governor()
@@ -501,7 +560,7 @@ class TestAccelControllerState:
     assert renewed_stop.state == AccelControllerState.stopHold
     assert renewed_stop.live_pace == 0.0
     assert renewed_stop.target_speed == stale_stop_args["base_speed"]
-    assert renewed_stop.output_accel_max == 0.0
+    assert renewed_stop.mpc_accel_max is not None
     assert not governor.live.departing_from_stop
 
   def test_low_speed_moving_lead_never_bypasses_bounded_pace(self):
@@ -559,7 +618,7 @@ class TestAccelControllerState:
     assert dropout.state == AccelControllerState.stopHold
     assert dropout.live_pace == 0.0
     assert dropout.target_speed == dropout.base_speed
-    assert dropout.output_accel_max == 0.0
+    np.testing.assert_array_equal(dropout.mpc_accel_max, 0.0)
     assert governor.live.stopped_lead_hold
 
   def test_no_lead_start_launches_immediately_with_profile_limit(self):
@@ -571,9 +630,8 @@ class TestAccelControllerState:
     assert result.launching
     assert result.live_pace == pytest.approx(0.1 + LAUNCH_DELTA_V)
     assert result.target_speed == result.live_pace
-    assert result.effective_accel_max == pytest.approx(LAUNCH_ACCEL_JERK * DT_MDL)
-    assert result.output_accel_max == result.effective_accel_max
-    assert math.isinf(result.mpc_cruise_accel_max)
+    assert result.effective_accel_max == 2.0
+    assert result.mpc_accel_max is None
 
   def test_confirmed_departure_has_no_later_pace_jump(self):
     governor = make_governor()
@@ -596,11 +654,11 @@ class TestAccelControllerState:
 
     assert not governor.live.departing_from_stop
     assert not governor.live.stopped_lead_hold
-    expected_step = AccelController.get_profile_accel_max(AccelProfile.normal, 0.31) * DT_MDL
+    expected_step = PROFILE_CONFIGS[AccelProfile.normal].release_rate * DT_MDL
     assert handed_back.live_pace == pytest.approx(departing.live_pace + expected_step)
     assert handed_back.live_pace < min(handed_back.base_speed, handed_back.live_filtered_cap)
     assert handed_back.target_speed == handed_back.live_pace
-    assert handed_back.mpc_cruise_accel_max == handed_back.output_accel_max
+    assert handed_back.mpc_accel_max is None
 
   @pytest.mark.parametrize(
     "bypass",
@@ -627,7 +685,8 @@ class TestAccelControllerState:
     assert math.isinf(result.live_pace)
     assert governor.live.accel_limit is None
     assert math.isinf(result.effective_accel_max)
-    assert math.isinf(result.output_accel_max)
+    assert result.mpc_accel_max is None
+    assert not result.mpc_shape_cruise
 
   def test_disabled_acc_mode_keeps_shadow_running(self):
     governor = make_governor()

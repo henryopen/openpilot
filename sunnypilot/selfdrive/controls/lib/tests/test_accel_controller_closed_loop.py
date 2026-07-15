@@ -4,8 +4,10 @@ from dataclasses import dataclass
 import numpy as np
 import pytest
 
+from opendbc.car.interfaces import ACCEL_MIN
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
 from openpilot.selfdrive.test.longitudinal_maneuvers.plant import LeadObservation, Plant
 
 
@@ -28,15 +30,15 @@ class ClosedLoopTrace:
   selected_lead: np.ndarray
   profile_accel_max: np.ndarray
   effective_accel_max: np.ndarray
-  output_accel_max: np.ndarray
+  controller_fault: np.ndarray
   solver_failures: int
 
 
 def _set_accel_controller_params(*, enabled: bool, profile: int = 1, dec_enabled: bool = False) -> None:
   params = Params()
-  params.put_bool("AccelPersonalityEnabled", enabled)
-  params.put("AccelPersonality", profile)
-  params.put_bool("DynamicExperimentalControl", dec_enabled)
+  params.put_bool("AccelPersonalityEnabled", enabled, block=True)
+  params.put("AccelPersonality", profile, block=True)
+  params.put_bool("DynamicExperimentalControl", dec_enabled, block=True)
 
 
 def _run(
@@ -65,6 +67,7 @@ def _run(
   sources = []
   while plant.current_time < duration:
     lead_speed = float(v_lead) if isinstance(v_lead, (int, float)) else v_lead(plant.current_time)
+    controller_fault = plant.planner.mpc.last_solution_status != 0
     result = plant.step(v_lead=lead_speed, v_cruise=v_cruise)
     controller = plant.planner.accel_controller_result
     rows.append(
@@ -85,7 +88,7 @@ def _run(
         controller.selected_lead,
         controller.profile_accel_max,
         controller.effective_accel_max,
-        controller.output_accel_max,
+        controller_fault,
       )
     )
     sources.append(result["mpc_source"])
@@ -109,7 +112,7 @@ def _run(
     selected_lead=data[:, 13].astype(int),
     profile_accel_max=data[:, 14],
     effective_accel_max=data[:, 15],
-    output_accel_max=data[:, 16],
+    controller_fault=data[:, 16].astype(bool),
     solver_failures=solver_failures,
   )
 
@@ -177,7 +180,7 @@ def test_non_actuating_modes_are_bit_exact(plant_kwargs, expect_shadow_active):
   assert shadow.source == disabled.source
   assert not shadow.active.any()
   if expect_shadow_active:
-    assert shadow.shadow_active.all()
+    np.testing.assert_array_equal(shadow.shadow_active, ~shadow.controller_fault)
   else:
     assert not shadow.shadow_active.any()
 
@@ -192,7 +195,7 @@ def test_disabled_profiles_are_bit_exact_in_engaged_acc():
     np.testing.assert_array_equal(trace.fcw, traces[0].fcw)
     assert trace.source == traces[0].source
   assert all(not trace.active.any() for trace in traces)
-  assert all(np.isinf(trace.output_accel_max).all() for trace in traces)
+  assert all(np.isinf(trace.effective_accel_max).all() for trace in traces)
 
 
 def test_dec_radar_lead_selects_acc_and_standstill_uses_shadow_only():
@@ -216,7 +219,7 @@ def test_dec_radar_lead_selects_acc_and_standstill_uses_shadow_only():
   )
 
   assert not blended.active[-10:].any()
-  assert blended.shadow_active.all()
+  np.testing.assert_array_equal(blended.shadow_active, ~blended.controller_fault)
   assert radar_acc.active.all()
 
 
@@ -243,8 +246,10 @@ def test_two_frame_dropout_and_false_relief_do_not_release_pace(record_property)
 
   for start in (2.0, 3.0):
     before = trace.pace[np.flatnonzero(trace.time < start)[-1]]
-    during_and_guard = trace.pace[(trace.time >= start) & (trace.time < start + 0.2)]
+    guard = (trace.time >= start) & (trace.time < start + 0.2)
+    during_and_guard = trace.pace[guard & trace.active]
     assert np.all(during_and_guard <= before + 1e-9)
+    assert np.isinf(trace.pace[guard & ~trace.active]).all()
   assert not _has_propulsion_brake_reversal(trace, after=1.0)
   record_property("clean_base_solver_failures", baseline.solver_failures)
   record_property("accel_controller_solver_failures", trace.solver_failures)
@@ -367,7 +372,20 @@ def test_severe_closing_never_delays_braking_or_reduces_clearance():
   assert np.max(np.abs(np.diff(controlled.a_target)[onset] / DT_MDL)) < 4.0
 
 
-def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_one_second(record_property):
+@pytest.mark.parametrize(
+  ("actuator_delay", "actuator_lag"),
+  [
+    (0.10, 0.20),
+    (0.15, 0.25),
+    (0.20, 0.20),
+    (0.25, 0.30),
+    (0.30, 0.35),
+  ],
+  ids=("toyota", "honda", "gm", "hyundai", "ford"),
+)
+def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_one_second(
+  actuator_delay, actuator_lag, record_property,
+):
   departure_time = 1.0
 
   def lead_speed(current_time: float) -> float:
@@ -393,8 +411,8 @@ def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_o
     v_lead=lead_speed,
     v_cruise=8.0,
     lead_observation_fn=observe,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    actuator_delay=actuator_delay,
+    actuator_lag=actuator_lag,
   )
   baseline = _run(controller_enabled=False, **common)
   trace = _run(controller_enabled=True, **common)
@@ -424,6 +442,7 @@ def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_o
   record_property("departure_peak_command_jerk", peak_departure_jerk)
   assert launch_time <= 1.0
   assert peak_departure_jerk < 4.0
+  assert trace.solver_failures == 0
   assert not _has_propulsion_brake_reversal(trace, after=departure_time)
 
 
@@ -446,6 +465,7 @@ def test_stop_hold_two_frame_total_lead_dropout_cannot_launch():
 
   assert np.max(trace.speed) < 1e-3
   assert np.max(trace.pace) == 0.0
+  assert trace.solver_failures == 0
   assert not _has_propulsion_brake_reversal(trace, after=0.5)
 
 
@@ -470,7 +490,6 @@ def test_clear_road_launch_is_immediate_bounded_and_profiles_feel_distinct():
     assert len(moving)
     onset_times.append(float(trace.time[positive[0]]))
     movement_times.append(float(trace.time[moving[0]]))
-    assert np.all(trace.a_target <= trace.output_accel_max + 1e-6)
     assert trace.solver_failures == 0
 
   assert max(onset_times) - min(onset_times) <= DT_MDL
@@ -484,6 +503,50 @@ def test_clear_road_launch_is_immediate_bounded_and_profiles_feel_distinct():
   assert final_speeds[0] < final_speeds[1] < final_speeds[2]
   assert final_speeds[1] - final_speeds[0] > 0.5
   assert final_speeds[2] - final_speeds[1] > 0.4
+
+
+def test_profile_trajectory_is_pre_mpc_and_not_a_custom_output_clamp():
+  _set_accel_controller_params(enabled=True, profile=0)
+  plant = Plant(speed=10.0, actuator_delay=0.15, actuator_lag=0.20)
+  # Start above Eco's table value to verify the controller hands the current
+  # feasible acceleration to MPC and slews down instead of clipping the output.
+  plant.acceleration = 1.30
+  plant.planner.a_desired = 1.30
+
+  result = plant.step(v_cruise=30.0)
+  controller = plant.planner.accel_controller_result
+
+  assert controller.mpc_accel_max is not None
+  assert controller.mpc_shape_cruise
+  np.testing.assert_array_equal(plant.planner.mpc.params[:, 1], controller.mpc_accel_max)
+  assert result["a_target"] > controller.profile_accel_max
+  assert ACCEL_MIN <= result["a_target"] <= get_max_accel(plant.speed)
+
+
+def test_solver_fault_discards_live_state_before_fresh_preshape_seed():
+  _set_accel_controller_params(enabled=True, profile=1)
+  plant = Plant(speed=10.0, actuator_delay=0.15, actuator_lag=0.20)
+  plant.step(v_cruise=30.0)
+  assert plant.planner.accel_controller_result.active
+
+  plant.planner.mpc.last_solution_status = 3
+  plant.planner.mpc.reset()
+  plant.step(v_cruise=30.0)
+  faulted = plant.planner.accel_controller_result
+  assert not faulted.active
+  assert np.isinf(faulted.live_pace)
+  assert faulted.mpc_accel_max is None
+  assert not faulted.mpc_shape_cruise
+
+  # Represent the next successful MPC solve; the controller must seed from
+  # current state rather than resurrecting its discarded pre-fault history.
+  plant.planner.mpc.last_solution_status = 0
+  plant.step(v_cruise=30.0)
+  recovered = plant.planner.accel_controller_result
+  assert recovered.active
+  assert np.isfinite(recovered.live_pace)
+  assert recovered.mpc_accel_max is not None
+  assert recovered.mpc_shape_cruise
 
 
 @pytest.mark.parametrize(
@@ -550,7 +613,7 @@ def test_profiles_order_anticipation_and_pace_rates():
     onsets.append(float(trace.time[restricting[0] + 1]))
   assert onsets[0] < onsets[1] < onsets[2]
 
-  expected_down_rates = [0.25, 0.35, 0.50]
+  expected_down_rates = [0.25, 0.335, 0.50]
   measured_down_rates = []
   for trace in traces:
     restricting = np.flatnonzero(np.diff(trace.pace) < -1e-6)
