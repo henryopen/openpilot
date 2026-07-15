@@ -312,6 +312,8 @@ struct LongitudinalPlanSP @0xf35cc4560bbf6ec2 {
     usableGap @10 :Float32;
     closingSpeed @11 :Float32;
     requiredDecel @12 :Float32;
+    aMaxProfile @13 :Float32;
+    aMaxEffective @14 :Float32;
 
     enum Profile {
       eco @0;

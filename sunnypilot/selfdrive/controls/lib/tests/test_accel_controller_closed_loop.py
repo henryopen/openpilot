@@ -22,9 +22,13 @@ class ClosedLoopTrace:
   source: list
   active: np.ndarray
   shadow_active: np.ndarray
+  launching: np.ndarray
   pace: np.ndarray
   filtered_cap: np.ndarray
   selected_lead: np.ndarray
+  profile_accel_max: np.ndarray
+  effective_accel_max: np.ndarray
+  output_accel_max: np.ndarray
   solver_failures: int
 
 
@@ -75,9 +79,13 @@ def _run(
         result["fcw"],
         controller.active,
         controller.shadow_active,
+        controller.launching,
         controller.live_pace,
         controller.live_filtered_cap,
         controller.selected_lead,
+        controller.profile_accel_max,
+        controller.effective_accel_max,
+        controller.output_accel_max,
       )
     )
     sources.append(result["mpc_source"])
@@ -95,9 +103,13 @@ def _run(
     source=sources,
     active=data[:, 8].astype(bool),
     shadow_active=data[:, 9].astype(bool),
-    pace=data[:, 10],
-    filtered_cap=data[:, 11],
-    selected_lead=data[:, 12].astype(int),
+    launching=data[:, 10].astype(bool),
+    pace=data[:, 11],
+    filtered_cap=data[:, 12],
+    selected_lead=data[:, 13].astype(int),
+    profile_accel_max=data[:, 14],
+    effective_accel_max=data[:, 15],
+    output_accel_max=data[:, 16],
     solver_failures=solver_failures,
   )
 
@@ -168,6 +180,19 @@ def test_non_actuating_modes_are_bit_exact(plant_kwargs, expect_shadow_active):
     assert shadow.shadow_active.all()
   else:
     assert not shadow.shadow_active.any()
+
+
+def test_disabled_profiles_are_bit_exact_in_engaged_acc():
+  common = dict(duration=2.0, controller_enabled=False, lead_relevancy=True, speed=20.0, distance_lead=70.0, v_lead=14.0)
+  traces = [_run(profile=profile, **common) for profile in range(3)]
+
+  for trace in traces[1:]:
+    np.testing.assert_allclose(trace.a_target, traces[0].a_target, atol=1e-6, rtol=0.0)
+    np.testing.assert_array_equal(trace.should_stop, traces[0].should_stop)
+    np.testing.assert_array_equal(trace.fcw, traces[0].fcw)
+    assert trace.source == traces[0].source
+  assert all(not trace.active.any() for trace in traces)
+  assert all(np.isinf(trace.output_accel_max).all() for trace in traces)
 
 
 def test_dec_radar_lead_selects_acc_and_standstill_uses_shadow_only():
@@ -295,10 +320,6 @@ def test_alternating_full_lead_range_glitch_has_bounded_jerk_and_no_reversal():
     assert not np.any(disturbance[positive[0] + 1:] < -0.2)
 
 
-@pytest.mark.xfail(
-  reason="opt-in validation: raw stock lead MPC dominates a zero cruise cap during repeated slow-lead stop/go",
-  strict=True,
-)
 def test_repeated_slow_lead_stop_go_has_no_post_settle_reversal():
   def lead_speed(current_time: float) -> float:
     return float(0.1 * (1.0 - np.cos(np.pi * current_time)))
@@ -318,7 +339,7 @@ def test_repeated_slow_lead_stop_go_has_no_post_settle_reversal():
   settled = trace.time >= 4.0
   assert trace.active[settled].all()
   assert np.all(trace.pace[settled] == 0.0)
-  assert np.any(trace.a_target[settled] > 0.2)
+  assert np.max(trace.a_target[settled]) <= 0.2
   assert not _has_propulsion_brake_reversal(trace, after=4.0)
 
 
@@ -392,6 +413,7 @@ def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_o
   record_property("predeparture_peak_command", float(np.max(trace.a_target[before_departure])))
   record_property("first_three_departure_frames_peak_command", float(np.max(trace.a_target[first_three_departure_frames])))
   assert np.max(trace.speed[first_three_departure_frames]) < 1e-3
+  assert not trace.launching[first_three_departure_frames].any()
 
   launched = np.flatnonzero((trace.time >= departure_time) & (trace.speed > 0.05))
   assert len(launched)
@@ -425,6 +447,43 @@ def test_stop_hold_two_frame_total_lead_dropout_cannot_launch():
   assert np.max(trace.speed) < 1e-3
   assert np.max(trace.pace) == 0.0
   assert not _has_propulsion_brake_reversal(trace, after=0.5)
+
+
+def test_clear_road_launch_is_immediate_bounded_and_profiles_feel_distinct():
+  common = dict(
+    duration=6.0,
+    controller_enabled=True,
+    lead_relevancy=False,
+    speed=0.0,
+    v_cruise=15.0,
+    actuator_delay=0.15,
+    actuator_lag=0.20,
+  )
+  traces = [_run(profile=profile, **common) for profile in range(3)]
+
+  onset_times = []
+  movement_times = []
+  for trace in traces:
+    positive = np.flatnonzero(trace.a_target > 0.05)
+    moving = np.flatnonzero(trace.speed > 0.01)
+    assert len(positive)
+    assert len(moving)
+    onset_times.append(float(trace.time[positive[0]]))
+    movement_times.append(float(trace.time[moving[0]]))
+    assert np.all(trace.a_target <= trace.output_accel_max + 1e-6)
+    assert trace.solver_failures == 0
+
+  assert max(onset_times) - min(onset_times) <= DT_MDL
+  assert max(onset_times) <= 4 * DT_MDL
+  assert max(movement_times) <= 1.0
+
+  for sample_time in (2.0,):
+    realized = [float(trace.acceleration[np.searchsorted(trace.time, sample_time)]) for trace in traces]
+    assert realized[0] < realized[1] < realized[2], (sample_time, realized)
+  final_speeds = [trace.speed[-1] for trace in traces]
+  assert final_speeds[0] < final_speeds[1] < final_speeds[2]
+  assert final_speeds[1] - final_speeds[0] > 0.5
+  assert final_speeds[2] - final_speeds[1] > 0.4
 
 
 @pytest.mark.parametrize(

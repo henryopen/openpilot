@@ -138,7 +138,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     v_cruise = LongitudinalPlannerSP.update_accel_controller(
       self, sm, v_cruise, engaged=not reset_state, cruise_initialized=v_cruise_initialized, acc_selected=not is_e2e,
       planner_speed=self.v_desired_filter.x, previous_mpc_source=self.mpc.source, previous_should_stop=self.output_should_stop,
-      controller_fault=self.mpc.solution_status != 0,
+      stock_accel_max=accel_clip[1], planner_accel=self.a_desired, controller_fault=self.mpc.solution_status != 0,
     )
 
     if force_slow_decel:
@@ -146,7 +146,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality)
+    self.mpc.update(
+      sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
+      cruise_accel_max=self.accel_controller_result.mpc_cruise_accel_max,
+    )
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -180,6 +183,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)
     self.output_a_target = np.clip(output_a_target, accel_clip[0], accel_clip[1])
+    self.output_a_target = min(self.output_a_target, self.accel_controller_result.output_accel_max)
     self.prev_accel_clip = accel_clip
 
   def publish(self, sm, pm):

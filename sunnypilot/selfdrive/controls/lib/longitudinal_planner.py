@@ -40,7 +40,7 @@ class LongitudinalPlannerSP:
     self.accel_controller = AccelController(CP, dt=dt)
     self.accel_controller_result = None
 
-    self._param_read_frames = max(1, int(round(1.0 / dt)))
+    self._param_read_frames = max(1, int(round(0.25 / dt)))
     self._param_frame = 0
     self.accel_personality_enabled = False
     self.accel_personality = int(AccelProfile.normal)
@@ -96,7 +96,7 @@ class LongitudinalPlannerSP:
 
   def update_accel_controller(self, sm: messaging.SubMaster, base_speed: float, engaged: bool, cruise_initialized: bool,
                               acc_selected: bool, planner_speed: float, previous_mpc_source, previous_should_stop: bool,
-                              controller_fault: bool = False) -> float:
+                              stock_accel_max: float, planner_accel: float, controller_fault: bool = False) -> float:
     self.accel_controller_result = self.accel_controller.update(
       sm['radarState'],
       base_speed=base_speed,
@@ -110,6 +110,8 @@ class LongitudinalPlannerSP:
       cruise_initialized=cruise_initialized,
       previous_mpc_source=previous_mpc_source,
       planner_speed=planner_speed,
+      stock_accel_max=stock_accel_max,
+      planner_accel=planner_accel,
       previous_should_stop=previous_should_stop,
       controller_fault=controller_fault,
     )
@@ -155,6 +157,8 @@ class LongitudinalPlannerSP:
       accel_controller.usableGap = float(result.usable_gap)
       accel_controller.closingSpeed = float(result.closing_speed)
       accel_controller.requiredDecel = float(result.required_decel)
+      accel_controller.aMaxProfile = float(result.profile_accel_max)
+      accel_controller.aMaxEffective = float(result.effective_accel_max)
 
     # Smart Cruise Control
     smartCruiseControl = longitudinalPlanSP.smartCruiseControl
