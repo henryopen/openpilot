@@ -151,6 +151,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
       accel_max=self.accel_controller_result.mpc_accel_max,
       shape_accel_max_in_cruise=self.accel_controller_result.mpc_shape_cruise,
+      lead_obstacle_weights=self.accel_controller_result.lead_obstacle_weights,
     )
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)

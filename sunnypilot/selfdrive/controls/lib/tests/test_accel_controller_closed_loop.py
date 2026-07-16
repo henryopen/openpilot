@@ -8,7 +8,8 @@ from opendbc.car.interfaces import ACCEL_MIN
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
-from openpilot.selfdrive.test.longitudinal_maneuvers.plant import LeadObservation, Plant
+from openpilot.selfdrive.test.longitudinal_maneuvers.plant import PRIUS_TSS2_ROUTE_MODEL, LeadObservation, Plant
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelControllerState
 
 
 @dataclass
@@ -31,6 +32,12 @@ class ClosedLoopTrace:
   profile_accel_max: np.ndarray
   effective_accel_max: np.ndarray
   controller_fault: np.ndarray
+  actuator_command: np.ndarray
+  applied_actuator_command: np.ndarray
+  observed_speed: np.ndarray
+  observed_acceleration: np.ndarray
+  lead_obstacle_weight_0: np.ndarray
+  lead_obstacle_weight_1: np.ndarray
   solver_failures: int
 
 
@@ -89,6 +96,12 @@ def _run(
         controller.profile_accel_max,
         controller.effective_accel_max,
         controller_fault,
+        result["actuator_command"],
+        result["applied_actuator_command"],
+        result["observed_v_ego"],
+        result["observed_a_ego"],
+        controller.lead_obstacle_weights[0],
+        controller.lead_obstacle_weights[1],
       )
     )
     sources.append(result["mpc_source"])
@@ -113,6 +126,12 @@ def _run(
     profile_accel_max=data[:, 14],
     effective_accel_max=data[:, 15],
     controller_fault=data[:, 16].astype(bool),
+    actuator_command=data[:, 17],
+    applied_actuator_command=data[:, 18],
+    observed_speed=data[:, 19],
+    observed_acceleration=data[:, 20],
+    lead_obstacle_weight_0=data[:, 21],
+    lead_obstacle_weight_1=data[:, 22],
     solver_failures=solver_failures,
   )
 
@@ -288,6 +307,82 @@ def test_lead_slot_handoff_does_not_resurrect_stale_relief():
   assert not _has_propulsion_brake_reversal(trace, after=1.0)
 
 
+def test_benign_far_lead_acquisition_ramps_optimizer_authority_without_jerk():
+  acquisition_time = 1.0
+
+  def observe(current_time: float, lead_name: str, truth: LeadObservation) -> LeadObservation | None:
+    if current_time < acquisition_time or lead_name == "leadTwo":
+      return None
+    return truth | {"radarTrackId": 7}
+
+  trace = _run(
+    duration=3.0,
+    controller_enabled=True,
+    lead_relevancy=True,
+    speed=20.0,
+    distance_lead=126.0,
+    v_lead=17.0,
+    v_cruise=30.0,
+    lead_observation_fn=observe,
+    actuator_delay=0.15,
+    actuator_lag=0.20,
+  )
+
+  acquired = np.flatnonzero((trace.time >= acquisition_time) & (trace.selected_lead == 0))
+  assert len(acquired)
+  first = acquired[0]
+  assert trace.lead_obstacle_weight_0[first] == pytest.approx(0.2)
+  authority = trace.lead_obstacle_weight_0[first:first + 7]
+  np.testing.assert_allclose(authority, np.linspace(0.2, 1.0, 7), atol=1e-9, rtol=0.0)
+  jerk_window = (trace.time[1:] >= acquisition_time) & (trace.time[1:] <= acquisition_time + 0.6)
+  assert np.max(np.abs(np.diff(trace.a_target)[jerk_window] / DT_MDL)) < 3.0
+  assert trace.solver_failures == 0
+
+
+def test_route_shaped_urgent_lead_acquisition_is_immediate_and_does_not_delay_braking(record_property):
+  acquisition_time = 1.0
+
+  def observe(current_time: float, lead_name: str, truth: LeadObservation) -> LeadObservation | None:
+    if current_time < acquisition_time or lead_name == "leadTwo":
+      return None
+    return truth | {"radarTrackId": 22}
+
+  common = dict(
+    duration=10.0,
+    lead_relevancy=True,
+    speed=34.8,
+    # The 11.4 m/s closing speed removes about 11.4 m before acquisition,
+    # reproducing the route's observed ~93.6 m lead distance.
+    distance_lead=105.0,
+    v_lead=23.4,
+    v_cruise=40.0,
+    lead_observation_fn=observe,
+    actuator_delay=0.15,
+    actuator_lag=0.20,
+  )
+  baseline = _run(controller_enabled=False, **common)
+  trace = _run(controller_enabled=True, **common)
+
+  acquired = np.flatnonzero((trace.time >= acquisition_time) & (trace.selected_lead == 0))
+  assert len(acquired)
+  assert trace.lead_obstacle_weight_0[acquired[0]] == 1.0
+  for threshold in (-1.0, -2.0):
+    assert _first_time_below(trace, threshold) <= _first_time_below(baseline, threshold) + 1e-9
+  assert trace.solver_failures == 0
+  record_property("clean_base_solver_failures", baseline.solver_failures)
+  if baseline.solver_failures:
+    pytest.xfail("provisional route gate: clean-base MPC loses the abrupt 34.8-to-23.4 m/s lead-acquisition solve")
+
+  baseline_gap = baseline.distance_lead - baseline.distance
+  controlled_gap = trace.distance_lead - trace.distance
+  assert np.min(controlled_gap) >= np.min(baseline_gap) - 1e-3
+  baseline_closing = np.maximum(baseline.speed - common["v_lead"], 0.0)
+  controlled_closing = np.maximum(trace.speed - common["v_lead"], 0.0)
+  baseline_ttc = np.divide(baseline_gap, baseline_closing, out=np.full_like(baseline_gap, np.inf), where=baseline_closing > 0.0)
+  controlled_ttc = np.divide(controlled_gap, controlled_closing, out=np.full_like(controlled_gap, np.inf), where=controlled_closing > 0.0)
+  assert np.min(controlled_ttc) >= np.min(baseline_ttc) - 1e-3
+
+
 def test_alternating_full_lead_range_glitch_has_bounded_jerk_and_no_reversal():
   glitch_start = 5.0
   glitch_end = 5.5
@@ -446,6 +541,35 @@ def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_o
   assert not _has_propulsion_brake_reversal(trace, after=departure_time)
 
 
+@pytest.mark.parametrize("profile", range(3), ids=("eco", "normal", "sport"))
+def test_route_derived_prius_prompt_launch_gate(profile):
+  departure_time = 1.0
+
+  def lead_speed(current_time: float) -> float:
+    return 0.0 if current_time < departure_time else 2.0
+
+  trace = _run(
+    duration=3.0,
+    controller_enabled=True,
+    profile=profile,
+    lead_relevancy=True,
+    speed=0.0,
+    distance_lead=6.0,
+    v_lead=lead_speed,
+    # Dominant post-SCC/SLA target in the supplied Prius routes (50 mph).
+    v_cruise=22.352,
+    actuator_model=PRIUS_TSS2_ROUTE_MODEL,
+  )
+
+  first_three = (trace.time > departure_time) & (trace.time <= departure_time + 3 * DT_MDL + 1e-9)
+  assert not trace.launching[first_three].any()
+  assert np.max(trace.speed[first_three]) < 1e-3
+  moving = np.flatnonzero((trace.time >= departure_time) & (trace.speed > 0.05))
+  assert len(moving)
+  assert trace.time[moving[0]] - departure_time <= 1.0 + 1e-9
+  assert trace.solver_failures == 0
+
+
 def test_stop_hold_two_frame_total_lead_dropout_cannot_launch():
   def observe(current_time: float, _lead_name: str, truth: LeadObservation) -> LeadObservation | None:
     return None if 1.0 <= current_time < 1.1 else truth
@@ -467,6 +591,41 @@ def test_stop_hold_two_frame_total_lead_dropout_cannot_launch():
   assert np.max(trace.pace) == 0.0
   assert trace.solver_failures == 0
   assert not _has_propulsion_brake_reversal(trace, after=0.5)
+
+
+@pytest.mark.parametrize("v_ego_stopping", [0.25, 0.10], ids=("toyota-like", "tesla-like"))
+def test_stop_hold_above_vehicle_should_stop_threshold_keeps_close_lead_authority(v_ego_stopping):
+  _set_accel_controller_params(enabled=True, profile=1)
+  initial_gap = 0.25
+  plant = Plant(
+    lead_relevancy=True,
+    speed=0.28,
+    distance_lead=initial_gap,
+    actuator_delay=0.10,
+    actuator_lag=0.20,
+  )
+  plant.planner.CP.vEgoStopping = v_ego_stopping
+
+  gaps = []
+  should_stop = []
+  solver_statuses = []
+  first_controller = None
+  for _ in range(round(2.0 / DT_MDL)):
+    result = plant.step(v_lead=0.0, v_cruise=5.0)
+    controller = plant.planner.accel_controller_result
+    first_controller = first_controller or controller
+    gaps.append(result["distance_lead"] - result["distance"])
+    should_stop.append(result["should_stop"])
+    solver_statuses.append(plant.planner.mpc.last_solution_status)
+
+  assert first_controller is not None
+  assert first_controller.state == AccelControllerState.stopHold
+  assert first_controller.target_speed == 0.0
+  assert first_controller.lead_obstacle_weights == (1.0, 1.0)
+  assert np.flatnonzero(should_stop)[0] * DT_MDL <= 1.0
+  assert min(gaps) > 0.05
+  assert plant.speed == 0.0
+  assert not any(solver_statuses)
 
 
 def test_clear_road_launch_is_immediate_bounded_and_profiles_feel_distinct():

@@ -60,6 +60,26 @@ def test_mpc_preshape_keeps_current_accel_feasible_only_at_initial_node():
   np.testing.assert_array_equal(shaped_params[:, 2:], stock_params[:, 2:])
 
 
+def test_mpc_negative_preshape_constrains_upper_bound_without_weakening_safety_bound():
+  radar_state = messaging.new_message('radarState').radarState
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(10.0, ACCEL_MIN)
+  mpc.run = lambda: None
+  requested_accel_max = np.linspace(ACCEL_MIN - 1.0, -0.2, N + 1)
+  expected_accel_max = np.clip(requested_accel_max, ACCEL_MIN, ACCEL_MAX)
+
+  mpc.update(radar_state, 30.0, accel_max=requested_accel_max, shape_accel_max_in_cruise=True)
+  shaped_params = mpc.params.copy()
+  mpc.update(radar_state, 30.0)
+  stock_params = mpc.params.copy()
+
+  np.testing.assert_array_equal(shaped_params[:, 0], ACCEL_MIN)
+  np.testing.assert_array_equal(shaped_params[:, 0], stock_params[:, 0])
+  np.testing.assert_array_equal(shaped_params[:, 1], expected_accel_max)
+  assert np.all(shaped_params[:, 1] < stock_params[:, 1])
+  assert np.all((ACCEL_MIN <= shaped_params[:, 1]) & (shaped_params[:, 1] <= ACCEL_MAX))
+
+
 def test_mpc_last_solve_failure_survives_internal_solver_reset():
   mpc = LongitudinalMpc()
   mpc.last_solution_status = 3
@@ -82,6 +102,53 @@ def test_mpc_missing_or_invalid_preshape_is_exact_stock(accel_max):
   mpc.update(radar_state, 30.0, accel_max=accel_max)
 
   np.testing.assert_array_equal(mpc.params, stock_params)
+
+
+def test_mpc_benign_lead_weight_softens_only_optimization_obstacle():
+  radar_state = messaging.new_message('radarState').radarState
+  radar_state.leadOne.status = True
+  radar_state.leadOne.dRel = 60.0
+  radar_state.leadOne.vLead = 15.0
+  radar_state.leadOne.vLeadK = 15.0
+  radar_state.leadOne.aLeadK = 0.0
+  radar_state.leadOne.aLeadTau = 1.0
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(20.0, 0.0)
+  mpc.run = lambda: None
+
+  mpc.update(radar_state, 30.0, lead_obstacle_weights=(1.0, 1.0))
+  full_authority_params = mpc.params.copy()
+  lead_before = (radar_state.leadOne.dRel, radar_state.leadOne.vLead, radar_state.leadOne.aLeadK)
+  mpc.update(radar_state, 30.0, lead_obstacle_weights=(0.2, 1.0))
+  softened_params = mpc.params.copy()
+
+  assert softened_params[0, 2] > full_authority_params[0, 2]
+  np.testing.assert_array_equal(softened_params[:, :2], full_authority_params[:, :2])
+  np.testing.assert_array_equal(softened_params[:, 3:], full_authority_params[:, 3:])
+  np.testing.assert_array_equal(mpc.lead_obstacle_weights, [0.2, 1.0])
+  assert (radar_state.leadOne.dRel, radar_state.leadOne.vLead, radar_state.leadOne.aLeadK) == lead_before
+
+
+@pytest.mark.parametrize("weights", [(1.0,), (np.nan, 1.0), (np.inf, 1.0)])
+def test_mpc_invalid_lead_weights_are_exact_full_authority(weights):
+  radar_state = messaging.new_message('radarState').radarState
+  radar_state.leadOne.status = True
+  radar_state.leadOne.dRel = 60.0
+  radar_state.leadOne.vLead = 15.0
+  radar_state.leadOne.aLeadK = 0.0
+  radar_state.leadOne.aLeadTau = 1.0
+  mpc = LongitudinalMpc()
+  mpc.set_cur_state(20.0, 0.0)
+  mpc.run = lambda: None
+  mpc.update(radar_state, 30.0)
+  stock_params = mpc.params.copy()
+  stock_source = mpc.source
+
+  mpc.update(radar_state, 30.0, lead_obstacle_weights=weights)
+
+  np.testing.assert_array_equal(mpc.params, stock_params)
+  assert mpc.source == stock_source
+  np.testing.assert_array_equal(mpc.lead_obstacle_weights, [1.0, 1.0])
 
 
 def test_shadow_target_telemetry_publishes_filtered_cap():

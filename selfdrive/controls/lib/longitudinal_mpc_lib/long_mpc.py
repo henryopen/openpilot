@@ -243,6 +243,7 @@ class LongitudinalMpc:
     self.last_cloudlog_t = 0
     self.status = False
     self.crash_cnt = 0.0
+    self.lead_obstacle_weights = np.ones(2)
     self.solution_status = 0
     # timers
     self.solve_time = 0.0
@@ -315,7 +316,8 @@ class LongitudinalMpc:
     return lead_xv
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
-             accel_max: float | tuple[float, ...] | np.ndarray | None = None, shape_accel_max_in_cruise: bool = False):
+             accel_max: float | tuple[float, ...] | np.ndarray | None = None, shape_accel_max_in_cruise: bool = False,
+             lead_obstacle_weights: tuple[float, float] | np.ndarray | None = None):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -326,8 +328,8 @@ class LongitudinalMpc:
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
-    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+    raw_lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
+    raw_lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
     custom_accel_max = False
     accel_max_traj = ACCEL_MAX * np.ones(N + 1)
@@ -337,7 +339,7 @@ class LongitudinalMpc:
         accel_max_input = np.full(N + 1, float(accel_max_input))
       custom_accel_max = accel_max_input.shape == (N + 1,) and np.all(np.isfinite(accel_max_input))
       if custom_accel_max:
-        accel_max_traj = np.clip(accel_max_input, 0.0, ACCEL_MAX)
+        accel_max_traj = np.clip(accel_max_input, ACCEL_MIN, ACCEL_MAX)
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
@@ -350,6 +352,25 @@ class LongitudinalMpc:
       v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
+
+    # The acceleration controller may gradually introduce a benign newly
+    # acquired obstacle to avoid a one-frame optimizer/source discontinuity.
+    # Raw lead trajectories remain untouched for FCW below, and missing or
+    # invalid weights preserve stock behavior exactly.
+    self.lead_obstacle_weights = np.ones(2)
+    if lead_obstacle_weights is not None:
+      weight_input = np.asarray(lead_obstacle_weights, dtype=float)
+      if weight_input.shape == (2,) and np.all(np.isfinite(weight_input)):
+        self.lead_obstacle_weights = np.clip(weight_input, 0.0, 1.0)
+    if np.array_equal(self.lead_obstacle_weights, np.ones(2)):
+      # Preserve the original arrays bit-for-bit on every bypass. Even an
+      # algebraically equivalent subtract/add can perturb the one-iteration
+      # solver at a standstill.
+      lead_0_obstacle = raw_lead_0_obstacle
+      lead_1_obstacle = raw_lead_1_obstacle
+    else:
+      lead_0_obstacle = cruise_obstacle + self.lead_obstacle_weights[0] * (raw_lead_0_obstacle - cruise_obstacle)
+      lead_1_obstacle = cruise_obstacle + self.lead_obstacle_weights[1] * (raw_lead_1_obstacle - cruise_obstacle)
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]

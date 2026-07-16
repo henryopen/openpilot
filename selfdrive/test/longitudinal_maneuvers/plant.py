@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 import math
 import time
 from typing import Any
@@ -19,6 +20,48 @@ from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 LeadObservation = dict[str, Any]
 LeadObservationFn = Callable[[float, str, LeadObservation], LeadObservation | None]
 ModelActionFn = Callable[[float, float, float], tuple[float, bool]]
+EgoObservationFn = Callable[[float, float, float], tuple[float, float]]
+
+
+@dataclass(frozen=True)
+class ActuatorModel:
+  planner_delay: float
+  transport_delay: float
+  actuator_lag: float
+  command_rate_limit: float
+  stopping_acceleration: float
+  standstill_breakaway_acceleration: float
+  standstill_breakaway_time: float
+
+  def __post_init__(self):
+    nonnegative_fields = {
+      "planner_delay": self.planner_delay,
+      "transport_delay": self.transport_delay,
+      "actuator_lag": self.actuator_lag,
+      "standstill_breakaway_acceleration": self.standstill_breakaway_acceleration,
+      "standstill_breakaway_time": self.standstill_breakaway_time,
+    }
+    if any(not math.isfinite(value) or value < 0.0 for value in nonnegative_fields.values()):
+      raise ValueError(f"ActuatorModel fields must be finite and non-negative: {nonnegative_fields}")
+    if not math.isfinite(self.command_rate_limit) or self.command_rate_limit <= 0.0:
+      raise ValueError("command_rate_limit must be finite and positive")
+    if not math.isfinite(self.stopping_acceleration) or self.stopping_acceleration > 0.0:
+      raise ValueError("stopping_acceleration must be finite and non-positive")
+
+
+# Route-derived conservative Prius TSS2 stress model for the acceleration-controller
+# regression suite. The 1.0 m/s² gate represents prompt takeoffs, not a universal
+# physical threshold: the supplied routes also contain low-command creep departures.
+# This models vehicle response only and does not emulate Toyota's CAN controller.
+PRIUS_TSS2_ROUTE_MODEL = ActuatorModel(
+  planner_delay=0.05,
+  transport_delay=0.0,
+  actuator_lag=0.20,
+  command_rate_limit=4.0,
+  stopping_acceleration=-2.0,
+  standstill_breakaway_acceleration=1.0,
+  standstill_breakaway_time=0.05,
+)
 
 
 class Plant:
@@ -37,8 +80,10 @@ class Plant:
     force_decel=False,
     lead_observation_fn: LeadObservationFn | None = None,
     model_action_fn: ModelActionFn | None = None,
+    ego_observation_fn: EgoObservationFn | None = None,
     actuator_delay: float | None = None,
     actuator_lag: float = 0.0,
+    actuator_model: ActuatorModel | None = None,
   ):
     """Closed-loop longitudinal planner plant.
 
@@ -50,11 +95,20 @@ class Plant:
     ``model_action_fn(time, v_ego, a_ego)`` returns
     ``(desired_acceleration, should_stop)``.
 
+    ``ego_observation_fn(time, true_v_ego, true_a_ego)`` returns the observed
+    ``(v_ego, a_ego)`` published in ``carState``. It can inject measurement noise
+    without changing the physical plant state.
+
     Passing ``actuator_delay`` both overrides ``CP.longitudinalActuatorDelay`` and
     adds the corresponding command transport delay to the plant. ``None`` keeps the
     historical Honda planner delay with instantaneous plant response. ``actuator_lag``
     is an optional first-order acceleration-response time constant. Both defaults keep
     historical plant dynamics unchanged.
+
+    ``actuator_model`` opts into a staged vehicle-response model. Its planner delay
+    is used by MPC, while its independent transport delay is used by the command
+    queue before rate limiting, standstill breakaway confirmation, and first-order
+    lag. Leaving it unset preserves the historical actuator path.
     """
     if actuator_delay is not None and (not math.isfinite(actuator_delay) or actuator_delay < 0.0):
       raise ValueError("actuator_delay must be finite and non-negative")
@@ -79,6 +133,9 @@ class Plant:
     self.acceleration = 0.0
     self.a_target = 0.0
     self.actuator_command = 0.0
+    self.applied_actuator_command = 0.0
+    self.breakaway_confirmed = False
+    self._breakaway_timer = 0.0
 
     # lead car
     self.lead_relevancy = lead_relevancy
@@ -91,9 +148,13 @@ class Plant:
     self.force_decel = force_decel
     self.lead_observation_fn = lead_observation_fn
     self.model_action_fn = model_action_fn
-    self.actuator_delay = actuator_delay
-    self.actuator_lag = actuator_lag
-    self.publish_realized_a_ego = any((lead_observation_fn is not None, model_action_fn is not None, actuator_delay is not None, actuator_lag > 0.0))
+    self.ego_observation_fn = ego_observation_fn
+    self.actuator_model = actuator_model
+    self.actuator_delay = actuator_model.planner_delay if actuator_model is not None else actuator_delay
+    self.transport_delay = actuator_model.transport_delay if actuator_model is not None else actuator_delay
+    self.actuator_lag = actuator_model.actuator_lag if actuator_model is not None else actuator_lag
+    self.publish_realized_a_ego = any((lead_observation_fn is not None, model_action_fn is not None, ego_observation_fn is not None,
+                                      actuator_delay is not None, actuator_lag > 0.0, actuator_model is not None))
 
     self.rk = Ratekeeper(self.rate, print_delay_threshold=100.0)
     self.ts = 1.0 / self.rate
@@ -109,7 +170,9 @@ class Plant:
     CP_SP = CarInterface.get_non_essential_params_sp(CP, CAR.HONDA_CIVIC)
     self.planner = LongitudinalPlanner(CP, CP_SP, init_v=self.speed)
 
-    delay_steps = 0 if self.actuator_delay is None else round(self.actuator_delay / self.ts)
+    if self.actuator_model is not None and self.speed >= 0.01:
+      self.breakaway_confirmed = True
+    delay_steps = 0 if self.transport_delay is None else round(self.transport_delay / self.ts)
     self._actuator_delay_queue = deque([self.acceleration] * delay_steps)
 
   @property
@@ -144,11 +207,41 @@ class Plant:
     else:
       delayed_command = command
 
+    if self.actuator_model is not None:
+      max_command_delta = self.actuator_model.command_rate_limit * self.ts
+      self.applied_actuator_command = float(np.clip(delayed_command,
+                                                   self.applied_actuator_command - max_command_delta,
+                                                   self.applied_actuator_command + max_command_delta))
+
+      if self.speed < 0.01:
+        if self.applied_actuator_command <= 0.0:
+          self.breakaway_confirmed = False
+          self._breakaway_timer = 0.0
+        elif not self.breakaway_confirmed:
+          breakaway_ready = self.applied_actuator_command + 1e-9 >= self.actuator_model.standstill_breakaway_acceleration
+          if breakaway_ready:
+            self._breakaway_timer += self.ts
+          else:
+            self._breakaway_timer = 0.0
+
+          self.breakaway_confirmed = breakaway_ready and self._breakaway_timer + 1e-9 >= self.actuator_model.standstill_breakaway_time
+        if not self.breakaway_confirmed:
+          self.acceleration = 0.0
+          return delayed_command, self.acceleration
+      else:
+        self.breakaway_confirmed = True
+
+      response_command = self.applied_actuator_command
+    else:
+      # Preserve the historical response path exactly when no staged model is used.
+      self.applied_actuator_command = delayed_command
+      response_command = delayed_command
+
     if self.actuator_lag > 0.0:
       alpha = 1.0 - math.exp(-self.ts / self.actuator_lag)
-      self.acceleration += alpha * (delayed_command - self.acceleration)
+      self.acceleration += alpha * (response_command - self.acceleration)
     else:
-      self.acceleration = delayed_command
+      self.acceleration = response_command
     return delayed_command, self.acceleration
 
   def step(self, v_lead=0.0, prob_lead=1.0, v_cruise=50.0, pitch=0.0, prob_throttle=1.0):
@@ -232,8 +325,13 @@ class Plant:
     ss.selfdriveState.experimentalMode = self.e2e
     ss.selfdriveState.personality = self.personality
     control.controlsState.forceDecel = self.force_decel
-    car_state.carState.vEgo = float(self.speed)
-    published_a_ego = self.acceleration if self.publish_realized_a_ego else 0.0
+    true_v_ego = self.speed
+    true_a_ego = self.acceleration
+    published_v_ego = true_v_ego
+    published_a_ego = true_a_ego if self.publish_realized_a_ego else 0.0
+    if self.ego_observation_fn is not None:
+      published_v_ego, published_a_ego = self.ego_observation_fn(self.current_time, true_v_ego, true_a_ego)
+    car_state.carState.vEgo = float(published_v_ego)
     car_state.carState.aEgo = float(published_a_ego)
     car_state.carState.standstill = bool(self.speed < 0.01)
     car_state.carState.vCruise = float(v_cruise * 3.6)
@@ -256,7 +354,8 @@ class Plant:
     self.a_target = self.planner.output_a_target
     self.actuator_command = self.a_target
     if self.planner.output_should_stop:
-      self.actuator_command = min(-0.5, self.actuator_command)
+      stopping_acceleration = -0.5 if self.actuator_model is None else self.actuator_model.stopping_acceleration
+      self.actuator_command = min(stopping_acceleration, self.actuator_command)
     delayed_actuator_command, _ = self._update_actuator(self.actuator_command)
     self.speed = self.speed + self.acceleration * self.ts
     self.should_stop = self.planner.output_should_stop
@@ -293,9 +392,22 @@ class Plant:
       "acceleration": self.acceleration,
       "realized_acceleration": self.acceleration,
       "a_target": self.a_target,
+      "planner_acceleration": self.a_target,
       "actuator_command": self.actuator_command,
+      "stop_clamped_actuator_command": self.actuator_command,
       "delayed_actuator_command": delayed_actuator_command,
+      "applied_actuator_command": self.applied_actuator_command,
+      "vehicle_actuator_command": self.applied_actuator_command,
+      "true_v_ego": true_v_ego,
+      "true_a_ego": true_a_ego,
       "published_a_ego": published_a_ego,
+      "published_v_ego": published_v_ego,
+      "observed_a_ego": published_a_ego,
+      "observed_v_ego": published_v_ego,
+      "planner_delay": self.actuator_delay,
+      "transport_delay": self.transport_delay,
+      "breakaway_confirmed": self.breakaway_confirmed,
+      "breakaway_time": self._breakaway_timer,
       "should_stop": self.should_stop,
       "distance_lead": self.distance_lead,
       "fcw": fcw,
