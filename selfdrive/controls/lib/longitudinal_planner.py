@@ -179,7 +179,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       if output_a_target < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
     else:
-      output_a_target = output_a_target_mpc
+      output_a_target = min(output_a_target_mpc, stop_constraint.accel_ceiling_mps2)
       self.output_should_stop = output_should_stop_mpc
 
     self.output_should_stop |= stop_constraint.hold

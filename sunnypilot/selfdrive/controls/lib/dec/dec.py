@@ -237,16 +237,8 @@ class DynamicExperimentalController:
     self._urgency = self._slow_down_tracker.value
 
   def _radar_acc_lead_score(self, lead_one) -> float:
-    if not lead_one.status:
-      return 0.0
-
-    d_rel = float(getattr(lead_one, 'dRel', float('inf')))
-    v_rel = float(getattr(lead_one, 'vRel', 0.0))
-    if d_rel <= WMACConstants.RADAR_LEAD_ACC_MAX_DREL:
-      return 1.0
-    if v_rel <= WMACConstants.RADAR_LEAD_ACC_MIN_CLOSING_SPEED and d_rel / max(-v_rel, 0.1) <= WMACConstants.RADAR_LEAD_ACC_MAX_TTC:
-      return 1.0
-    return 0.0
+    radar_track_id = int(getattr(lead_one, 'radarTrackId', -1))
+    return float(lead_one.status and (bool(getattr(lead_one, 'radar', False)) or radar_track_id >= 0))
 
   def _model_action_urgency(self, md) -> float:
     action = getattr(md, 'action', None)
@@ -276,14 +268,14 @@ class DynamicExperimentalController:
     return urgency
 
   def _desired_mode(self) -> tuple[ModeType, bool]:
+    if not self._CP.radarUnavailable and self._has_radar_acc_lead:
+      return 'acc', True
+
     if self._stop_constraint.state == StopIntentState.suppressed:
       return 'acc', True
 
     if self._stop_constraint.active:
       return 'blended', True
-
-    if not self._CP.radarUnavailable and self._has_radar_acc_lead:
-      return 'acc', False
 
     if self._has_mpc_fcw:
       return 'blended', True
@@ -328,7 +320,7 @@ class DynamicExperimentalController:
 
     mode, immediate = self._desired_mode()
     self._mode_manager.request_mode(mode, immediate=immediate, hold_frames=WMACConstants.EMERGENCY_HOLD_FRAMES,
-                                    cancel_hold=self._has_radar_acc_lead)
+                                    cancel_hold=not self._CP.radarUnavailable and self._has_radar_acc_lead)
     self._mode_manager.update()
 
     self._frame += 1
