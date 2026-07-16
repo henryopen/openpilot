@@ -1,6 +1,7 @@
 import pytest
 
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController, HysteresisSignal
+from openpilot.sunnypilot.selfdrive.controls.lib.dec.stop_intent import StopIntentState
 
 
 class MockLeadOne:
@@ -16,10 +17,16 @@ class MockRadarState:
 
 
 class MockCarState:
-  def __init__(self, vEgo=0.0, vCruise=0.0, standstill=False):
+  def __init__(self, vEgo=0.0, vCruise=0.0, standstill=False, gasPressed=False):
     self.vEgo = vEgo
     self.vCruise = vCruise
     self.standstill = standstill
+    self.gasPressed = gasPressed
+
+
+class MockCarControl:
+  def __init__(self, long_active=True):
+    self.longActive = long_active
 
 
 class MockAction:
@@ -29,13 +36,14 @@ class MockAction:
 
 
 class MockModelData:
-  def __init__(self, valid=True, endpoint_x=200.0, orientation_valid=None, desired_acceleration=0.0, should_stop=False):
+  def __init__(self, valid=True, endpoint_x=200.0, orientation_valid=None, desired_acceleration=0.0, should_stop=False, terminal_speed=20.0):
     position_size = 33 if valid else 10
     orientation_size = position_size if orientation_valid is None else (33 if orientation_valid else 10)
     position_x = [0.0] * position_size
     if position_x:
       position_x[-1] = endpoint_x
-    self.position = type("Pos", (), {"x": position_x})()
+    self.position = type("Pos", (), {"x": position_x, "y": [0.0] * position_size})()
+    self.velocity = type("Velocity", (), {"x": [terminal_speed] * position_size, "y": [0.0] * position_size})()
     self.orientation = type("Ori", (), {"x": [0.0] * orientation_size})()
     self.acceleration = type("Accel", (), {"x": [0.0] * position_size})()
     self.action = MockAction(desired_acceleration, should_stop)
@@ -51,14 +59,21 @@ class MockParams:
     return True
 
 
+class MockSubMaster(dict):
+  def __init__(self, *args, **kwargs):
+    super().__init__(*args, **kwargs)
+    self.valid = {'modelV2': True}
+
+
 @pytest.fixture
 def default_sm():
-  sm = {
+  sm = MockSubMaster({
+    'carControl': MockCarControl(),
     'carState': MockCarState(vEgo=10.0, vCruise=20.0),
     'radarState': MockRadarState(status=1.0),
     'modelV2': MockModelData(valid=True),
     'selfdriveState': MockSelfDriveState(experimentalMode=True),
-  }
+  })
   return sm
 
 
@@ -66,6 +81,7 @@ def default_sm():
 def mock_cp():
   class CP:
     radarUnavailable = False
+    openpilotLongitudinalControl = True
   return CP()
 
 
@@ -233,3 +249,68 @@ def test_lead_flicker_hold_prevents_one_frame_mode_flip(mock_cp, mock_mpc, defau
 
   assert controller._has_lead_filtered
   assert controller.mode() == "acc"
+
+
+def test_consistent_stop_intent_commits_and_survives_radar_acquisition(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=0.0)
+
+  for frame in range(20):
+    default_sm['modelV2'] = MockModelData(endpoint_x=55.0 - frame * 0.5, desired_acceleration=-1.0, terminal_speed=0.0)
+    controller.update(default_sm)
+
+  assert controller.stop_constraint().active
+  assert controller.stop_constraint().state == StopIntentState.approach
+  assert controller.mode() == "blended"
+
+  default_sm['radarState'] = MockRadarState(status=1.0)
+  controller.update(default_sm)
+  assert controller.stop_constraint().active
+  assert controller.mode() == "blended"
+
+
+def test_gas_suppresses_committed_stop_and_returns_to_acc(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=0.0)
+
+  for frame in range(20):
+    default_sm['modelV2'] = MockModelData(endpoint_x=50.0 - frame * 0.5, desired_acceleration=-1.0, terminal_speed=0.0)
+    controller.update(default_sm)
+  assert controller.stop_constraint().active
+
+  default_sm['carState'].gasPressed = True
+  controller.update(default_sm)
+
+  assert controller.stop_constraint().state == StopIntentState.suppressed
+  assert not controller.stop_constraint().active
+  assert controller.mode() == "acc"
+
+
+def test_vision_only_lead_blocks_stop_qualification(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=1.0)
+
+  for frame in range(20):
+    default_sm['modelV2'] = MockModelData(endpoint_x=55.0 - frame * 0.5, desired_acceleration=-1.0, terminal_speed=0.0)
+    controller.update(default_sm)
+
+  assert controller.stop_constraint().state == StopIntentState.clear
+  assert not controller.stop_constraint().active
+
+
+def test_stop_qualification_requires_valid_model_and_longitudinal_authority(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=0.0)
+  default_sm.valid['modelV2'] = False
+
+  for frame in range(20):
+    default_sm['modelV2'] = MockModelData(endpoint_x=55.0 - frame * 0.5, desired_acceleration=-1.0, terminal_speed=0.0)
+    controller.update(default_sm)
+  assert controller.stop_constraint().state == StopIntentState.clear
+
+  default_sm.valid['modelV2'] = True
+  default_sm['carControl'].longActive = False
+  for frame in range(20):
+    default_sm['modelV2'] = MockModelData(endpoint_x=55.0 - frame * 0.5, desired_acceleration=-1.0, terminal_speed=0.0)
+    controller.update(default_sm)
+  assert controller.stop_constraint().state == StopIntentState.clear

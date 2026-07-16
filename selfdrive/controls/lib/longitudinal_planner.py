@@ -135,6 +135,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
 
     # DEC is the sole ACC/e2e authority. Cache its decision once for both the governor and output arbitration.
     is_e2e = self.is_e2e(sm)
+    stop_constraint = self.dec.stop_constraint()
     v_cruise = LongitudinalPlannerSP.update_accel_controller(
       self, sm, v_cruise, engaged=not reset_state, cruise_initialized=v_cruise_initialized, acc_selected=not is_e2e,
       planner_speed=self.v_desired_filter.x, previous_mpc_source=self.mpc.source, previous_should_stop=self.output_should_stop,
@@ -173,13 +174,15 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     if is_e2e:
-      output_a_target = min(output_a_target_e2e, output_a_target_mpc)
+      output_a_target = min(output_a_target_e2e, output_a_target_mpc, stop_constraint.accel_ceiling_mps2)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
     else:
       output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
+
+    self.output_should_stop |= stop_constraint.hold
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

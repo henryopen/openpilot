@@ -84,7 +84,7 @@ class CruiseLayout(Widget):
 
     self.dec_toggle = toggle_item_sp(
       title=tr("Enable Dynamic Experimental Control"),
-      description=tr("Enable toggle to allow the model to determine when to use sunnypilot ACC or sunnypilot End to End Longitudinal."),
+      description=tr("Let the model choose between sunnypilot ACC and End to End Longitudinal. Stable stop trajectories can brake to a full stop and hold."),
       param="DynamicExperimentalControl")
 
     items = [
