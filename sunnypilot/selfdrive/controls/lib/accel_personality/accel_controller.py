@@ -74,6 +74,8 @@ CLEAR_LAUNCH_ACCEL_RATE = 3.0
 INITIAL_LAUNCH_ACCEL_MAX = 0.95
 BREAKAWAY_ACCEL_MAX = 1.15
 HOLD_ACCEL_MAX = 0.10
+MATCHED_LEAD_CLOSING_SPEED = 0.02
+MATCHED_LEAD_PROFILE_ACCEL = -0.90
 LAUNCH_PACE_RATE = 5.0
 LEAD_ACQUISITION_INITIAL_AUTHORITY = 0.20
 LEAD_ACQUISITION_TIME = 0.30
@@ -85,8 +87,12 @@ LEAD_ACQUISITION_MIN_LEAD_ACCEL = -0.50
 LEAD_ACQUISITION_MIN_PLANNER_ACCEL = -0.10
 LEAD_DEPARTURE_HANDOFF_TIME = 0.50
 RELATIVE_PACE_PREVIEW_TIME = 3.0
-URGENT_BYPASS_REQUIRED_DECEL = 0.75
+URGENT_BYPASS_REQUIRED_DECEL = 0.45
 URGENT_BYPASS_MIN_SPEED = 5.0
+URGENT_RELEASE_REQUIRED_DECEL = 0.35
+URGENT_LOW_SPEED_LEAD_BYPASS = 5.0
+URGENT_REJOIN_ACCEL_MAX = -0.15
+URGENT_REJOIN_ACCEL_RATE = 5.0
 
 
 @dataclass(frozen=True)
@@ -97,6 +103,7 @@ class EnergyEnvelope:
   usable_gap: float = math.inf
   closing_speed: float = 0.0
   required_decel: float = 0.0
+  conservative_required_decel: float = 0.0
   has_nearly_stopped_lead: bool = False
 
 
@@ -141,6 +148,8 @@ class _PacePath:
   accel_limit: float | None = None
   decel_limit_active: bool = False
   urgent_bypass_active: bool = False
+  urgent_recovery_active: bool = False
+  urgent_dropout_frames: int = 0
   lead_seen: list[bool] = field(default_factory=lambda: [False, False])
   lead_track_ids: list[int] = field(default_factory=lambda: [-1, -1])
   lead_obstacle_weights: list[float] = field(default_factory=lambda: [1.0, 1.0])
@@ -158,6 +167,8 @@ class _PacePath:
     self.accel_limit = None
     self.decel_limit_active = False
     self.urgent_bypass_active = False
+    self.urgent_recovery_active = False
+    self.urgent_dropout_frames = 0
     self.lead_seen = [False, False]
     self.lead_track_ids = [-1, -1]
     self.lead_obstacle_weights = [1.0, 1.0]
@@ -260,6 +271,26 @@ class AccelController:
       else:
         required_decel = closing_speed * closing_speed / (2.0 * usable_gap)
 
+      # A newly acquired radar track can briefly report a large positive
+      # acceleration. Do not let that optimistic sample delay handing an
+      # urgent lead to stock MPC. This conservative value is used only for
+      # urgent acquisition classification; the energy cap and raw radar lead
+      # continue using the original stock-filtered acceleration.
+      conservative_required_decel = required_decel
+      if a_lead > 0.0:
+        conservative_lead_xv = LongitudinalMpc.extrapolate_lead(x_lead, v_lead, 0.0, a_lead_tau)
+        conservative_x_lead = float(np.interp(delay, T_IDXS, conservative_lead_xv[:, 0]))
+        conservative_v_lead = float(np.interp(delay, T_IDXS, conservative_lead_xv[:, 1]))
+        conservative_gap = max(conservative_x_lead - x_ego - STOP_DISTANCE - t_follow * conservative_v_lead, 0.0)
+        conservative_closing = max(v_ego_delay - conservative_v_lead, 0.0)
+        if conservative_closing == 0.0:
+          conservative_required_decel = 0.0
+        elif conservative_gap == 0.0:
+          conservative_required_decel = math.inf
+        else:
+          conservative_required_decel = conservative_closing * conservative_closing / (2.0 * conservative_gap)
+        conservative_required_decel = max(required_decel, conservative_required_decel)
+
       # Relative kinetic energy: the lead keeps moving while ego sheds closing speed.
       anticipated_gap = max(usable_gap - closing_speed * RELATIVE_PACE_PREVIEW_TIME, 0.0)
       cap = v_lead_delay + math.sqrt(2.0 * config.comfort_decel * anticipated_gap)
@@ -269,6 +300,7 @@ class AccelController:
         usable_gap=usable_gap,
         closing_speed=closing_speed,
         required_decel=required_decel,
+        conservative_required_decel=conservative_required_decel,
       ))
 
     if not candidates:
@@ -283,6 +315,7 @@ class AccelController:
       usable_gap=selected.usable_gap,
       closing_speed=selected.closing_speed,
       required_decel=selected.required_decel,
+      conservative_required_decel=selected.conservative_required_decel,
       has_nearly_stopped_lead=departure_lead_speed < STOPPED_LEAD_SPEED,
     )
 
@@ -535,6 +568,8 @@ class AccelController:
     planner_accel: float,
     profile_accel_max: float,
     config: ProfileConfig,
+    closing_speed: float,
+    lead_present: bool,
   ) -> tuple[float, float]:
     """Return telemetry effective max and the controller's pre-MPC upper bound."""
     profile_limit = float(np.clip(profile_accel_max, 0.0, ACCEL_MAX))
@@ -545,10 +580,12 @@ class AccelController:
       # opens in time on departure instead of changing shape in one frame.
       path.accel_limit = 0.0
       path.decel_limit_active = False
+      path.urgent_recovery_active = False
       return min(stock_accel_max, 0.0), 0.0
 
     if path.departing_from_stop:
       path.decel_limit_active = False
+      path.urgent_recovery_active = False
       planner_seed = max(0.0, planner_accel)
       if path.departure_handoff_active:
         # Open every profile at the same bounded jerk rate until the command is
@@ -568,7 +605,27 @@ class AccelController:
           path.accel_limit = min(BREAKAWAY_ACCEL_MAX, path.accel_limit + CLEAR_LAUNCH_ACCEL_RATE * self.dt)
       return min(stock_accel_max, path.accel_limit), path.accel_limit
 
-    if path.state == AccelControllerState.restrict:
+    if path.urgent_recovery_active:
+      # Once projected relative speed is matched, a persistent recovery floor
+      # would keep the car from accelerating back toward a moving lead. Hand
+      # off to the normal state machine from the already-slewed ceiling. A
+      # missing lead does not qualify: the median dropout guard must retain its
+      # no-gas behavior until current lead evidence returns or relief confirms.
+      if (lead_present and closing_speed <= 0.10) or path.state in (AccelControllerState.free, AccelControllerState.release):
+        path.urgent_recovery_active = False
+      else:
+        previous_limit = path.accel_limit if path.accel_limit is not None else ACCEL_MAX
+        rejoin_target = URGENT_REJOIN_ACCEL_MAX if path.state == AccelControllerState.restrict else HOLD_ACCEL_MAX
+        max_step = URGENT_REJOIN_ACCEL_RATE * self.dt
+        path.accel_limit = float(np.clip(rejoin_target, previous_limit - max_step, previous_limit + max_step))
+        path.decel_limit_active = path.state == AccelControllerState.restrict
+        return min(stock_accel_max, path.accel_limit), path.accel_limit
+
+    if path.state == AccelControllerState.restrict and (not lead_present or closing_speed > MATCHED_LEAD_CLOSING_SPEED):
+      # A negative full-horizon maximum is useful only while ego is still
+      # closing. Keeping it after matching relative speed forces continued
+      # braking below a slower moving lead. Once matched, retain the lowering
+      # pace target but let the selected positive profile ceiling recover.
       requested_limit = -config.comfort_decel
       if not path.decel_limit_active:
         # Preserve an existing pre-MPC ceiling when restriction begins. The
@@ -580,10 +637,15 @@ class AccelController:
         if path.accel_limit is None:
           path.accel_limit = max(0.0, planner_accel)
       path.decel_limit_active = True
-    elif path.state == AccelControllerState.hold:
+    elif lead_present and closing_speed > MATCHED_LEAD_CLOSING_SPEED:
+      # Do not spend the remaining gap by accelerating toward a slower lead,
+      # regardless of whether the scalar pace state is currently releasing.
+      requested_limit = HOLD_ACCEL_MAX
+      path.decel_limit_active = False
+    elif path.state in (AccelControllerState.restrict, AccelControllerState.hold):
       # No gas while waiting for relief confirmation. This is the main
       # anti-rubber-band rule for a still-closing lead.
-      requested_limit = HOLD_ACCEL_MAX
+      requested_limit = profile_limit if lead_present and planner_accel >= MATCHED_LEAD_PROFILE_ACCEL else HOLD_ACCEL_MAX
       path.decel_limit_active = False
     else:
       requested_limit = profile_limit
@@ -697,7 +759,15 @@ class AccelController:
         envelope.closing_speed,
         launch_delta_v,
       )
-      self._update_accel_limit(self.shadow, stock_accel_max, planner_accel, profile_accel_max, config)
+      self._update_accel_limit(
+        self.shadow,
+        stock_accel_max,
+        planner_accel,
+        profile_accel_max,
+        config,
+        envelope.closing_speed,
+        envelope.selected_lead >= 0,
+      )
       shadow_active = True
     else:
       self.shadow.reset()
@@ -737,30 +807,110 @@ class AccelController:
         follow_personality,
         allow_blend=live_was_initialized,
       )
+      urgent_was_active = self.live.urgent_bypass_active
+      pre_urgent_accel_limit = self.live.accel_limit
+      selected_lead_speed = math.inf
+      if envelope.selected_lead in (0, 1):
+        selected_lead_speed = float(getattr((radar_state.leadOne, radar_state.leadTwo)[envelope.selected_lead], "vLeadK", math.inf))
+      selected_has_full_authority = (
+        envelope.selected_lead in (0, 1) and lead_obstacle_weights[envelope.selected_lead] >= 1.0
+      )
+      urgent_required_decel = envelope.required_decel
+      if not live_was_initialized or not established_selected_lead:
+        urgent_required_decel = max(urgent_required_decel, envelope.conservative_required_decel)
       urgent_trigger = (
         sanitized_v_ego >= URGENT_BYPASS_MIN_SPEED
-        and envelope.required_decel >= URGENT_BYPASS_REQUIRED_DECEL
-        and (not live_was_initialized or established_selected_lead)
+        and urgent_required_decel >= URGENT_BYPASS_REQUIRED_DECEL
+        and (not live_was_initialized or established_selected_lead or selected_has_full_authority)
       )
+      if urgent_was_active and envelope.selected_lead < 0:
+        self.live.urgent_dropout_frames += 1
+      else:
+        self.live.urgent_dropout_frames = 0
+      urgent_dropout_guard = urgent_was_active and envelope.selected_lead < 0 and self.live.urgent_dropout_frames <= 2
       urgent_bypass = urgent_trigger or (
-        self.live.urgent_bypass_active and envelope.selected_lead >= 0 and envelope.closing_speed > 0.10
+        urgent_was_active
+        and envelope.selected_lead >= 0
+        and (
+          envelope.required_decel > URGENT_RELEASE_REQUIRED_DECEL
+          or (selected_lead_speed < URGENT_LOW_SPEED_LEAD_BYPASS and self.live.state != AccelControllerState.stopHold)
+        )
       )
-      self.live.urgent_bypass_active = urgent_bypass
-      if urgent_bypass:
+      # Keep the urgent context latched across two missing observations, but do
+      # not call it a stock bypass below: with no raw lead, stock has no obstacle
+      # to preserve the braking plan. The dedicated dropout branch retains only
+      # scalar pace and acceleration state, never stale lead geometry.
+      self.live.urgent_bypass_active = urgent_bypass or urgent_dropout_guard
+      if (
+        urgent_was_active
+        and not urgent_bypass
+        and not urgent_dropout_guard
+        and envelope.selected_lead >= 0
+        and self.live.state != AccelControllerState.stopHold
+      ):
+        # Rejoin comfort control at the speed the stock lead plan has already
+        # reached. Keeping the pre-urgent pace here asks MPC to release a hard
+        # brake toward a stale, much higher target in one frame.
+        rejoin_speed = min(planner_speed, sanitized_v_ego)
+        if envelope.closing_speed <= 0.10 and math.isfinite(selected_lead_speed):
+          # A moving lead is the natural lower pace reference once projected
+          # relative speed is matched. Seeding below it makes the cruise
+          # obstacle reinforce stock's residual braking and creates a large
+          # undershoot before the release ramp can recover.
+          rejoin_speed = max(rejoin_speed, min(base_speed, selected_lead_speed))
+          self.live.pace = rejoin_speed
+        else:
+          self.live.pace = min(self.live.pace if self.live.pace is not None else rejoin_speed, rejoin_speed)
+        self.live.state = AccelControllerState.hold
+        self.live.relief_time = 0.0
+        # Reintroduce the custom horizon from stock's global ceiling. The
+        # existing pre-MPC slew then tightens it gradually instead of stepping
+        # directly from no bound to HOLD_ACCEL_MAX while braking hard.
+        self.live.accel_limit = ACCEL_MAX
+        self.live.urgent_recovery_active = True
+      if urgent_dropout_guard:
+        # A one- or two-frame all-lead dropout must not turn an urgent brake
+        # into gas. Hold the synchronized scalar pace and the current
+        # nonpositive planner ceiling while the median cap remains restrictive.
+        # This protects the handoff without retaining stale lead geometry.
+        held_limit = self.live.accel_limit if self.live.accel_limit is not None else planner_accel
+        self.live.accel_limit = float(np.clip(min(held_limit, 0.0), ACCEL_MIN, ACCEL_MAX))
+        self.live.decel_limit_active = self.live.accel_limit < 0.0
+        self.live.urgent_recovery_active = False
+        effective_accel_max = min(stock_accel_max, self.live.accel_limit)
+        mpc_accel_max = self._build_mpc_accel_max(self.live, self.live.accel_limit)
+        mpc_shape_cruise = True
+        lead_obstacle_weights = (1.0, 1.0)
+        target_speed = min(base_speed, self.live.pace if self.live.pace is not None else sanitized_v_ego)
+      elif urgent_bypass:
         # Comfort shaping must never compete with urgent braking. Hand the raw
         # leads, base cruise target, and stock acceleration bounds directly to
-        # MPC. Clearing the stored ceiling gives the later comfort re-entry a
-        # fresh non-restrictive seed instead of resurrecting an urgent bound.
+        # MPC. On the rising edge only, retain a prior nonnegative upper bound
+        # for one solve so introducing the raw obstacle does not simultaneously
+        # remove an optimizer constraint. A nonnegative maximum cannot weaken
+        # braking, and the following urgent frame returns to stock bounds.
+        urgent_entry_limit = None
+        if not urgent_was_active and pre_urgent_accel_limit is not None and math.isfinite(pre_urgent_accel_limit):
+          urgent_entry_limit = float(np.clip(max(pre_urgent_accel_limit, 0.0), 0.0, ACCEL_MAX))
         self.live.accel_limit = None
         self.live.decel_limit_active = False
-        effective_accel_max = stock_accel_max
-        mpc_accel_max = None
+        self.live.urgent_recovery_active = False
+        if self.live.pace is not None:
+          self.live.pace = min(self.live.pace, planner_speed, sanitized_v_ego)
+        effective_accel_max = min(stock_accel_max, urgent_entry_limit) if urgent_entry_limit is not None else stock_accel_max
+        mpc_accel_max = self._build_mpc_accel_max(self.live, urgent_entry_limit) if urgent_entry_limit is not None else None
         mpc_shape_cruise = False
         lead_obstacle_weights = (1.0, 1.0)
         target_speed = base_speed
       else:
         effective_accel_max, controller_accel_max = self._update_accel_limit(
-          self.live, stock_accel_max, planner_accel, profile_accel_max, config
+          self.live,
+          stock_accel_max,
+          planner_accel,
+          profile_accel_max,
+          config,
+          envelope.closing_speed,
+          envelope.selected_lead >= 0,
         )
         # Feed only the controller-owned ceiling into MPC. Stock's speed, turn,
         # coast, and no-throttle limits remain in their original output clip.
@@ -778,6 +928,13 @@ class AccelController:
           # Give all profiles the same prompt stock breakaway. The raw lead still
           # owns obstacle braking, and profile separation begins after motion.
           target_speed = base_speed
+        elif self.live.urgent_recovery_active:
+          # Keep stock's cruise incentive while the positive recovery ceiling
+          # gently unwinds the hard lead-braking plan. Switching immediately
+          # to the synchronized pace can make MPC keep braking well below a
+          # moving lead even though the ceiling itself is nonnegative.
+          target_speed = base_speed
+          lead_obstacle_weights = (1.0, 1.0)
         else:
           target_speed = min(base_speed, self.live.pace if self.live.pace is not None else base_speed)
     else:

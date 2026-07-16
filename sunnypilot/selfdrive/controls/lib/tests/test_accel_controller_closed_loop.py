@@ -26,6 +26,8 @@ class ClosedLoopTrace:
   active: np.ndarray
   shadow_active: np.ndarray
   launching: np.ndarray
+  urgent_bypass: np.ndarray
+  urgent_recovery: np.ndarray
   pace: np.ndarray
   filtered_cap: np.ndarray
   selected_lead: np.ndarray
@@ -90,6 +92,8 @@ def _run(
         controller.active,
         controller.shadow_active,
         controller.launching,
+        plant.planner.accel_controller.live.urgent_bypass_active,
+        plant.planner.accel_controller.live.urgent_recovery_active,
         controller.live_pace,
         controller.live_filtered_cap,
         controller.selected_lead,
@@ -120,18 +124,20 @@ def _run(
     active=data[:, 8].astype(bool),
     shadow_active=data[:, 9].astype(bool),
     launching=data[:, 10].astype(bool),
-    pace=data[:, 11],
-    filtered_cap=data[:, 12],
-    selected_lead=data[:, 13].astype(int),
-    profile_accel_max=data[:, 14],
-    effective_accel_max=data[:, 15],
-    controller_fault=data[:, 16].astype(bool),
-    actuator_command=data[:, 17],
-    applied_actuator_command=data[:, 18],
-    observed_speed=data[:, 19],
-    observed_acceleration=data[:, 20],
-    lead_obstacle_weight_0=data[:, 21],
-    lead_obstacle_weight_1=data[:, 22],
+    urgent_bypass=data[:, 11].astype(bool),
+    urgent_recovery=data[:, 12].astype(bool),
+    pace=data[:, 13],
+    filtered_cap=data[:, 14],
+    selected_lead=data[:, 15].astype(int),
+    profile_accel_max=data[:, 16],
+    effective_accel_max=data[:, 17],
+    controller_fault=data[:, 18].astype(bool),
+    actuator_command=data[:, 19],
+    applied_actuator_command=data[:, 20],
+    observed_speed=data[:, 21],
+    observed_acceleration=data[:, 22],
+    lead_obstacle_weight_0=data[:, 23],
+    lead_obstacle_weight_1=data[:, 24],
     solver_failures=solver_failures,
   )
 
@@ -465,6 +471,103 @@ def test_severe_closing_never_delays_braking_or_reduces_clearance():
   assert controlled_gap.min() > 0.4
   onset = (controlled.time[1:] > 0.5) & (controlled.time[1:] < 3.0)
   assert np.max(np.abs(np.diff(controlled.a_target)[onset] / DT_MDL)) < 4.0
+
+
+def test_slow_lead_urgent_rejoin_has_no_brake_release_jolt_or_safety_regression():
+  common = dict(
+    duration=25.0,
+    lead_relevancy=True,
+    speed=20.0,
+    distance_lead=100.0,
+    v_lead=10.0,
+    v_cruise=30.0,
+    actuator_delay=0.20,
+    actuator_lag=0.25,
+  )
+  baseline = _run(controller_enabled=False, **common)
+  controlled = _run(controller_enabled=True, profile=1, **common)
+
+  assert controlled.urgent_bypass.any()
+  assert controlled.urgent_recovery.any()
+  assert controlled.solver_failures == 0
+  assert controlled.solver_failures <= baseline.solver_failures
+
+  command_jerk = _command_jerk(controlled, after=1.0)
+  assert np.max(command_jerk) < 3.0
+  assert np.max(np.abs(command_jerk)) < 4.0
+  assert not _has_propulsion_brake_reversal(controlled, after=1.0)
+
+  baseline_gap = baseline.distance_lead - baseline.distance
+  controlled_gap = controlled.distance_lead - controlled.distance
+  # Clean-base acados can hit its known macOS solver edge late in this long
+  # fixture. Compare only the valid stock prefix, while requiring the
+  # controller to remain fault-free for the complete settle and recovery.
+  baseline_valid = ~baseline.controller_fault
+  if baseline.controller_fault.any():
+    baseline_valid[np.flatnonzero(baseline.controller_fault)[0]:] = False
+  # This routine matching fixture trades less than one metre of the stock
+  # buffer for avoiding stock's late solver edge and large speed undershoot.
+  # The severe-closing regression above retains the exact no-clearance-loss
+  # safety gate.
+  assert np.min(controlled_gap[baseline_valid]) >= np.min(baseline_gap[baseline_valid]) - 1.0
+  baseline_closing = np.maximum(baseline.speed - common["v_lead"], 0.0)
+  controlled_closing = np.maximum(controlled.speed - common["v_lead"], 0.0)
+  baseline_ttc = np.divide(baseline_gap, baseline_closing, out=np.full_like(baseline_gap, np.inf), where=baseline_closing > 0.0)
+  controlled_ttc = np.divide(controlled_gap, controlled_closing, out=np.full_like(controlled_gap, np.inf), where=controlled_closing > 0.0)
+  assert np.min(controlled_ttc[baseline_valid]) >= np.min(baseline_ttc[baseline_valid]) - 0.50
+  assert np.min(controlled_gap) > 20.0
+  assert np.min(controlled_ttc) > 6.0
+
+  # Rejoining comfort control must not command gas while ego still needs to
+  # match the slower lead, or over-slow materially compared with stock.
+  still_closing = controlled.speed > common["v_lead"] + 0.2
+  assert np.max(controlled.a_target[still_closing]) <= 0.2
+  controlled_undershoot = np.min(controlled.speed - common["v_lead"])
+  assert controlled_undershoot >= -1.1
+  assert abs(controlled.speed[-1] - common["v_lead"]) < 0.65
+
+
+@pytest.mark.parametrize("profile", range(3), ids=("eco", "normal", "sport"))
+@pytest.mark.parametrize(
+  ("actuator_delay", "actuator_lag"),
+  [
+    (0.10, 0.20),
+    (0.15, 0.25),
+    (0.20, 0.20),
+    (0.25, 0.30),
+    (0.30, 0.35),
+  ],
+  ids=("toyota", "honda", "gm", "hyundai", "ford"),
+)
+def test_slow_lead_rejoin_is_smooth_across_profiles_and_actuator_dynamics(profile, actuator_delay, actuator_lag):
+  lead_speed = 10.0
+  trace = _run(
+    duration=10.0,
+    controller_enabled=True,
+    profile=profile,
+    lead_relevancy=True,
+    speed=20.0,
+    distance_lead=100.0,
+    v_lead=lead_speed,
+    v_cruise=30.0,
+    actuator_delay=actuator_delay,
+    actuator_lag=actuator_lag,
+  )
+
+  assert trace.urgent_bypass.any()
+  assert trace.solver_failures == 0
+  command_jerk = _command_jerk(trace, after=1.0)
+  assert np.max(command_jerk) < 3.0
+  assert np.max(np.abs(command_jerk)) < 4.0
+  assert not _has_propulsion_brake_reversal(trace, after=1.0)
+
+  gap = trace.distance_lead - trace.distance
+  closing = np.maximum(trace.speed - lead_speed, 0.0)
+  ttc = np.divide(gap, closing, out=np.full_like(gap, np.inf), where=closing > 0.0)
+  assert np.min(gap) > 20.0
+  assert np.min(ttc) > 3.0
+  assert np.min(trace.speed - lead_speed) > -1.25
+  assert np.max(trace.a_target[trace.speed > lead_speed + 0.2]) <= 0.2
 
 
 @pytest.mark.parametrize(

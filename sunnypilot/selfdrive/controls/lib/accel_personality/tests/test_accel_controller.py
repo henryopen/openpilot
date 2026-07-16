@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from cereal import log
-from opendbc.car.interfaces import ACCEL_MAX
+from opendbc.car.interfaces import ACCEL_MAX, ACCEL_MIN
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import N, LongitudinalPlanSource, STOP_DISTANCE, get_T_FOLLOW
@@ -17,11 +17,15 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   BREAKAWAY_ACCEL_MAX,
   CLEAR_LAUNCH_ACCEL_RATE,
   DECEL_LIMIT_JERK,
+  HOLD_ACCEL_MAX,
   INITIAL_LAUNCH_ACCEL_MAX,
   LAUNCH_ACCEL_RATE,
   LAUNCH_DELTA_V,
   RELATIVE_PACE_PREVIEW_TIME,
   URGENT_BYPASS_REQUIRED_DECEL,
+  URGENT_REJOIN_ACCEL_MAX,
+  URGENT_REJOIN_ACCEL_RATE,
+  URGENT_RELEASE_REQUIRED_DECEL,
   AccelController,
   AccelControllerState,
   AccelProfile,
@@ -147,7 +151,7 @@ class TestAccelProfileLimits:
     assert len(result.mpc_accel_max) == N + 1
     assert_profile_trajectory(result, 0.90)
 
-  def test_ordinary_lead_keeps_profile_pre_mpc_accel_bound(self):
+  def test_ordinary_closing_lead_uses_no_gas_pre_mpc_bound(self):
     governor = make_governor()
     radar_state = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=15.0))
 
@@ -155,7 +159,7 @@ class TestAccelProfileLimits:
 
     assert result.active
     assert result.selected_lead == 0
-    assert_profile_trajectory(result, result.profile_accel_max)
+    assert_profile_trajectory(result, 0.10)
     assert result.mpc_shape_cruise
 
   def test_filtered_lead_history_keeps_profile_bound_through_two_dropouts(self):
@@ -499,7 +503,7 @@ class TestAccelControllerState:
     governor = make_governor()
     # Restrictive enough to start early comfort shaping, but below the urgent
     # stock-MPC bypass threshold.
-    radar_state = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=10.0))
+    radar_state = make_radar(make_lead(status=True, d_rel=160.0, v_lead_k=10.0))
 
     update(governor, radar_state)
     update(governor, radar_state)
@@ -510,8 +514,7 @@ class TestAccelControllerState:
     assert first_restriction.live_pace == pytest.approx(20.0 - expected_step)
     assert next_restriction.live_pace == pytest.approx(first_restriction.live_pace - expected_step)
     assert next_restriction.state == AccelControllerState.restrict
-    initial_limit = AccelController.get_profile_accel_max(AccelProfile.normal, 20.0)
-    assert_profile_trajectory(first_restriction, initial_limit - DECEL_LIMIT_JERK * DT_MDL)
+    assert_profile_trajectory(first_restriction, HOLD_ACCEL_MAX - DECEL_LIMIT_JERK * DT_MDL)
     assert_profile_trajectory(next_restriction, first_restriction.mpc_accel_max[0] - DECEL_LIMIT_JERK * DT_MDL)
 
   def test_urgent_closing_bypasses_comfort_shaping_for_stock_mpc(self):
@@ -522,6 +525,114 @@ class TestAccelControllerState:
     assert result.target_speed == result.base_speed
     assert result.mpc_accel_max is None
     assert result.lead_obstacle_weights == (1.0, 1.0)
+
+  def test_positive_lead_accel_spike_cannot_delay_first_urgent_bypass(self):
+    governor = make_governor()
+    radar_state = make_radar(make_lead(status=True, d_rel=90.0, v_lead_k=14.0, a_lead_k=5.0))
+
+    result = update(governor, radar_state, base_speed=30.0, v_ego=22.0, planner_speed=22.0)
+
+    assert result.required_decel < URGENT_BYPASS_REQUIRED_DECEL
+    assert governor.live.urgent_bypass_active
+    assert result.target_speed == result.base_speed
+    assert result.mpc_accel_max is None
+    assert result.lead_obstacle_weights == (1.0, 1.0)
+
+  def test_urgent_entry_bridges_existing_nonnegative_ceiling_for_one_frame(self):
+    governor = make_governor()
+    clear = update(governor, base_speed=40.0, v_ego=34.8, planner_speed=34.8)
+    urgent_radar = make_radar(make_lead(status=True, d_rel=94.0, v_lead_k=23.4, radar_track_id=22))
+
+    entering = update(governor, urgent_radar, base_speed=40.0, v_ego=34.8, planner_speed=34.8)
+    established = update(governor, urgent_radar, base_speed=40.0, v_ego=34.8, planner_speed=34.8)
+
+    assert clear.mpc_accel_max is not None
+    assert entering.required_decel > URGENT_BYPASS_REQUIRED_DECEL
+    assert entering.mpc_accel_max == clear.mpc_accel_max
+    assert not entering.mpc_shape_cruise
+    assert entering.lead_obstacle_weights == (1.0, 1.0)
+    assert established.mpc_accel_max is None
+
+  def test_urgent_dropout_holds_pace_and_nonpositive_ceiling_without_lead_geometry(self):
+    governor = make_governor()
+    urgent_radar = make_radar(self.restrictive_lead)
+    for _ in range(3):
+      update(governor, urgent_radar, planner_accel=-0.5)
+
+    dropout_one = update(governor, planner_accel=-0.5)
+    dropout_two = update(governor, planner_accel=-0.5)
+    expired = update(governor, planner_accel=-0.5)
+
+    for result in (dropout_one, dropout_two):
+      assert result.mpc_accel_max is not None
+      assert max(result.mpc_accel_max) <= 0.0
+      assert result.mpc_shape_cruise
+      assert result.target_speed == result.live_pace
+      assert result.target_speed < result.base_speed
+      assert result.lead_obstacle_weights == (1.0, 1.0)
+    assert not governor.live.urgent_bypass_active
+    assert not governor.live.urgent_recovery_active
+    assert expired.mpc_accel_max is not None
+    assert expired.target_speed == expired.live_pace
+    assert expired.target_speed < expired.base_speed
+
+  def test_urgent_exit_slews_rejoin_ceiling_then_releases_after_speed_match(self):
+    governor = make_governor()
+    urgent_radar = make_radar(self.restrictive_lead)
+    for _ in range(3):
+      urgent = update(governor, urgent_radar)
+    assert urgent.required_decel > URGENT_BYPASS_REQUIRED_DECEL
+    assert governor.live.urgent_bypass_active
+
+    moderate_lead = make_radar(make_lead(status=True, d_rel=180.0, v_lead_k=10.0))
+    rejoin = update(governor, moderate_lead)
+
+    assert rejoin.required_decel < URGENT_RELEASE_REQUIRED_DECEL
+    assert not governor.live.urgent_bypass_active
+    assert governor.live.urgent_recovery_active
+    assert rejoin.mpc_accel_max is not None
+    expected_first_ceiling = ACCEL_MAX - URGENT_REJOIN_ACCEL_RATE * DT_MDL
+    assert_profile_trajectory(rejoin, expected_first_ceiling)
+    assert rejoin.live_pace <= 20.0
+
+    recovery_limits = [rejoin.mpc_accel_max[0]]
+    while governor.live.urgent_recovery_active and len(recovery_limits) < 50:
+      result = update(governor, moderate_lead)
+      assert result.mpc_accel_max is not None
+      recovery_limits.append(result.mpc_accel_max[0])
+
+    max_rejoin_step = URGENT_REJOIN_ACCEL_RATE * DT_MDL
+    assert all(abs(current - previous) <= max_rejoin_step + 1e-9 for previous, current in zip(recovery_limits[:-1], recovery_limits[1:], strict=True))
+    assert all(ACCEL_MIN <= limit <= ACCEL_MAX for limit in recovery_limits)
+    assert min(recovery_limits) == pytest.approx(URGENT_REJOIN_ACCEL_MAX)
+
+    matched_lead = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=20.0))
+    matched = update(governor, matched_lead)
+    assert not governor.live.urgent_recovery_active
+    assert matched.mpc_accel_max is not None
+    assert matched.mpc_accel_max[0] > URGENT_REJOIN_ACCEL_MAX
+
+  def test_renewed_urgent_closing_cancels_rejoin_ceiling(self):
+    governor = make_governor()
+    urgent_radar = make_radar(self.restrictive_lead)
+    for _ in range(3):
+      update(governor, urgent_radar)
+    moderate_lead = make_radar(make_lead(status=True, d_rel=180.0, v_lead_k=10.0))
+    update(governor, moderate_lead)
+    assert governor.live.urgent_recovery_active
+
+    renewed = update(governor, urgent_radar)
+
+    assert renewed.required_decel > URGENT_BYPASS_REQUIRED_DECEL
+    assert governor.live.urgent_bypass_active
+    assert not governor.live.urgent_recovery_active
+    assert renewed.mpc_accel_max is not None
+    assert min(renewed.mpc_accel_max) >= 0.0
+    assert not renewed.mpc_shape_cruise
+    assert renewed.lead_obstacle_weights == (1.0, 1.0)
+
+    established = update(governor, urgent_radar)
+    assert established.mpc_accel_max is None
 
   def test_release_waits_for_confirmation_then_uses_profile_rate(self):
     governor = make_governor()
