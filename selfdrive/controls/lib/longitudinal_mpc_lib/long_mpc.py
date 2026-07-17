@@ -292,17 +292,18 @@ class LongitudinalMpc:
     a_guess[0] = self.x0[2]
     v_guess = np.zeros(N + 1)
     x_guess = np.zeros(N + 1)
+    j_guess = np.zeros(N)
     v_guess[0] = max(self.x0[1], 0.0)
     x_guess[0] = self.x0[0]
     for i in range(1, N + 1):
       dt = T_IDXS[i] - T_IDXS[i - 1]
-      v_guess[i] = max(0.0, v_guess[i - 1] + 0.5 * (a_guess[i - 1] + a_guess[i]) * dt)
-      x_guess[i] = x_guess[i - 1] + 0.5 * (v_guess[i - 1] + v_guess[i]) * dt
+      j_guess[i - 1] = (a_guess[i] - a_guess[i - 1]) / dt
+      x_guess[i] = x_guess[i - 1] + v_guess[i - 1] * dt + 0.5 * a_guess[i - 1] * dt**2 + j_guess[i - 1] * dt**3 / 6.0
+      v_guess[i] = max(0.0, v_guess[i - 1] + a_guess[i - 1] * dt + 0.5 * j_guess[i - 1] * dt**2)
     for i in range(N + 1):
       self.solver.set(i, "x", np.array([x_guess[i], v_guess[i], a_guess[i]]))
     for i in range(N):
-      dt = T_IDXS[i + 1] - T_IDXS[i]
-      self.solver.set(i, "u", np.array([(a_guess[i + 1] - a_guess[i]) / dt]))
+      self.solver.set(i, "u", np.array([j_guess[i]]))
 
   @staticmethod
   def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau):

@@ -717,3 +717,26 @@ def test_solver_fault_keeps_restrictive_lead_target_until_recovery():
 
   plant.step(v_lead=15.0, v_cruise=30.0)
   assert plant.planner.accel_controller_result.active
+
+
+@pytest.mark.parametrize("pre_frames", (1, 2))
+@pytest.mark.parametrize("mode", ("disabled", "e2e"))
+def test_early_launch_transition_returns_to_stock_without_solver_fault(pre_frames, mode):
+  _set_params(enabled=True, profile=1)
+  plant = Plant(speed=0.0, actuator_delay=0.15, actuator_lag=0.20)
+  for _ in range(pre_frames):
+    plant.step(v_cruise=15.0)
+
+  if mode == "disabled":
+    plant.planner.accel_personality_enabled = False
+    plant.planner._read_accel_controller_params = lambda: None
+  else:
+    plant.e2e = True
+
+  for _ in range(4):
+    plant.step(v_cruise=15.0)
+    controller = plant.planner.accel_controller_result
+    assert not controller.active
+    assert controller.mpc_accel_max is None
+    assert plant.planner.mpc.last_solution_status == 0
+    np.testing.assert_array_equal(plant.planner.mpc.params[:, 1], ACCEL_MAX)
