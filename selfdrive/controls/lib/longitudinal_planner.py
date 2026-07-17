@@ -145,6 +145,11 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if force_slow_decel:
       v_cruise = 0.0
 
+    if self.accel_controller_result.reset_mpc:
+      # An optimizer warm-start reset must not erase stock FCW evidence.
+      crash_cnt = self.mpc.crash_cnt
+      self.mpc.reset()
+      self.mpc.crash_cnt = crash_cnt
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(
