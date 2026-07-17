@@ -57,6 +57,8 @@ COMFORT_BRAKE = 2.5
 STOP_DISTANCE = 6.0
 CRUISE_MIN_ACCEL = -1.2
 CRUISE_MAX_ACCEL = 1.6
+CUSTOM_ACCEL_TRANSITION_FRAMES = 3
+CUSTOM_ACCEL_TRANSITION_MAX_SPEED = 0.3
 MIN_X_LEAD_FACTOR = 0.5
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
@@ -243,8 +245,8 @@ class LongitudinalMpc:
     self.last_cloudlog_t = 0
     self.status = False
     self.crash_cnt = 0.0
-    self.lead_obstacle_weights = np.ones(2)
     self.solution_status = 0
+    self.custom_accel_frames = 0
     # timers
     self.solve_time = 0.0
     self.time_qp_solution = 0.0
@@ -284,6 +286,24 @@ class LongitudinalMpc:
       for i in range(N+1):
         self.solver.set(i, 'x', self.x0)
 
+  def _seed_stock_transition(self):
+    previous_bound = np.clip(self.params[:, 1], 0.0, CRUISE_MAX_ACCEL)
+    a_guess = previous_bound + (CRUISE_MAX_ACCEL - previous_bound) * (1.0 - np.exp(-T_IDXS))
+    a_guess[0] = self.x0[2]
+    v_guess = np.zeros(N + 1)
+    x_guess = np.zeros(N + 1)
+    v_guess[0] = max(self.x0[1], 0.0)
+    x_guess[0] = self.x0[0]
+    for i in range(1, N + 1):
+      dt = T_IDXS[i] - T_IDXS[i - 1]
+      v_guess[i] = max(0.0, v_guess[i - 1] + 0.5 * (a_guess[i - 1] + a_guess[i]) * dt)
+      x_guess[i] = x_guess[i - 1] + 0.5 * (v_guess[i - 1] + v_guess[i]) * dt
+    for i in range(N + 1):
+      self.solver.set(i, "x", np.array([x_guess[i], v_guess[i], a_guess[i]]))
+    for i in range(N):
+      dt = T_IDXS[i + 1] - T_IDXS[i]
+      self.solver.set(i, "u", np.array([(a_guess[i + 1] - a_guess[i]) / dt]))
+
   @staticmethod
   def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau):
     a_lead_traj = a_lead * np.exp(-a_lead_tau * (T_IDXS**2)/2.)
@@ -317,7 +337,7 @@ class LongitudinalMpc:
 
   def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
              accel_max: float | tuple[float, ...] | np.ndarray | None = None, shape_accel_max_in_cruise: bool = False,
-             lead_obstacle_weights: tuple[float, float] | np.ndarray | None = None):
+             apply_accel_max_constraint: bool = True):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -328,49 +348,35 @@ class LongitudinalMpc:
     # To estimate a safe distance from a moving lead, we calculate how much stopping
     # distance that lead needs as a minimum. We can add that to the current distance
     # and then treat that as a stopped car/obstacle at this new distance.
-    raw_lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
-    raw_lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
+    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
-    custom_accel_max = False
+    custom_accel = False
     accel_max_traj = ACCEL_MAX * np.ones(N + 1)
     if accel_max is not None:
       accel_max_input = np.asarray(accel_max, dtype=float)
       if accel_max_input.ndim == 0:
         accel_max_input = np.full(N + 1, float(accel_max_input))
-      custom_accel_max = accel_max_input.shape == (N + 1,) and np.all(np.isfinite(accel_max_input))
-      if custom_accel_max:
+      custom_accel = accel_max_input.shape == (N + 1,) and np.all(np.isfinite(accel_max_input))
+      if custom_accel:
         accel_max_traj = np.clip(accel_max_input, ACCEL_MIN, ACCEL_MAX)
+
+    custom_accel_active = custom_accel and (shape_accel_max_in_cruise or apply_accel_max_constraint)
+    if (not custom_accel_active and 0 < self.custom_accel_frames < CUSTOM_ACCEL_TRANSITION_FRAMES
+        and v_ego < CUSTOM_ACCEL_TRANSITION_MAX_SPEED and self.source == LongitudinalPlanSource.cruise):
+      self._seed_stock_transition()
 
     # Fake an obstacle for cruise, this ensures smooth acceleration to set speed
     # when the leads are no factor.
     v_lower = v_ego + (T_IDXS * CRUISE_MIN_ACCEL * 1.05)
     # TODO does this make sense when max_a is negative?
-    if custom_accel_max and shape_accel_max_in_cruise:
-      cruise_accel_max_traj = np.minimum(accel_max_traj, CRUISE_MAX_ACCEL)
-      v_upper = v_ego + (np.cumsum(T_DIFFS * cruise_accel_max_traj) * 1.05)
+    if custom_accel and shape_accel_max_in_cruise:
+      cruise_accel_traj = np.clip(accel_max_traj, 0.0, CRUISE_MAX_ACCEL)
+      v_upper = v_ego + (np.cumsum(T_DIFFS * cruise_accel_traj) * 1.05)
     else:
       v_upper = v_ego + (T_IDXS * CRUISE_MAX_ACCEL * 1.05)
     v_cruise_clipped = np.clip(v_cruise * np.ones(N+1), v_lower, v_upper)
     cruise_obstacle = np.cumsum(T_DIFFS * v_cruise_clipped) + get_safe_obstacle_distance(v_cruise_clipped, t_follow)
-
-    # The acceleration controller may gradually introduce a benign newly
-    # acquired obstacle to avoid a one-frame optimizer/source discontinuity.
-    # Raw lead trajectories remain untouched for FCW below, and missing or
-    # invalid weights preserve stock behavior exactly.
-    self.lead_obstacle_weights = np.ones(2)
-    if lead_obstacle_weights is not None:
-      weight_input = np.asarray(lead_obstacle_weights, dtype=float)
-      if weight_input.shape == (2,) and np.all(np.isfinite(weight_input)):
-        self.lead_obstacle_weights = np.clip(weight_input, 0.0, 1.0)
-    if np.array_equal(self.lead_obstacle_weights, np.ones(2)):
-      # Preserve the original arrays bit-for-bit on every bypass. Even an
-      # algebraically equivalent subtract/add can perturb the one-iteration
-      # solver at a standstill.
-      lead_0_obstacle = raw_lead_0_obstacle
-      lead_1_obstacle = raw_lead_1_obstacle
-    else:
-      lead_0_obstacle = cruise_obstacle + self.lead_obstacle_weights[0] * (raw_lead_0_obstacle - cruise_obstacle)
-      lead_1_obstacle = cruise_obstacle + self.lead_obstacle_weights[1] * (raw_lead_1_obstacle - cruise_obstacle)
 
     x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, cruise_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
@@ -381,7 +387,7 @@ class LongitudinalMpc:
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
     self.params[:,0] = ACCEL_MIN
-    if custom_accel_max:
+    if custom_accel and apply_accel_max_constraint:
       self.params[:,1] = accel_max_traj
       self.params[0,1] = max(accel_max_traj[0], self.x0[2])
     else:
@@ -392,6 +398,7 @@ class LongitudinalMpc:
     self.params[:,5] = LEAD_DANGER_FACTOR
 
     self.run()
+    self.custom_accel_frames = self.custom_accel_frames + 1 if custom_accel_active and self.last_solution_status == 0 else 0
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
             radarstate.leadOne.modelProb > 0.9):
       self.crash_cnt += 1

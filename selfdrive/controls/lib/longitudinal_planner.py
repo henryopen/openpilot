@@ -145,18 +145,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     if force_slow_decel:
       v_cruise = 0.0
 
-    if self.accel_controller_result.reset_mpc:
-      # Urgent-entry MPC reset must not erase stock FCW evidence.
-      crash_cnt = self.mpc.crash_cnt
-      self.mpc.reset()
-      self.mpc.crash_cnt = crash_cnt
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(
       sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
       accel_max=self.accel_controller_result.mpc_accel_max,
       shape_accel_max_in_cruise=self.accel_controller_result.mpc_shape_cruise,
-      lead_obstacle_weights=self.accel_controller_result.lead_obstacle_weights,
+      apply_accel_max_constraint=self.accel_controller_result.mpc_apply_accel_constraint,
     )
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)

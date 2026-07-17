@@ -104,37 +104,11 @@ def test_mpc_missing_or_invalid_preshape_is_exact_stock(accel_max):
   np.testing.assert_array_equal(mpc.params, stock_params)
 
 
-def test_mpc_benign_lead_weight_softens_only_optimization_obstacle():
+def test_mpc_profile_preshape_keeps_raw_lead_obstacle_authoritative():
   radar_state = messaging.new_message('radarState').radarState
   radar_state.leadOne.status = True
-  radar_state.leadOne.dRel = 60.0
-  radar_state.leadOne.vLead = 15.0
-  radar_state.leadOne.vLeadK = 15.0
-  radar_state.leadOne.aLeadK = 0.0
-  radar_state.leadOne.aLeadTau = 1.0
-  mpc = LongitudinalMpc()
-  mpc.set_cur_state(20.0, 0.0)
-  mpc.run = lambda: None
-
-  mpc.update(radar_state, 30.0, lead_obstacle_weights=(1.0, 1.0))
-  full_authority_params = mpc.params.copy()
-  lead_before = (radar_state.leadOne.dRel, radar_state.leadOne.vLead, radar_state.leadOne.aLeadK)
-  mpc.update(radar_state, 30.0, lead_obstacle_weights=(0.2, 1.0))
-  softened_params = mpc.params.copy()
-
-  assert softened_params[0, 2] > full_authority_params[0, 2]
-  np.testing.assert_array_equal(softened_params[:, :2], full_authority_params[:, :2])
-  np.testing.assert_array_equal(softened_params[:, 3:], full_authority_params[:, 3:])
-  np.testing.assert_array_equal(mpc.lead_obstacle_weights, [0.2, 1.0])
-  assert (radar_state.leadOne.dRel, radar_state.leadOne.vLead, radar_state.leadOne.aLeadK) == lead_before
-
-
-@pytest.mark.parametrize("weights", [(1.0,), (np.nan, 1.0), (np.inf, 1.0)])
-def test_mpc_invalid_lead_weights_are_exact_full_authority(weights):
-  radar_state = messaging.new_message('radarState').radarState
-  radar_state.leadOne.status = True
-  radar_state.leadOne.dRel = 60.0
-  radar_state.leadOne.vLead = 15.0
+  radar_state.leadOne.dRel = 30.0
+  radar_state.leadOne.vLead = 5.0
   radar_state.leadOne.aLeadK = 0.0
   radar_state.leadOne.aLeadTau = 1.0
   mpc = LongitudinalMpc()
@@ -143,12 +117,14 @@ def test_mpc_invalid_lead_weights_are_exact_full_authority(weights):
   mpc.update(radar_state, 30.0)
   stock_params = mpc.params.copy()
   stock_source = mpc.source
+  lead_before = (radar_state.leadOne.dRel, radar_state.leadOne.vLead, radar_state.leadOne.aLeadK)
 
-  mpc.update(radar_state, 30.0, lead_obstacle_weights=weights)
+  mpc.update(radar_state, 30.0, accel_max=np.full(N + 1, 0.8), shape_accel_max_in_cruise=True)
 
-  np.testing.assert_array_equal(mpc.params, stock_params)
+  np.testing.assert_array_equal(mpc.params[:, 0], stock_params[:, 0])
+  np.testing.assert_array_equal(mpc.params[:, 3:], stock_params[:, 3:])
   assert mpc.source == stock_source
-  np.testing.assert_array_equal(mpc.lead_obstacle_weights, [1.0, 1.0])
+  assert (radar_state.leadOne.dRel, radar_state.leadOne.vLead, radar_state.leadOne.aLeadK) == lead_before
 
 
 def test_shadow_target_telemetry_publishes_filtered_cap():

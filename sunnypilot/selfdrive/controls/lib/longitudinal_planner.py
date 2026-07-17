@@ -98,22 +98,11 @@ class LongitudinalPlannerSP:
                               acc_selected: bool, planner_speed: float, previous_mpc_source, previous_should_stop: bool,
                               stock_accel_max: float, planner_accel: float, controller_fault: bool = False) -> float:
     self.accel_controller_result = self.accel_controller.update(
-      sm['radarState'],
-      base_speed=base_speed,
-      v_ego=sm['carState'].vEgo,
-      a_ego=sm['carState'].aEgo,
-      profile=self.accel_personality,
-      follow_personality=sm['selfdriveState'].personality,
-      enabled=self.accel_personality_enabled,
-      acc_selected=acc_selected,
-      engaged=engaged,
-      cruise_initialized=cruise_initialized,
-      previous_mpc_source=previous_mpc_source,
-      planner_speed=planner_speed,
-      stock_accel_max=stock_accel_max,
-      planner_accel=planner_accel,
-      previous_should_stop=previous_should_stop,
-      controller_fault=controller_fault,
+      sm['radarState'], base_speed=base_speed, v_ego=sm['carState'].vEgo, a_ego=sm['carState'].aEgo,
+      profile=self.accel_personality, follow_personality=sm['selfdriveState'].personality,
+      enabled=self.accel_personality_enabled, acc_selected=acc_selected, engaged=engaged, cruise_initialized=cruise_initialized,
+      previous_mpc_source=previous_mpc_source, planner_speed=planner_speed, stock_accel_max=stock_accel_max,
+      planner_accel=planner_accel, previous_should_stop=previous_should_stop, controller_fault=controller_fault,
     )
     return self.accel_controller_result.target_speed
 
@@ -140,7 +129,7 @@ class LongitudinalPlannerSP:
     dec.enabled = self.dec.enabled()
     dec.active = self.dec.active()
 
-    # Accel Controller relative-pace governor
+    # Accel Controller
     if self.accel_controller_result is not None:
       result = self.accel_controller_result
       accel_controller = longitudinalPlanSP.accelController
