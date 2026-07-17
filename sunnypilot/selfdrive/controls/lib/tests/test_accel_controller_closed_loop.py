@@ -740,3 +740,28 @@ def test_early_launch_transition_returns_to_stock_without_solver_fault(pre_frame
     assert controller.mpc_accel_max is None
     assert plant.planner.mpc.last_solution_status == 0
     np.testing.assert_array_equal(plant.planner.mpc.params[:, 1], ACCEL_MAX)
+
+
+@pytest.mark.parametrize("profile", range(3), ids=("eco", "normal", "sport"))
+@pytest.mark.parametrize("mode", ("disabled", "e2e"))
+def test_launch_transition_after_crossing_standstill_threshold(profile, mode):
+  _set_params(enabled=True, profile=profile)
+  plant = Plant(speed=0.29, actuator_delay=0.15, actuator_lag=0.20)
+  plant.acceleration = 0.5
+  plant.planner.a_desired = 0.5
+  plant.step(v_cruise=15.0)
+  assert plant.speed > 0.30
+
+  if mode == "disabled":
+    plant.planner.accel_personality_enabled = False
+    plant.planner._read_accel_controller_params = lambda: None
+  else:
+    plant.e2e = True
+
+  for _ in range(4):
+    plant.step(v_cruise=15.0)
+    controller = plant.planner.accel_controller_result
+    assert not controller.active
+    assert controller.mpc_accel_max is None
+    assert plant.planner.mpc.last_solution_status == 0
+    np.testing.assert_array_equal(plant.planner.mpc.params[:, 1], ACCEL_MAX)
