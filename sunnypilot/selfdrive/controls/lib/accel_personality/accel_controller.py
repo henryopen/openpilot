@@ -48,8 +48,7 @@ PROFILE_CONFIGS = {
 }
 
 ACCEL_PROFILE_MAX_BP = [0.0, 10.0, 25.0, 40.0]
-# These are pre-MPC profile requests. Values remain inside global ACCEL_MAX;
-# the planner's stock speed/turn/coast limit remains the final output authority.
+# Pre-MPC profile requests; stock output limits remain authoritative.
 ACCEL_PROFILE_MAX_V = {
   AccelProfile.eco: [1.55, 0.85, 0.45, 0.25],
   AccelProfile.normal: [1.65, 1.10, 0.70, 0.45],
@@ -287,11 +286,7 @@ class AccelController:
       else:
         required_decel = closing_speed * closing_speed / (2.0 * usable_gap)
 
-      # A newly acquired radar track can briefly report a large positive
-      # acceleration. Do not let that optimistic sample delay handing an
-      # urgent lead to stock MPC. This conservative value is used only for
-      # urgent acquisition classification; the energy cap and raw radar lead
-      # continue using the original stock-filtered acceleration.
+      # Positive aLeadK spikes can hide urgent acquisition. The zero-accel projection is urgency-only; raw lead data remains unchanged.
       conservative_required_decel = required_decel
       if a_lead > 0.0:
         conservative_lead_xv = LongitudinalMpc.extrapolate_lead(x_lead, v_lead, 0.0, a_lead_tau)
@@ -307,15 +302,10 @@ class AccelController:
           conservative_required_decel = conservative_closing * conservative_closing / (2.0 * conservative_gap)
         conservative_required_decel = max(required_decel, conservative_required_decel)
 
-      # Relative kinetic energy: the lead keeps moving while ego sheds closing speed.
       anticipated_gap = max(usable_gap - closing_speed * RELATIVE_PACE_PREVIEW_TIME, 0.0)
       cap = v_lead_delay + math.sqrt(2.0 * config.comfort_decel * anticipated_gap)
       candidates.append(EnergyEnvelope(
-        cap=cap,
-        selected_lead=lead_index,
-        usable_gap=usable_gap,
-        closing_speed=closing_speed,
-        required_decel=required_decel,
+        cap=cap, selected_lead=lead_index, usable_gap=usable_gap, closing_speed=closing_speed, required_decel=required_decel,
         conservative_required_decel=conservative_required_decel,
       ))
 
@@ -325,24 +315,13 @@ class AccelController:
     selected = min(candidates, key=lambda candidate: candidate.cap)
     departure_lead_speed = min(departure_candidates, key=lambda candidate: candidate[0])[1]
     return EnergyEnvelope(
-      cap=selected.cap,
-      selected_lead=selected.selected_lead,
-      departure_lead_speed=departure_lead_speed,
-      usable_gap=selected.usable_gap,
-      closing_speed=selected.closing_speed,
-      required_decel=selected.required_decel,
+      cap=selected.cap, selected_lead=selected.selected_lead, departure_lead_speed=departure_lead_speed, usable_gap=selected.usable_gap,
+      closing_speed=selected.closing_speed, required_decel=selected.required_decel,
       conservative_required_decel=selected.conservative_required_decel,
       has_nearly_stopped_lead=departure_lead_speed < STOPPED_LEAD_SPEED,
     )
 
-  def _lead_acquisition_is_benign(
-    self,
-    lead,
-    v_ego: float,
-    a_ego: float,
-    planner_accel: float,
-    follow_personality,
-  ) -> bool:
+  def _lead_acquisition_is_benign(self, lead, v_ego: float, a_ego: float, planner_accel: float, follow_personality) -> bool:
     """Return whether a new lead can enter the optimizer gradually without delaying needed braking."""
     if not self._valid_lead(lead) or planner_accel <= LEAD_ACQUISITION_MIN_PLANNER_ACCEL:
       return False
@@ -355,10 +334,7 @@ class AccelController:
     delay = self._delay()
     x_ego, v_ego_delay = self._project_ego(v_ego, a_ego, delay)
     lead_xv = LongitudinalMpc.extrapolate_lead(
-      float(lead.dRel),
-      float(lead.vLeadK),
-      float(np.clip(lead.aLeadK, -10.0, 5.0)),
-      float(lead.aLeadTau),
+      float(lead.dRel), float(lead.vLeadK), float(np.clip(lead.aLeadK, -10.0, 5.0)), float(lead.aLeadTau),
     )
     x_lead_delay = float(np.interp(delay, T_IDXS, lead_xv[:, 0]))
     v_lead_delay = float(np.interp(delay, T_IDXS, lead_xv[:, 1]))
@@ -381,15 +357,7 @@ class AccelController:
     )
 
   def _update_lead_obstacle_weights(
-    self,
-    path: _PacePath,
-    radar_state,
-    v_ego: float,
-    a_ego: float,
-    planner_accel: float,
-    follow_personality,
-    *,
-    allow_blend: bool,
+    self, path: _PacePath, radar_state, v_ego: float, a_ego: float, planner_accel: float, follow_personality, *, allow_blend: bool,
   ) -> tuple[float, float]:
     """Ramp benign new obstacles into MPC while making every urgent lead immediate."""
     authority_step = (1.0 - LEAD_ACQUISITION_INITIAL_AUTHORITY) * self.dt / LEAD_ACQUISITION_TIME
@@ -406,25 +374,17 @@ class AccelController:
       positive_track_change = track_id >= 0 and previous_track_id >= 0 and track_id != previous_track_id
       new_lead = not path.lead_seen[lead_index] or positive_track_change
       benign = self._lead_acquisition_is_benign(lead, v_ego, a_ego, planner_accel, follow_personality)
-      safe_departure_handoff = (
-        path.departure_handoff_active
-        and float(lead.vLeadK) > LEAD_DEPARTURE_SPEED
-        and v_ego <= float(lead.vLeadK)
-      )
+      safe_departure_handoff = path.departure_handoff_active and float(lead.vLeadK) > LEAD_DEPARTURE_SPEED and v_ego <= float(lead.vLeadK)
 
       if path.departure_handoff_active:
         if safe_departure_handoff:
-          # Keep enough cruise incentive to clear standstill actuator deadband,
-          # then restore full raw-lead authority over the configured handoff. The
-          # previous zero-until-motion handoff produced a large launch pulse.
+          # Clear standstill deadband, then ramp raw-lead authority.
           previous_weight = path.lead_obstacle_weights[lead_index]
           if previous_weight <= LEAD_DEPARTURE_INITIAL_AUTHORITY and v_ego < LAUNCH_PROFILE_HANDOFF_SPEED:
             path.lead_obstacle_weights[lead_index] = LEAD_DEPARTURE_INITIAL_AUTHORITY
           else:
             path.lead_obstacle_weights[lead_index] = min(1.0, max(previous_weight, LEAD_DEPARTURE_INITIAL_AUTHORITY) + departure_step)
         else:
-          # Any renewed closing or stopped-lead evidence restores stock
-          # obstacle authority immediately.
           path.lead_obstacle_weights[lead_index] = 1.0
       elif new_lead:
         path.lead_obstacle_weights[lead_index] = LEAD_ACQUISITION_INITIAL_AUTHORITY if allow_blend and benign else 1.0
@@ -445,10 +405,7 @@ class AccelController:
       if not math.isfinite(v_ego_stopping) or v_ego_stopping < 0.0:
         v_ego_stopping = STOP_HOLD_EGO_SPEED
 
-      # Once stock's shouldStop threshold is reachable, use the zero-speed
-      # cruise obstacle to keep the stopped solver warm. Above that threshold,
-      # retain full raw-lead authority: a zero acceleration ceiling alone does
-      # not require enough braking for a newly detected close stopped lead.
+      # Use zero-speed cruise below stock's shouldStop threshold; retain raw authority above it for close stopped leads.
       hold_weight = 0.0 if v_ego < v_ego_stopping else 1.0
       path.lead_obstacle_weights = [hold_weight, hold_weight]
     elif path.departure_handoff_active and not path.departing_from_stop and all(
@@ -467,38 +424,18 @@ class AccelController:
     return source in (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1)
 
   def _update_path(
-    self,
-    path: _PacePath,
-    raw_cap: float,
-    base_speed: float,
-    v_ego: float,
-    config: ProfileConfig,
-    previous_mpc_source,
-    planner_speed: float,
-    previous_should_stop: bool,
-    has_nearly_stopped_lead: bool,
-    departure_lead_speed: float,
-    selected_lead_speed: float,
-    closing_speed: float,
-    required_decel: float,
-    launch_delta_v: float,
+    self, path: _PacePath, envelope: EnergyEnvelope, base_speed: float, v_ego: float, config: ProfileConfig, previous_mpc_source,
+    planner_speed: float, previous_should_stop: bool, selected_lead_speed: float,
   ) -> float:
+    raw_cap = envelope.cap
+    closing_speed = envelope.closing_speed
+    required_decel = envelope.required_decel
     filtered_cap = path.update_filter(raw_cap)
 
-    # Treat only meaningful relative-energy demand as a closing event. Radar
-    # track switches routinely move raw relative speed a few cm/s across zero;
-    # using that sign directly made the full-horizon acceleration ceiling flip
-    # between braking and gas. Hysteresis keeps material approaches prompt while
-    # letting matched traffic coast through harmless lead noise.
+    # Ignore near-zero track-switch chatter without delaying material closing.
     if math.isfinite(raw_cap):
-      restrictive_evidence = (
-        required_decel >= MATERIAL_CLOSING_DECEL_ENTER
-        or closing_speed >= MATERIAL_CLOSING_SPEED_ENTER
-      )
-      relief_evidence = (
-        required_decel <= MATERIAL_CLOSING_DECEL_EXIT
-        and closing_speed <= MATERIAL_CLOSING_SPEED_EXIT
-      )
+      restrictive_evidence = required_decel >= MATERIAL_CLOSING_DECEL_ENTER or closing_speed >= MATERIAL_CLOSING_SPEED_ENTER
+      relief_evidence = required_decel <= MATERIAL_CLOSING_DECEL_EXIT and closing_speed <= MATERIAL_CLOSING_SPEED_EXIT
       if restrictive_evidence:
         path.material_closing = True
         path.material_relief_frames = 0
@@ -515,17 +452,10 @@ class AccelController:
 
     just_initialized = path.pace is None
     if just_initialized:
-      # A clear road has no prior restriction to release from, so expose base
-      # cruise immediately. Any lead starts from ego pace; raw lead motion is
-      # not trusted to raise the target on its first observation.
-      if not math.isfinite(raw_cap):
-        path.pace = base_speed
-      else:
-        path.pace = min(base_speed, v_ego)
+      # Clear road seeds base cruise; a present lead seeds ego pace.
+      path.pace = base_speed if not math.isfinite(raw_cap) else min(base_speed, v_ego)
       path.state = AccelControllerState.free
 
-    # A clear-road standstill engagement should request motion immediately. A
-    # stopped/previously-stopping lead still goes through stop-hold confirmation.
     if just_initialized and v_ego < STOP_HOLD_EGO_SPEED and not math.isfinite(raw_cap) and not previous_should_stop:
       path.pace = base_speed
       path.state = AccelControllerState.release
@@ -539,7 +469,7 @@ class AccelController:
     if self._lead_source(previous_mpc_source) and not math.isfinite(raw_cap) and planner_speed < path.pace:
       path.pace = max(planner_speed, 0.0)
 
-    if v_ego < STOP_HOLD_EGO_SPEED and (filtered_cap < STOP_HOLD_CAP or has_nearly_stopped_lead):
+    if v_ego < STOP_HOLD_EGO_SPEED and (filtered_cap < STOP_HOLD_CAP or envelope.has_nearly_stopped_lead):
       path.stopped_lead_hold = True
 
     clear_road_launch_complete = path.departing_from_stop and not path.stopped_lead_hold and v_ego >= LAUNCH_PROFILE_HANDOFF_SPEED
@@ -551,20 +481,13 @@ class AccelController:
 
     if path.launch_target_active:
       if v_ego >= LAUNCH_TARGET_HANDOFF_SPEED:
-        # Handoff from the base-cruise launch target without replacing it with
-        # a stale pace only a few tenths above ego in one frame. Keep the same
-        # bounded launch preview used at departure; profile acceleration and
-        # the ordinary release ramp retain authority from here.
-        path.pace = min(base_speed, max(path.pace, v_ego + launch_delta_v))
+        # Preserve launch preview across the base-cruise handoff.
+        path.pace = min(base_speed, max(path.pace, v_ego + LAUNCH_DELTA_V))
         path.launch_target_active = False
-      elif (
-        has_nearly_stopped_lead
-        or closing_speed > MATERIAL_CLOSING_SPEED_EXIT
-        or required_decel >= MATERIAL_CLOSING_DECEL_ENTER
-      ):
+      elif envelope.has_nearly_stopped_lead or closing_speed > MATERIAL_CLOSING_SPEED_EXIT or required_decel >= MATERIAL_CLOSING_DECEL_ENTER:
         path.launch_target_active = False
 
-    renewed_stop_evidence = filtered_cap < STOP_HOLD_CAP or has_nearly_stopped_lead
+    renewed_stop_evidence = filtered_cap < STOP_HOLD_CAP or envelope.has_nearly_stopped_lead
     stale_plan_stop = previous_should_stop and not path.departing_from_stop and not path.stop_departure_confirmed
     enter_stop_hold = v_ego < STOP_HOLD_EGO_SPEED and (renewed_stop_evidence or stale_plan_stop)
     if enter_stop_hold and path.state != AccelControllerState.stopHold:
@@ -579,11 +502,8 @@ class AccelController:
       return filtered_cap
 
     if path.state == AccelControllerState.stopHold:
-      # Departure is a perception fact, not a comfort-profile decision. Confirm
-      # the selected lead's projected motion directly so Eco cannot wait longer
-      # merely because its energy envelope is lower. Total lead loss still waits
-      # for the five-frame median dropout guard before confirmation begins.
-      raw_departure = math.isfinite(departure_lead_speed) and departure_lead_speed > LEAD_DEPARTURE_SPEED
+      # Departure uses projected lead motion, independent of profile. Lead loss waits for the median's three-observation guard.
+      raw_departure = math.isfinite(envelope.departure_lead_speed) and envelope.departure_lead_speed > LEAD_DEPARTURE_SPEED
       guarded_lead_loss = not math.isfinite(raw_cap) and not math.isfinite(filtered_cap)
       if raw_departure or guarded_lead_loss:
         path.departure_frames += 1
@@ -602,27 +522,18 @@ class AccelController:
       path.departure_handoff_active = True
       path.stop_departure_confirmed = True
       path.stopped_lead_hold = False
-      path.pace = min(base_speed, filtered_cap, v_ego + launch_delta_v)
+      path.pace = min(base_speed, filtered_cap, v_ego + LAUNCH_DELTA_V)
       return filtered_cap
 
     ceiling = min(base_speed, filtered_cap)
-    matched_moving_lead = (
-      math.isfinite(selected_lead_speed)
-      and closing_speed <= MATERIAL_CLOSING_SPEED_EXIT
-      and v_ego <= selected_lead_speed + MATERIAL_CLOSING_SPEED_EXIT
-    )
+    matched_moving_lead = (math.isfinite(selected_lead_speed) and closing_speed <= MATERIAL_CLOSING_SPEED_EXIT
+                           and v_ego <= selected_lead_speed + MATERIAL_CLOSING_SPEED_EXIT)
     if matched_moving_lead:
-      # Once ego is no longer closing, surplus gap is not a reason to target a
-      # speed above the lead and manufacture another braking event. Upward
-      # changes still use the profile release ramp; only an already-high pace
-      # is synchronized down to the moving lead.
+      # Cap matched traffic at lead speed; upward changes still use the release ramp.
       matched_ceiling = min(base_speed, max(selected_lead_speed, 0.0))
       path.pace = min(path.pace, matched_ceiling)
       ceiling = min(ceiling, matched_ceiling)
     if math.isfinite(raw_cap) and path.material_closing:
-      # Never spend stored gap by accelerating toward a slower lead. Hold the
-      # current pace until relative speed is matched; the energy envelope may
-      # still lower it at the configured comfort rate.
       ceiling = min(ceiling, path.pace)
     if ceiling <= path.pace - RESTRICT_DEADBAND:
       path.pace = max(ceiling, path.pace - config.comfort_decel * self.dt)
@@ -649,8 +560,7 @@ class AccelController:
     elif relief <= relief_deadband:
       path.relief_time = 0.0
       if confirmed_clear:
-        # Close the final sub-deadband clear-road gap instead of leaving the
-        # controller indefinitely in HOLD_ACCEL_MAX with no lead present.
+        # Close the final clear-road deadband so HOLD cannot persist without a lead.
         path.pace = ceiling
         path.state = AccelControllerState.free
       else:
@@ -659,25 +569,15 @@ class AccelController:
     return filtered_cap
 
   def _update_accel_limit(
-    self,
-    path: _PacePath,
-    stock_accel_max: float,
-    planner_accel: float,
-    profile_accel_max: float,
-    config: ProfileConfig,
-    v_ego: float,
-    selected_lead_speed: float,
-    closing_speed: float,
-    lead_present: bool,
-    material_closing: bool,
+    self, path: _PacePath, envelope: EnergyEnvelope, stock_accel_max: float, planner_accel: float, profile_accel_max: float,
+    config: ProfileConfig, v_ego: float, selected_lead_speed: float,
   ) -> tuple[float, float]:
     """Return telemetry effective max and the controller's pre-MPC upper bound."""
     profile_limit = float(np.clip(profile_accel_max, 0.0, ACCEL_MAX))
+    lead_present = envelope.selected_lead >= 0
 
     if path.state == AccelControllerState.stopHold:
-      # Keep the entire reachable cruise trajectory at standstill. Unlike the
-      # old mixed zero/warm-node horizon, this is internally consistent and
-      # opens in time on departure instead of changing shape in one frame.
+      # Pin the full MPC horizon at standstill; departure logic reopens it.
       path.accel_limit = 0.0
       path.decel_limit_active = False
       path.urgent_recovery_active = False
@@ -688,18 +588,12 @@ class AccelController:
       path.urgent_recovery_active = False
       planner_seed = max(0.0, planner_accel)
       if path.departure_handoff_active:
-        # Open every profile at the same bounded jerk rate until the command is
-        # high enough to overcome measured standstill deadband. Normal and
-        # Sport may continue above that common floor, but all profiles begin
-        # physical motion at the same time.
+        # A common bounded breakaway ramp starts motion; each profile may then continue toward its table ceiling.
         launch_target = min(ACCEL_MAX, max(BREAKAWAY_ACCEL_MAX, profile_limit, planner_seed))
         previous_limit = path.accel_limit if path.accel_limit is not None else 0.0
         path.accel_limit = min(launch_target, previous_limit + LAUNCH_ACCEL_RATE * self.dt)
       else:
-        # Start below the solver's standstill cold-start edge, then reach the
-        # common breakaway floor over two controller frames. The launch horizon
-        # exposes each profile's higher future ceiling without stepping the
-        # near-time constraint that keeps the one-iteration solver stable.
+        # Seed below the standstill solver edge; the profile table takes over after the first few centimeters.
         if path.accel_limit is None:
           path.accel_limit = min(INITIAL_LAUNCH_ACCEL_MAX, BREAKAWAY_ACCEL_MAX)
         else:
@@ -707,12 +601,8 @@ class AccelController:
       return min(stock_accel_max, path.accel_limit), path.accel_limit
 
     if path.urgent_recovery_active:
-      # Once projected relative speed is matched, a persistent recovery floor
-      # would keep the car from accelerating back toward a moving lead. Hand
-      # off to the normal state machine from the already-slewed ceiling. A
-      # missing lead does not qualify: the median dropout guard must retain its
-      # no-gas behavior until current lead evidence returns or relief confirms.
-      if (lead_present and closing_speed <= 0.10) or path.state in (AccelControllerState.free, AccelControllerState.release):
+      # Exit on current matched-lead evidence or confirmed relief; missing leads keep the no-gas guard until then.
+      if (lead_present and envelope.closing_speed <= 0.10) or path.state in (AccelControllerState.free, AccelControllerState.release):
         path.urgent_recovery_active = False
       else:
         previous_limit = path.accel_limit if path.accel_limit is not None else ACCEL_MAX
@@ -722,44 +612,28 @@ class AccelController:
         path.decel_limit_active = path.state == AccelControllerState.restrict
         return min(stock_accel_max, path.accel_limit), path.accel_limit
 
-    if path.state == AccelControllerState.restrict and (not lead_present or material_closing):
-      # A negative full-horizon maximum is useful only while ego is still
-      # closing. Keeping it after matching relative speed forces continued
-      # braking below a slower moving lead. Once matched, retain the lowering
-      # pace target but let the selected positive profile ceiling recover.
+    if path.state == AccelControllerState.restrict and (not lead_present or path.material_closing):
+      # Keep a negative horizon while materially closing or through missing-lead restriction; matched traffic recovers the ceiling.
       requested_limit = -config.comfort_decel
       if not path.decel_limit_active:
-        # Preserve an existing pre-MPC ceiling when restriction begins. The
-        # planner's scalar acceleration is the near-time state, while the
-        # commanded target is sampled later for actuator delay; replacing the
-        # ceiling with that scalar can therefore create a one-frame command
-        # drop. A newly initialized path has no prior ceiling to preserve and
-        # is safely seeded from the current planner state.
+        # Retain an existing horizon on restriction entry; reseeding from scalar planner accel can cause a one-frame drop.
         if path.accel_limit is None:
           path.accel_limit = max(0.0, planner_accel)
       path.decel_limit_active = True
-    elif lead_present and material_closing:
-      # Do not spend the remaining gap by accelerating toward a slower lead,
-      # regardless of whether the scalar pace state is currently releasing.
+    elif lead_present and path.material_closing:
       requested_limit = HOLD_ACCEL_MAX
       path.decel_limit_active = False
-    elif lead_present and closing_speed > NO_PROPULSION_CLOSING_SPEED:
-      # Small closing rates do not justify a forced negative comfort ceiling,
-      # but they still must not receive positive propulsion. Keeping this
-      # separate from material-closing deceleration prevents both gas/brake
-      # cycling and centimeter-per-second radar-noise chatter.
+    elif lead_present and envelope.closing_speed > NO_PROPULSION_CLOSING_SPEED:
+      # Tiny closing uses the +0.10 hold ceiling instead of material-closing deceleration.
       requested_limit = HOLD_ACCEL_MAX
       path.decel_limit_active = False
     elif lead_present and math.isfinite(selected_lead_speed) and selected_lead_speed - v_ego <= MATCHED_LEAD_ACCEL_TAPER_SPEED:
-      # Taper propulsion before reaching a moving lead, accounting for the
-      # acceleration already in the planner/actuator path. Waiting until ego
-      # is faster leaves too much stored acceleration and creates overshoot.
+      # Taper propulsion before matching lead speed to absorb acceleration already in the planner and actuator.
       speed_error = max(selected_lead_speed - v_ego, 0.0)
       requested_limit = min(profile_limit, max(HOLD_ACCEL_MAX, MATCHED_LEAD_ACCEL_GAIN * speed_error))
       path.decel_limit_active = False
     elif path.state in (AccelControllerState.restrict, AccelControllerState.hold):
-      # No gas while waiting for relief confirmation. This is the main
-      # anti-rubber-band rule for a still-closing lead.
+      # A clearly faster lead may recover the profile ceiling; otherwise hold near zero through relief confirmation.
       requested_limit = profile_limit if lead_present and planner_accel >= MATCHED_LEAD_PROFILE_ACCEL else HOLD_ACCEL_MAX
       path.decel_limit_active = False
     else:
@@ -767,9 +641,7 @@ class AccelController:
       path.decel_limit_active = False
 
     if path.accel_limit is None:
-      # Avoid a discontinuity when enabling around an already-positive command.
-      # The global OP limit bounds this seed; dynamic stock output constraints
-      # still retain their existing output-side enforcement and slew.
+      # Seed from the current positive command; global and stock output limits still apply.
       path.accel_limit = min(ACCEL_MAX, max(requested_limit, max(0.0, planner_accel)))
     else:
       transition_jerk = DECEL_LIMIT_JERK if path.decel_limit_active or path.accel_limit < 0.0 else ACCEL_LIMIT_JERK
@@ -789,16 +661,8 @@ class AccelController:
 
   @staticmethod
   def _valid_context(
-    base_speed: float,
-    v_ego: float,
-    a_ego: float,
-    planner_speed: float,
-    stock_accel_max: float,
-    planner_accel: float,
-    delay: float,
-    engaged: bool,
-    cruise_initialized: bool,
-    controller_fault: bool,
+    base_speed: float, v_ego: float, a_ego: float, planner_speed: float, stock_accel_max: float, planner_accel: float, delay: float,
+    engaged: bool, cruise_initialized: bool, controller_fault: bool,
   ) -> bool:
     return (
       engaged
@@ -812,45 +676,19 @@ class AccelController:
     )
 
   def update(
-    self,
-    radar_state,
-    *,
-    base_speed: float,
-    v_ego: float,
-    a_ego: float,
-    profile: int | AccelProfile,
-    follow_personality,
-    enabled: bool,
-    acc_selected: bool,
-    engaged: bool,
-    cruise_initialized: bool,
-    previous_mpc_source,
-    planner_speed: float,
-    stock_accel_max: float,
-    planner_accel: float,
-    previous_should_stop: bool,
-    controller_fault: bool = False,
+    self, radar_state, *, base_speed: float, v_ego: float, a_ego: float, profile: int | AccelProfile, follow_personality, enabled: bool,
+    acc_selected: bool, engaged: bool, cruise_initialized: bool, previous_mpc_source, planner_speed: float, stock_accel_max: float,
+    planner_accel: float, previous_should_stop: bool, controller_fault: bool = False,
   ) -> AccelControllerResult:
     """Update live and shadow acceleration controllers and return the target and additive telemetry."""
     profile = self._profile(profile)
-    # Toyota wheel-speed filtering can report a few cm/s negative at a stop.
-    # Treat that as zero without allowing a real invalid state to persist.
+    # Clamp Toyota standstill wheel-speed noise without accepting materially negative speed.
     sanitized_v_ego = max(v_ego, 0.0) if math.isfinite(v_ego) and v_ego >= -VEGO_NOISE_TOLERANCE else v_ego
     config = PROFILE_CONFIGS[profile]
     profile_accel_max = self.get_profile_accel_max(profile, sanitized_v_ego)
-    launch_delta_v = LAUNCH_DELTA_V
     delay = self._delay()
     valid_context = self._valid_context(
-      base_speed,
-      sanitized_v_ego,
-      a_ego,
-      planner_speed,
-      stock_accel_max,
-      planner_accel,
-      delay,
-      engaged,
-      cruise_initialized,
-      controller_fault,
+      base_speed, sanitized_v_ego, a_ego, planner_speed, stock_accel_max, planner_accel, delay, engaged, cruise_initialized, controller_fault,
     )
 
     envelope = self.calculate_energy_envelope(radar_state, sanitized_v_ego, a_ego, profile, follow_personality) if valid_context else EnergyEnvelope()
@@ -860,32 +698,10 @@ class AccelController:
 
     if valid_context:
       shadow_filtered_cap = self._update_path(
-        self.shadow,
-        envelope.cap,
-        base_speed,
-        sanitized_v_ego,
-        config,
-        previous_mpc_source,
-        planner_speed,
-        previous_should_stop,
-        envelope.has_nearly_stopped_lead,
-        envelope.departure_lead_speed,
-        selected_lead_speed,
-        envelope.closing_speed,
-        envelope.required_decel,
-        launch_delta_v,
+        self.shadow, envelope, base_speed, sanitized_v_ego, config, previous_mpc_source, planner_speed, previous_should_stop, selected_lead_speed,
       )
       self._update_accel_limit(
-        self.shadow,
-        stock_accel_max,
-        planner_accel,
-        profile_accel_max,
-        config,
-        sanitized_v_ego,
-        selected_lead_speed,
-        envelope.closing_speed,
-        envelope.selected_lead >= 0,
-        self.shadow.material_closing,
+        self.shadow, envelope, stock_accel_max, planner_accel, profile_accel_max, config, sanitized_v_ego, selected_lead_speed,
       )
       shadow_active = True
     else:
@@ -905,41 +721,17 @@ class AccelController:
         positive_track_change = selected_track_id >= 0 and previous_track_id >= 0 and selected_track_id != previous_track_id
         established_selected_lead = self.live.lead_seen[envelope.selected_lead] and not positive_track_change
       live_filtered_cap = self._update_path(
-        self.live,
-        envelope.cap,
-        base_speed,
-        sanitized_v_ego,
-        config,
-        previous_mpc_source,
-        planner_speed,
-        previous_should_stop,
-        envelope.has_nearly_stopped_lead,
-        envelope.departure_lead_speed,
-        selected_lead_speed,
-        envelope.closing_speed,
-        envelope.required_decel,
-        launch_delta_v,
+        self.live, envelope, base_speed, sanitized_v_ego, config, previous_mpc_source, planner_speed, previous_should_stop, selected_lead_speed,
       )
       lead_obstacle_weights = self._update_lead_obstacle_weights(
-        self.live,
-        radar_state,
-        sanitized_v_ego,
-        a_ego,
-        planner_accel,
-        follow_personality,
-        allow_blend=live_was_initialized,
+        self.live, radar_state, sanitized_v_ego, a_ego, planner_accel, follow_personality, allow_blend=live_was_initialized,
       )
       urgent_was_active = self.live.urgent_bypass_active
-      selected_has_full_authority = (
-        envelope.selected_lead in (0, 1) and lead_obstacle_weights[envelope.selected_lead] >= 1.0
-      )
+      selected_has_full_authority = envelope.selected_lead in (0, 1) and lead_obstacle_weights[envelope.selected_lead] >= 1.0
       urgent_required_decel = envelope.required_decel
       if not live_was_initialized or not established_selected_lead:
         urgent_required_decel = max(urgent_required_decel, envelope.conservative_required_decel)
-      low_speed_urgent_lead = (
-        selected_lead_speed < URGENT_LOW_SPEED_LEAD_BYPASS
-        and self.live.state != AccelControllerState.stopHold
-      )
+      low_speed_urgent_lead = selected_lead_speed < URGENT_LOW_SPEED_LEAD_BYPASS and self.live.state != AccelControllerState.stopHold
       urgent_trigger = (
         (sanitized_v_ego >= URGENT_BYPASS_MIN_SPEED or low_speed_urgent_lead)
         and urgent_required_decel >= URGENT_BYPASS_REQUIRED_DECEL
@@ -958,43 +750,25 @@ class AccelController:
           or (selected_lead_speed < URGENT_LOW_SPEED_LEAD_BYPASS and self.live.state != AccelControllerState.stopHold)
         )
       )
-      # Keep the urgent context latched across two missing observations, but do
-      # not call it a stock bypass below: with no raw lead, stock has no obstacle
-      # to preserve the braking plan. The dedicated dropout branch retains only
-      # scalar pace and acceleration state, never stale lead geometry.
+      # Latch urgency across two missing observations, retaining scalar state but never stale lead geometry.
       self.live.urgent_bypass_active = urgent_bypass or urgent_dropout_guard
-      if (
-        urgent_was_active
-        and not urgent_bypass
-        and not urgent_dropout_guard
-        and envelope.selected_lead >= 0
-        and self.live.state != AccelControllerState.stopHold
-      ):
-        # Rejoin comfort control at the speed the stock lead plan has already
-        # reached. Keeping the pre-urgent pace here asks MPC to release a hard
-        # brake toward a stale, much higher target in one frame.
+      if (urgent_was_active and not urgent_bypass and not urgent_dropout_guard and envelope.selected_lead >= 0
+          and self.live.state != AccelControllerState.stopHold):
+        # Rejoin from stock's achieved speed, not the stale pre-urgent pace.
         rejoin_speed = min(planner_speed, sanitized_v_ego)
         if envelope.closing_speed <= 0.10 and math.isfinite(selected_lead_speed):
-          # A moving lead is the natural lower pace reference once projected
-          # relative speed is matched. Seeding below it makes the cruise
-          # obstacle reinforce stock's residual braking and creates a large
-          # undershoot before the release ramp can recover.
+          # A matched moving lead is the lower pace reference; seeding below it reinforces residual braking.
           rejoin_speed = max(rejoin_speed, min(base_speed, selected_lead_speed))
           self.live.pace = rejoin_speed
         else:
           self.live.pace = min(self.live.pace if self.live.pace is not None else rejoin_speed, rejoin_speed)
         self.live.state = AccelControllerState.hold
         self.live.relief_time = 0.0
-        # Reintroduce the custom horizon from stock's global ceiling. The
-        # existing pre-MPC slew then tightens it gradually instead of stepping
-        # directly from no bound to HOLD_ACCEL_MAX while braking hard.
+        # Rejoin from the global ceiling so the pre-MPC slew tightens gradually.
         self.live.accel_limit = ACCEL_MAX
         self.live.urgent_recovery_active = True
       if urgent_dropout_guard:
-        # A one- or two-frame all-lead dropout must not turn an urgent brake
-        # into gas. Hold the synchronized scalar pace and the current
-        # nonpositive planner ceiling while the median cap remains restrictive.
-        # This protects the handoff without retaining stale lead geometry.
+        # Two-frame dropout holds pace and a nonpositive ceiling without stale lead geometry.
         held_limit = self.live.accel_limit if self.live.accel_limit is not None else planner_accel
         self.live.accel_limit = float(np.clip(min(held_limit, 0.0), ACCEL_MIN, ACCEL_MAX))
         self.live.decel_limit_active = self.live.accel_limit < 0.0
@@ -1005,10 +779,7 @@ class AccelController:
         lead_obstacle_weights = (1.0, 1.0)
         target_speed = min(base_speed, self.live.pace if self.live.pace is not None else sanitized_v_ego)
       elif urgent_bypass:
-        # Hand raw leads, base cruise, and stock bounds directly to MPC. Clear
-        # the old comfort-control warm start once on urgent entry so its prior
-        # positive-acceleration solution cannot destabilize the abrupt raw-lead
-        # solve. The reset occurs before set_cur_state/update in the planner.
+        # Urgent entry restores raw leads and stock bounds, then resets MPC before planner state/update.
         reset_mpc = reset_mpc or not urgent_was_active
         self.live.launch_target_active = False
         self.live.accel_limit = None
@@ -1024,16 +795,7 @@ class AccelController:
       else:
         recovery_was_active = self.live.urgent_recovery_active
         effective_accel_max, controller_accel_max = self._update_accel_limit(
-          self.live,
-          stock_accel_max,
-          planner_accel,
-          profile_accel_max,
-          config,
-          sanitized_v_ego,
-          selected_lead_speed,
-          envelope.closing_speed,
-          envelope.selected_lead >= 0,
-          self.live.material_closing,
+          self.live, envelope, stock_accel_max, planner_accel, profile_accel_max, config, sanitized_v_ego, selected_lead_speed,
         )
         if (
           recovery_was_active
@@ -1042,27 +804,17 @@ class AccelController:
           and math.isfinite(selected_lead_speed)
           and self.live.pace is not None
         ):
-          # Once relative speed is matched, never carry a recovery pace below
-          # the moving lead. This avoids the old choice between a base-cruise
-          # gas pulse and prolonged braking below lead speed.
+          # Do not carry recovery pace below a matched moving lead.
           self.live.pace = max(self.live.pace, min(base_speed, selected_lead_speed))
-        # Feed only the controller-owned ceiling into MPC. Stock's speed, turn,
-        # coast, and no-throttle limits remain in their original output clip.
         mpc_accel_max = self._build_mpc_accel_max(controller_accel_max)
         mpc_shape_cruise = mpc_accel_max is not None
         if mpc_accel_max is None:
           effective_accel_max = stock_accel_max
         if self.live.state == AccelControllerState.stopHold:
-          # Pin the cruise obstacle to zero as well as the acceleration upper
-          # bound. Some platforms declare shouldStop below this controller's
-          # 0.30 m/s hold threshold; keeping base cruise there can otherwise
-          # permit a slow coast while lead authority is intentionally muted.
+          # Pin cruise because some platforms assert shouldStop below 0.30 m/s while lead authority is muted.
           target_speed = 0.0
         elif self.live.departing_from_stop or self.live.launch_target_active:
-          # Keep stock's normal cruise incentive through the first meter per
-          # second of a confirmed launch. The lookup ceiling shapes takeoff
-          # while raw-lead authority restores; renewed closing evidence
-          # cancels this path immediately.
+          # Base cruise supplies launch incentive; renewed closing cancels it.
           target_speed = base_speed
         elif (
           envelope.selected_lead >= 0
@@ -1073,18 +825,12 @@ class AccelController:
           and planner_accel < -0.20
           and not self.live.material_closing
         ):
-          # A moving lead that has already matched ego no longer needs the
-          # cruise obstacle to reinforce residual braking. Let raw lead
-          # geometry hold the gap while base cruise helps MPC unwind smoothly;
-          # any renewed relative-energy demand exits through material_closing.
-          # Keep mpc_accel_max as a hard bound, but do not also use that small
-          # comfort ceiling to clip the cruise speed trajectory below the lead.
+          # Base cruise unwinds residual braking after matching a moving lead. Raw-lead authority and mpc_accel_max remain active.
           target_speed = base_speed
           mpc_shape_cruise = False
           lead_obstacle_weights = (1.0, 1.0)
         elif self.live.urgent_recovery_active:
-          # Keep full raw-lead authority while the pre-MPC ceiling rejoins, but
-          # retain the synchronized pace so relief cannot become a gas pulse.
+          # Keep raw-lead authority and synchronized pace while the ceiling rejoins.
           target_speed = min(base_speed, self.live.pace if self.live.pace is not None else base_speed)
           lead_obstacle_weights = (1.0, 1.0)
         else:
@@ -1100,28 +846,14 @@ class AccelController:
       lead_obstacle_weights = (1.0, 1.0)
 
     return AccelControllerResult(
-      target_speed=target_speed,
-      enabled=bool(enabled),
-      active=live_active,
-      shadow_active=shadow_active,
-      launching=live_active and self.live.departing_from_stop,
-      profile=profile,
-      profile_accel_max=profile_accel_max if live_active else math.inf,
-      effective_accel_max=effective_accel_max,
-      mpc_accel_max=mpc_accel_max,
-      mpc_shape_cruise=mpc_shape_cruise,
-      reset_mpc=reset_mpc,
-      lead_obstacle_weights=lead_obstacle_weights,
-      state=self.live.state,
-      shadow_state=self.shadow.state,
-      base_speed=base_speed,
-      raw_energy_cap=envelope.cap,
-      live_filtered_cap=live_filtered_cap,
-      shadow_filtered_cap=shadow_filtered_cap,
+      target_speed=target_speed, enabled=bool(enabled), active=live_active, shadow_active=shadow_active,
+      launching=live_active and self.live.departing_from_stop, profile=profile,
+      profile_accel_max=profile_accel_max if live_active else math.inf, effective_accel_max=effective_accel_max,
+      mpc_accel_max=mpc_accel_max, mpc_shape_cruise=mpc_shape_cruise, reset_mpc=reset_mpc, lead_obstacle_weights=lead_obstacle_weights,
+      state=self.live.state, shadow_state=self.shadow.state, base_speed=base_speed, raw_energy_cap=envelope.cap,
+      live_filtered_cap=live_filtered_cap, shadow_filtered_cap=shadow_filtered_cap,
       live_pace=self.live.pace if self.live.pace is not None else math.inf,
       shadow_pace=self.shadow.pace if self.shadow.pace is not None else math.inf,
-      selected_lead=envelope.selected_lead,
-      usable_gap=envelope.usable_gap,
-      closing_speed=envelope.closing_speed,
+      selected_lead=envelope.selected_lead, usable_gap=envelope.usable_gap, closing_speed=envelope.closing_speed,
       required_decel=envelope.required_decel,
     )

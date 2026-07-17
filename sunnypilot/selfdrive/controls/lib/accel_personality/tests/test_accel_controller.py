@@ -484,17 +484,13 @@ class TestAccelControllerState:
     governor = make_governor()
     restrictive_radar = make_radar(self.restrictive_lead)
 
-    first = update(governor, restrictive_radar)
-    second = update(governor, restrictive_radar)
-    third = update(governor, restrictive_radar)
+    first, second, third = [update(governor, restrictive_radar) for _ in range(3)]
 
     assert math.isinf(first.live_filtered_cap)
     assert math.isinf(second.live_filtered_cap)
     assert math.isfinite(third.live_filtered_cap)
 
-    dropout_one = update(governor)
-    dropout_two = update(governor)
-    dropout_three = update(governor)
+    dropout_one, dropout_two, dropout_three = [update(governor) for _ in range(3)]
 
     assert math.isfinite(dropout_one.live_filtered_cap)
     assert math.isfinite(dropout_two.live_filtered_cap)
@@ -502,8 +498,7 @@ class TestAccelControllerState:
 
   def test_restriction_is_limited_by_profile_deceleration(self):
     governor = make_governor()
-    # Restrictive enough to start early comfort shaping, but below the urgent
-    # stock-MPC bypass threshold.
+    # Restrictive enough for early comfort shaping but below the urgent stock-MPC threshold.
     radar_state = make_radar(make_lead(status=True, d_rel=160.0, v_lead_k=10.0))
 
     update(governor, radar_state)
@@ -530,21 +525,10 @@ class TestAccelControllerState:
   @pytest.mark.parametrize("profile", list(AccelProfile))
   def test_e5_low_speed_urgency_hands_back_to_stock_immediately(self, profile):
     governor = make_governor(delay=0.15)
-    established_lead = make_radar(make_lead(
-      status=True,
-      d_rel=18.68,
-      v_lead_k=2.876,
-      a_lead_k=-0.743,
-      radar_track_id=7,
-    ))
+    established_lead = make_radar(make_lead(status=True, d_rel=18.68, v_lead_k=2.876, a_lead_k=-0.743, radar_track_id=7))
     established_args = {
-      "profile": profile,
-      "base_speed": 23.056,
-      "v_ego": 5.015,
-      "a_ego": -0.949,
-      "planner_speed": 5.015,
-      "planner_accel": -1.021,
-      "stock_accel_max": 1.40,
+      "profile": profile, "base_speed": 23.056, "v_ego": 5.015, "a_ego": -0.949,
+      "planner_speed": 5.015, "planner_accel": -1.021, "stock_accel_max": 1.40,
     }
 
     for _ in range(5):
@@ -555,37 +539,22 @@ class TestAccelControllerState:
     assert established.target_speed < established.base_speed
     assert established.mpc_shape_cruise
 
-    urgent_lead = make_radar(make_lead(
-      status=True,
-      d_rel=16.32,
-      v_lead_k=1.89,
-      a_lead_k=-1.16,
-      radar_track_id=7,
-    ))
+    urgent_lead = make_radar(make_lead(status=True, d_rel=16.32, v_lead_k=1.89, a_lead_k=-1.16, radar_track_id=7))
     urgent_args = established_args | {
-      "v_ego": 4.499,
-      "a_ego": -0.75,
-      "planner_speed": 4.499,
-      "planner_accel": -0.95,
+      "v_ego": 4.499, "a_ego": -0.75, "planner_speed": 4.499, "planner_accel": -0.95,
     }
     entering = update(governor, urgent_lead, **urgent_args)
 
     assert entering.required_decel > URGENT_BYPASS_REQUIRED_DECEL
     assert governor.live.urgent_bypass_active
-    assert entering.target_speed == entering.base_speed
-    assert entering.lead_obstacle_weights == (1.0, 1.0)
-    assert not entering.mpc_shape_cruise
-    assert entering.mpc_accel_max is None
-    assert entering.effective_accel_max == urgent_args["stock_accel_max"]
-
     stock_owned = update(governor, urgent_lead, **urgent_args)
-
     assert governor.live.urgent_bypass_active
-    assert stock_owned.target_speed == stock_owned.base_speed
-    assert stock_owned.lead_obstacle_weights == (1.0, 1.0)
-    assert not stock_owned.mpc_shape_cruise
-    assert stock_owned.mpc_accel_max is None
-    assert stock_owned.effective_accel_max == urgent_args["stock_accel_max"]
+    for result in (entering, stock_owned):
+      assert result.target_speed == result.base_speed
+      assert result.lead_obstacle_weights == (1.0, 1.0)
+      assert not result.mpc_shape_cruise
+      assert result.mpc_accel_max is None
+      assert result.effective_accel_max == urgent_args["stock_accel_max"]
 
   def test_positive_lead_accel_spike_cannot_delay_first_urgent_bypass(self):
     governor = make_governor()
@@ -637,8 +606,7 @@ class TestAccelControllerState:
     assert not governor.live.urgent_bypass_active
     assert not governor.live.urgent_recovery_active
     assert expired.mpc_accel_max is not None
-    assert expired.target_speed == expired.live_pace
-    assert expired.target_speed == expired.base_speed
+    assert expired.target_speed == expired.live_pace == expired.base_speed
     assert expired.state == AccelControllerState.free
 
   def test_urgent_exit_slews_rejoin_ceiling_then_releases_after_speed_match(self):
@@ -770,17 +738,8 @@ class TestAccelControllerState:
     moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
     stop_args = {"base_speed": 5.0, "v_ego": 0.1, "planner_speed": 0.1}
 
-    for _ in range(3):
-      result = update(governor, stopped, **stop_args)
-      assert result.state == AccelControllerState.stopHold
-      assert result.live_pace == 0.0
-      assert result.target_speed == 0.0
-      assert result.effective_accel_max == 0.0
-      assert_profile_trajectory(result, 0.0)
-      assert result.lead_obstacle_weights == (0.0, 0.0)
-
-    for _ in range(3):
-      result = update(governor, moving, **stop_args)
+    for radar_state in (stopped,) * 3 + (moving,) * 3:
+      result = update(governor, radar_state, **stop_args)
       assert result.state == AccelControllerState.stopHold
       assert not result.launching
       assert result.live_pace == 0.0
@@ -1072,9 +1031,7 @@ class TestAccelControllerState:
     governor = make_governor()
 
     args = {"base_speed": 5.0, "v_ego": 0.0, "planner_speed": 0.0, "profile": profile}
-    first = update(governor, **args)
-    second = update(governor, **args)
-    third = update(governor, **args)
+    first, second, third = [update(governor, **args) for _ in range(3)]
 
     assert first.selected_lead == -1
     assert first.launching

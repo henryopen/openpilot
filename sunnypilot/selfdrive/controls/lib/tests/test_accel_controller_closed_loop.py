@@ -308,8 +308,6 @@ def test_two_frame_dropout_and_false_relief_do_not_release_pace(record_property)
   record_property("clean_base_solver_failures", baseline.solver_failures)
   record_property("accel_controller_solver_failures", trace.solver_failures)
   assert trace.solver_failures == 0
-  if trace.solver_failures:
-    pytest.xfail("opt-in validation: absolute zero-solver-failure gate is unmet with raw two-frame all-lead dropout")
 
 
 def test_lead_slot_handoff_does_not_resurrect_stale_relief():
@@ -384,17 +382,9 @@ def test_route_shaped_urgent_lead_acquisition_is_immediate_and_does_not_delay_br
     return truth | {"radarTrackId": 22}
 
   common = dict(
-    duration=10.0,
-    lead_relevancy=True,
-    speed=34.8,
-    # The 11.4 m/s closing speed removes about 11.4 m before acquisition,
-    # reproducing the route's observed ~93.6 m lead distance.
-    distance_lead=105.0,
-    v_lead=23.4,
-    v_cruise=40.0,
-    lead_observation_fn=observe,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    duration=10.0, lead_relevancy=True, speed=34.8,
+    # 11.4 m/s closing before acquisition reproduces the route's observed ~93.6 m gap.
+    distance_lead=105.0, v_lead=23.4, v_cruise=40.0, lead_observation_fn=observe, actuator_delay=0.15, actuator_lag=0.20,
   )
   baseline = _run(controller_enabled=False, **common)
   trace = _run(controller_enabled=True, **common)
@@ -428,15 +418,8 @@ def test_moderate_urgent_lead_acquisition_does_not_delay_stock_braking():
     return truth | {"radarTrackId": 23}
 
   common = dict(
-    duration=8.0,
-    lead_relevancy=True,
-    speed=20.0,
-    distance_lead=55.0,
-    v_lead=12.0,
-    v_cruise=20.0,
-    lead_observation_fn=observe,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    duration=8.0, lead_relevancy=True, speed=20.0, distance_lead=55.0, v_lead=12.0, v_cruise=20.0,
+    lead_observation_fn=observe, actuator_delay=0.15, actuator_lag=0.20,
   )
   baseline = _run(controller_enabled=False, **common)
   trace = _run(controller_enabled=True, **common)
@@ -457,14 +440,7 @@ def test_urgent_warm_start_reset_preserves_fcw_history_until_mpc_update():
     return truth | {"radarTrackId": 24}
 
   _set_accel_controller_params(enabled=True)
-  plant = Plant(
-    lead_relevancy=True,
-    speed=34.8,
-    distance_lead=105.0,
-    lead_observation_fn=observe,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
-  )
+  plant = Plant(lead_relevancy=True, speed=34.8, distance_lead=105.0, lead_observation_fn=observe, actuator_delay=0.15, actuator_lag=0.20)
   while plant.current_time < 1.0:
     plant.step(v_lead=23.4, v_cruise=40.0)
 
@@ -485,33 +461,18 @@ def test_urgent_warm_start_reset_preserves_fcw_history_until_mpc_update():
 
 
 def test_route_e5_low_speed_urgent_closing_stays_with_stock_braking():
-  # E5 reached its first urgent relative-energy sample below 5 m/s: ego was
-  # about 4.5 m/s and the decelerating lead was about 1.9 m/s at 16-18 m.
-  # The controller must hand that case to raw stock MPC immediately even
-  # though the old speed-only urgent gate was not met.
+  # E5 became urgent below 5 m/s (ego 4.5, lead 1.9 at 16-18 m), requiring immediate stock-MPC bypass.
   def lead_speed(current_time: float) -> float:
     return max(0.0, 1.9 - 1.16 * current_time)
 
   def observe(current_time: float, lead_name: str, truth: LeadObservation) -> LeadObservation | None:
     if lead_name == "leadTwo":
       return None
-    return truth | {
-      "aLeadK": -1.16 if lead_speed(current_time) > 0.0 else 0.0,
-      "radarTrackId": 7,
-      "radar": True,
-    }
+    return truth | {"aLeadK": -1.16 if lead_speed(current_time) > 0.0 else 0.0, "radarTrackId": 7, "radar": True}
 
   common = dict(
-    duration=6.0,
-    profile=0,
-    lead_relevancy=True,
-    speed=4.5,
-    distance_lead=18.0,
-    v_lead=lead_speed,
-    v_cruise=23.056,
-    lead_observation_fn=observe,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    duration=6.0, profile=0, lead_relevancy=True, speed=4.5, distance_lead=18.0, v_lead=lead_speed, v_cruise=23.056,
+    lead_observation_fn=observe, actuator_delay=0.15, actuator_lag=0.20,
   )
   baseline = _run(controller_enabled=False, **common)
   trace = _run(controller_enabled=True, **common)
@@ -560,8 +521,7 @@ def test_alternating_full_lead_range_glitch_has_bounded_jerk_and_no_reversal():
   jerk_window = (trace.time[1:] >= glitch_start) & (trace.time[1:] < glitch_end + 0.5)
   assert np.max(np.abs(np.diff(trace.a_target)[jerk_window] / DT_MDL)) < 3.0
 
-  # Attribute only the disturbance response: this fixture has a later natural
-  # propulsion-to-brake transition even without the range glitch.
+  # Isolate glitch response; the fixture naturally transitions from propulsion to braking later.
   response_window = (trace.time >= glitch_start) & (trace.time < glitch_end + 1.0)
   disturbance = trace.a_target[response_window] - control.a_target[response_window]
   positive = np.flatnonzero(disturbance > 0.2)
@@ -582,30 +542,14 @@ def test_route_like_tiny_closing_track_noise_does_not_chatter_accel_authority():
     v_lead_observed = v_ego - 0.60 if closing_sample else v_ego + 0.10
     a_lead_observed = -0.15 if closing_sample else 0.12
     return truth | {
-      "vRel": v_lead_observed - v_ego,
-      "aRel": a_lead_observed + truth["aRel"],
-      "vLead": v_lead_observed,
-      "vLeadK": v_lead_observed,
-      "aLeadK": a_lead_observed,
-      "radarTrackId": 655 if closing_sample else 798,
-      "radar": True,
+      "vRel": v_lead_observed - v_ego, "aRel": a_lead_observed + truth["aRel"], "vLead": v_lead_observed,
+      "vLeadK": v_lead_observed, "aLeadK": a_lead_observed, "radarTrackId": 655 if closing_sample else 798, "radar": True,
     }
 
   trace = _run(
-    duration=16.0,
-    controller_enabled=True,
-    profile=0,
-    lead_relevancy=True,
-    speed=30.0,
-    # E8 repeatedly switched radar tracks while following at roughly 55-79 m.
-    # Use the middle of that band so the fixture isolates tiny relative-speed
-    # noise rather than entering the desired-gap singularity as ego settles.
-    distance_lead=70.0,
-    v_lead=30.0,
-    v_cruise=30.0,
-    lead_observation_fn=observe,
-    actuator_delay=0.10,
-    actuator_lag=0.20,
+    duration=16.0, controller_enabled=True, profile=0, lead_relevancy=True, speed=30.0,
+    # Midpoint of E8's 55-79 m track-switch band isolates relative-speed noise without entering the desired-gap singularity.
+    distance_lead=70.0, v_lead=30.0, v_cruise=30.0, lead_observation_fn=observe, actuator_delay=0.10, actuator_lag=0.20,
   )
 
   noise = trace.time >= noise_start
@@ -630,15 +574,8 @@ def test_repeated_slow_lead_stop_go_has_no_post_settle_reversal():
     return float(0.1 * (1.0 - np.cos(np.pi * current_time)))
 
   trace = _run(
-    duration=9.0,
-    controller_enabled=True,
-    lead_relevancy=True,
-    speed=2.0,
-    distance_lead=10.0,
-    v_lead=lead_speed,
-    v_cruise=8.0,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    duration=9.0, controller_enabled=True, lead_relevancy=True, speed=2.0, distance_lead=10.0, v_lead=lead_speed, v_cruise=8.0,
+    actuator_delay=0.15, actuator_lag=0.20,
   )
 
   settled = trace.time >= 4.0
@@ -666,18 +603,9 @@ def test_route_e7_creeping_lead_departure_has_no_stable_brake_gas_brake():
     return truth | {"radarTrackId": 2133, "radar": True}
 
   trace = _run(
-    duration=7.0,
-    controller_enabled=True,
-    profile=0,
-    lead_relevancy=True,
-    speed=0.0,
+    duration=7.0, controller_enabled=True, profile=0, lead_relevancy=True, speed=0.0,
     # E7's bookmarked queue oscillation had a 3.6-3.9 m radar gap.
-    distance_lead=3.6,
-    v_lead=lead_speed,
-    v_cruise=22.352,
-    lead_observation_fn=observe,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    distance_lead=3.6, v_lead=lead_speed, v_cruise=22.352, lead_observation_fn=observe, actuator_delay=0.15, actuator_lag=0.20,
   )
 
   after_departure = trace.time >= departure_time
@@ -696,13 +624,7 @@ def test_route_e7_creeping_lead_departure_has_no_stable_brake_gas_brake():
 
 def test_severe_closing_never_delays_braking_or_reduces_clearance():
   common = dict(
-    duration=12.0,
-    lead_relevancy=True,
-    speed=20.0,
-    distance_lead=160.0,
-    v_lead=3.5,
-    actuator_delay=0.20,
-    actuator_lag=0.20,
+    duration=12.0, lead_relevancy=True, speed=20.0, distance_lead=160.0, v_lead=3.5, actuator_delay=0.20, actuator_lag=0.20,
   )
   baseline = _run(controller_enabled=False, **common)
   controlled = _run(controller_enabled=True, **common)
@@ -720,14 +642,8 @@ def test_severe_closing_never_delays_braking_or_reduces_clearance():
 
 def test_slow_lead_urgent_rejoin_has_no_brake_release_jolt_or_safety_regression():
   common = dict(
-    duration=25.0,
-    lead_relevancy=True,
-    speed=20.0,
-    distance_lead=100.0,
-    v_lead=10.0,
-    v_cruise=30.0,
-    actuator_delay=0.20,
-    actuator_lag=0.25,
+    duration=25.0, lead_relevancy=True, speed=20.0, distance_lead=100.0, v_lead=10.0, v_cruise=30.0,
+    actuator_delay=0.20, actuator_lag=0.25,
   )
   baseline = _run(controller_enabled=False, **common)
   controlled = _run(controller_enabled=True, profile=1, **common)
@@ -744,16 +660,11 @@ def test_slow_lead_urgent_rejoin_has_no_brake_release_jolt_or_safety_regression(
 
   baseline_gap = baseline.distance_lead - baseline.distance
   controlled_gap = controlled.distance_lead - controlled.distance
-  # Clean-base acados can hit its known macOS solver edge late in this long
-  # fixture. Compare only the valid stock prefix, while requiring the
-  # controller to remain fault-free for the complete settle and recovery.
+  # Compare the valid stock prefix when clean-base acados hits its late macOS solver edge.
   baseline_valid = ~baseline.controller_fault
   if baseline.controller_fault.any():
     baseline_valid[np.flatnonzero(baseline.controller_fault)[0]:] = False
-  # This routine matching fixture trades less than one metre of the stock
-  # buffer for avoiding stock's late solver edge and large speed undershoot.
-  # The severe-closing regression above retains the exact no-clearance-loss
-  # safety gate.
+  # Routine matching may trade <1 m of buffer; severe closing retains the exact no-clearance-loss gate.
   assert np.min(controlled_gap[baseline_valid]) >= np.min(baseline_gap[baseline_valid]) - 1.0
   baseline_closing = np.maximum(baseline.speed - common["v_lead"], 0.0)
   controlled_closing = np.maximum(controlled.speed - common["v_lead"], 0.0)
@@ -763,8 +674,7 @@ def test_slow_lead_urgent_rejoin_has_no_brake_release_jolt_or_safety_regression(
   assert np.min(controlled_gap) > 20.0
   assert np.min(controlled_ttc) > 6.0
 
-  # Rejoining comfort control must not command gas while ego still needs to
-  # match the slower lead, or over-slow materially compared with stock.
+  # Rejoin cannot command gas while still closing or materially over-slow.
   still_closing = controlled.speed > common["v_lead"] + 0.2
   assert np.max(controlled.a_target[still_closing]) <= 0.2
   controlled_undershoot = np.min(controlled.speed - common["v_lead"])
@@ -787,16 +697,8 @@ def test_slow_lead_urgent_rejoin_has_no_brake_release_jolt_or_safety_regression(
 def test_slow_lead_rejoin_is_smooth_across_profiles_and_actuator_dynamics(profile, actuator_delay, actuator_lag):
   lead_speed = 10.0
   trace = _run(
-    duration=10.0,
-    controller_enabled=True,
-    profile=profile,
-    lead_relevancy=True,
-    speed=20.0,
-    distance_lead=100.0,
-    v_lead=lead_speed,
-    v_cruise=30.0,
-    actuator_delay=actuator_delay,
-    actuator_lag=actuator_lag,
+    duration=10.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=20.0, distance_lead=100.0,
+    v_lead=lead_speed, v_cruise=30.0, actuator_delay=actuator_delay, actuator_lag=actuator_lag,
   )
 
   assert trace.urgent_bypass.any()
@@ -826,16 +728,8 @@ def test_decelerating_moving_lead_unwinds_brake_without_false_stop(profile):
     return 15.0 - 10.0 * (3.0 * progress * progress - 2.0 * progress * progress * progress)
 
   trace = _run(
-    duration=18.0,
-    controller_enabled=True,
-    profile=profile,
-    lead_relevancy=True,
-    speed=20.0,
-    distance_lead=110.0,
-    v_lead=lead_speed,
-    v_cruise=30.0,
-    actuator_delay=0.20,
-    actuator_lag=0.25,
+    duration=18.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=20.0, distance_lead=110.0,
+    v_lead=lead_speed, v_cruise=30.0, actuator_delay=0.20, actuator_lag=0.25,
   )
 
   after_lead_settles = trace.time >= 8.0
@@ -862,9 +756,7 @@ def test_decelerating_moving_lead_unwinds_brake_without_false_stop(profile):
   ],
   ids=("toyota", "honda", "gm", "hyundai", "ford"),
 )
-def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_one_second(
-  actuator_delay, actuator_lag, record_property,
-):
+def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_one_second(actuator_delay, actuator_lag, record_property):
   departure_time = 1.0
 
   def lead_speed(current_time: float) -> float:
@@ -873,25 +765,12 @@ def test_stopped_lead_noise_requires_four_departure_frames_and_launches_within_o
   def observe(current_time: float, _lead_name: str, truth: LeadObservation) -> LeadObservation:
     frame = round(current_time / DT_MDL)
     if current_time < departure_time and frame % 4 == 0:
-      return {
-        "dRel": truth["dRel"] + 4.0,
-        "vRel": 1.5,
-        "vLead": 1.5,
-        "vLeadK": 1.5,
-        "aLeadK": 0.0,
-      }
+      return {"dRel": truth["dRel"] + 4.0, "vRel": 1.5, "vLead": 1.5, "vLeadK": 1.5, "aLeadK": 0.0}
     return truth
 
   common = dict(
-    duration=2.5,
-    lead_relevancy=True,
-    speed=0.0,
-    distance_lead=6.0,
-    v_lead=lead_speed,
-    v_cruise=8.0,
-    lead_observation_fn=observe,
-    actuator_delay=actuator_delay,
-    actuator_lag=actuator_lag,
+    duration=2.5, lead_relevancy=True, speed=0.0, distance_lead=6.0, v_lead=lead_speed, v_cruise=8.0,
+    lead_observation_fn=observe, actuator_delay=actuator_delay, actuator_lag=actuator_lag,
   )
   baseline = _run(controller_enabled=False, **common)
   trace = _run(controller_enabled=True, **common)
@@ -933,16 +812,9 @@ def test_route_derived_prius_prompt_launch_gate(profile):
     return 0.0 if current_time < departure_time else 2.0
 
   trace = _run(
-    duration=3.0,
-    controller_enabled=True,
-    profile=profile,
-    lead_relevancy=True,
-    speed=0.0,
-    distance_lead=6.0,
-    v_lead=lead_speed,
+    duration=3.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=0.0, distance_lead=6.0, v_lead=lead_speed,
     # Dominant post-SCC/SLA target in the supplied Prius routes (50 mph).
-    v_cruise=22.352,
-    actuator_model=PRIUS_TSS2_ROUTE_MODEL,
+    v_cruise=22.352, actuator_model=PRIUS_TSS2_ROUTE_MODEL,
   )
 
   first_three = (trace.time > departure_time) & (trace.time <= departure_time + 3 * DT_MDL + 1e-9)
@@ -959,16 +831,8 @@ def test_stop_hold_two_frame_total_lead_dropout_cannot_launch():
     return None if 1.0 <= current_time < 1.1 else truth
 
   trace = _run(
-    duration=2.0,
-    controller_enabled=True,
-    lead_relevancy=True,
-    speed=0.0,
-    distance_lead=6.0,
-    v_lead=0.0,
-    v_cruise=8.0,
-    lead_observation_fn=observe,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    duration=2.0, controller_enabled=True, lead_relevancy=True, speed=0.0, distance_lead=6.0, v_lead=0.0, v_cruise=8.0,
+    lead_observation_fn=observe, actuator_delay=0.15, actuator_lag=0.20,
   )
 
   assert np.max(trace.speed) < 1e-3
@@ -981,13 +845,7 @@ def test_stop_hold_two_frame_total_lead_dropout_cannot_launch():
 def test_stop_hold_above_vehicle_should_stop_threshold_keeps_close_lead_authority(v_ego_stopping):
   _set_accel_controller_params(enabled=True, profile=1)
   initial_gap = 0.25
-  plant = Plant(
-    lead_relevancy=True,
-    speed=0.28,
-    distance_lead=initial_gap,
-    actuator_delay=0.10,
-    actuator_lag=0.20,
-  )
+  plant = Plant(lead_relevancy=True, speed=0.28, distance_lead=initial_gap, actuator_delay=0.10, actuator_lag=0.20)
   plant.planner.CP.vEgoStopping = v_ego_stopping
 
   gaps = []
@@ -1014,13 +872,7 @@ def test_stop_hold_above_vehicle_should_stop_threshold_keeps_close_lead_authorit
 
 def test_clear_road_launch_is_immediate_bounded_and_profiles_feel_distinct():
   common = dict(
-    duration=6.0,
-    controller_enabled=True,
-    lead_relevancy=False,
-    speed=0.0,
-    v_cruise=15.0,
-    actuator_delay=0.15,
-    actuator_lag=0.20,
+    duration=6.0, controller_enabled=True, lead_relevancy=False, speed=0.0, v_cruise=15.0, actuator_delay=0.15, actuator_lag=0.20,
   )
   traces = [_run(profile=profile, **common) for profile in range(3)]
 
@@ -1039,9 +891,9 @@ def test_clear_road_launch_is_immediate_bounded_and_profiles_feel_distinct():
   assert max(onset_times) <= 4 * DT_MDL
   assert max(movement_times) <= 1.0
 
-  for sample_time in (2.0,):
-    realized = [float(trace.acceleration[np.searchsorted(trace.time, sample_time)]) for trace in traces]
-    assert realized[0] < realized[1] < realized[2], (sample_time, realized)
+  sample_time = 2.0
+  realized = [float(trace.acceleration[np.searchsorted(trace.time, sample_time)]) for trace in traces]
+  assert realized[0] < realized[1] < realized[2], (sample_time, realized)
   final_speeds = [trace.speed[-1] for trace in traces]
   assert final_speeds[0] < final_speeds[1] < final_speeds[2]
   assert final_speeds[1] - final_speeds[0] > 0.5
@@ -1054,20 +906,11 @@ def test_accelerating_lead_departure_is_prompt_smooth_and_profiles_feel_distinct
   def lead_speed(current_time: float) -> float:
     return 0.0 if current_time < departure_time else min(15.0, 2.0 * (current_time - departure_time))
 
-  traces = [
-    _run(
-      duration=10.0,
-      controller_enabled=True,
-      profile=profile,
-      lead_relevancy=True,
-      speed=0.0,
-      distance_lead=6.0,
-      v_lead=lead_speed,
-      v_cruise=22.352,
-      actuator_model=PRIUS_TSS2_ROUTE_MODEL,
-    )
-    for profile in range(3)
-  ]
+  common = dict(
+    duration=10.0, controller_enabled=True, lead_relevancy=True, speed=0.0, distance_lead=6.0, v_lead=lead_speed,
+    v_cruise=22.352, actuator_model=PRIUS_TSS2_ROUTE_MODEL,
+  )
+  traces = [_run(profile=profile, **common) for profile in range(3)]
   first_credible_lead_time = departure_time + 0.20
   movement_times = []
   for trace in traces:
@@ -1103,8 +946,7 @@ def test_accelerating_lead_departure_is_prompt_smooth_and_profiles_feel_distinct
 def test_profile_trajectory_is_pre_mpc_and_not_a_custom_output_clamp():
   _set_accel_controller_params(enabled=True, profile=0)
   plant = Plant(speed=10.0, actuator_delay=0.15, actuator_lag=0.20)
-  # Start above Eco's table value to verify the controller hands the current
-  # feasible acceleration to MPC and slews down instead of clipping the output.
+  # Seed above Eco's table value to prove pre-MPC slew rather than output clipping.
   plant.acceleration = 1.30
   plant.planner.a_desired = 1.30
 
@@ -1133,8 +975,7 @@ def test_solver_fault_discards_live_state_before_fresh_preshape_seed():
   assert faulted.mpc_accel_max is None
   assert not faulted.mpc_shape_cruise
 
-  # Represent the next successful MPC solve; the controller must seed from
-  # current state rather than resurrecting its discarded pre-fault history.
+  # A successful solve must seed from current state, not discarded pre-fault history.
   plant.planner.mpc.last_solution_status = 0
   plant.step(v_cruise=30.0)
   recovered = plant.planner.accel_controller_result
@@ -1172,8 +1013,7 @@ def test_far_lead_deceleration_is_early_across_actuator_dynamics(actuator_delay,
   controlled_onset = _sustained_time_below(controlled, -0.10)
   assert controlled_onset <= baseline_onset - 0.5
 
-  # The feature moves the event earlier; it must not buy that anticipation with a
-  # harsher routine stop or a noisier physical response.
+  # Earlier onset cannot worsen routine peak deceleration or realized jerk.
   assert controlled.acceleration.min() >= baseline.acceleration.min() - 0.1
   baseline_jerk = _filtered_realized_jerk(baseline)
   controlled_jerk = _filtered_realized_jerk(controlled)

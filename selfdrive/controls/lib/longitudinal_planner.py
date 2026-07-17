@@ -133,7 +133,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
     v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
 
-    # DEC is the sole ACC/e2e authority. Cache its decision once for both the governor and output arbitration.
+    # Cache DEC's ACC/e2e decision for controller and output arbitration.
     is_e2e = self.is_e2e(sm)
     stop_constraint = self.dec.stop_constraint()
     v_cruise = LongitudinalPlannerSP.update_accel_controller(
@@ -146,7 +146,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       v_cruise = 0.0
 
     if self.accel_controller_result.reset_mpc:
-      # An optimizer warm-start reset must not erase stock FCW evidence.
+      # Urgent-entry MPC reset must not erase stock FCW evidence.
       crash_cnt = self.mpc.crash_cnt
       self.mpc.reset()
       self.mpc.crash_cnt = crash_cnt
@@ -173,9 +173,10 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     self.a_desired = float(np.interp(self.dt, CONTROL_N_T_IDX, self.a_desired_trajectory))
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.a_desired + a_prev) / 2.0
 
-    action_t =  self.CP.longitudinalActuatorDelay + DT_MDL
-    output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX,
-                                                                        action_t=action_t, vEgoStopping=self.CP.vEgoStopping)
+    action_t = self.CP.longitudinalActuatorDelay + DT_MDL
+    output_a_target_mpc, output_should_stop_mpc = get_accel_from_plan(
+      self.v_desired_trajectory, self.a_desired_trajectory, CONTROL_N_T_IDX, action_t=action_t, vEgoStopping=self.CP.vEgoStopping,
+    )
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
