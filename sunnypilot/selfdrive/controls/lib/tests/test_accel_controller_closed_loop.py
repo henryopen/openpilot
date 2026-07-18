@@ -261,6 +261,27 @@ def test_force_decel_matches_controller_off(lead_relevancy):
   assert trace.source == baseline.source
 
 
+def test_e2e_to_radar_acc_handoff_keeps_braking_continuous():
+  plant = Plant(
+    lead_relevancy=True, speed=10.0, distance_lead=30.0, actuator_delay=0.15, actuator_lag=0.20,
+    model_action_fn=lambda current_time, _v_ego, _a_ego: (-1.0 if current_time < 2.0 else 0.0, False),
+  )
+  _configure_plant(plant, enabled=True)
+  rows = []
+  while plant.current_time < 2.4:
+    plant.e2e = plant.current_time < 2.0
+    result = plant.step(v_lead=8.0, v_cruise=20.0)
+    rows.append((plant.current_time, result["a_target"], plant.planner.mpc.last_solution_status,
+                 plant.planner.accel_controller_result.active))
+
+  time_values, acceleration, solver_status, active = np.asarray(rows, dtype=float).T
+  transition = np.flatnonzero(time_values > 2.0)[0]
+  assert acceleration[transition] - acceleration[transition - 1] < 0.15
+  assert np.max(np.diff(acceleration[transition - 1:]) / DT_MDL) < 3.0
+  assert not solver_status[transition:].any()
+  assert active[transition]
+
+
 def test_active_controller_is_pre_mpc_and_preserves_stock_lead_authority():
   plant = Plant(lead_relevancy=False, speed=0.0, actuator_delay=0.15, actuator_lag=0.20)
   _configure_plant(plant, enabled=True, profile=0)

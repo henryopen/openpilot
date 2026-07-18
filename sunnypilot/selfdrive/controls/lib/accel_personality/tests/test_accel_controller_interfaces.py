@@ -113,6 +113,106 @@ def test_last_solve_failure_survives_internal_reset():
   assert mpc.last_solution_status == 3
 
 
+@pytest.mark.parametrize(("controller_active", "expected_accel"), [(True, -1.2), (False, None)])
+def test_e2e_to_acc_handoff_preserves_braking_only_when_controller_is_active(controller_active, expected_accel):
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner._previous_is_e2e = True
+  planner.accel_personality_enabled = controller_active
+  planner.accel_controller_fault_latched = False
+  planner.is_e2e = lambda _sm: False
+  planner.accel_controller = SimpleNamespace(reset=lambda: None)
+  planner.mpc = SimpleNamespace(
+    a_prev=np.zeros(N + 1), crash_cnt=0, v_solution=np.zeros(N + 1), a_solution=np.zeros(N + 1),
+    j_solution=np.zeros(N), last_solution_status=0,
+  )
+  planner.update_accel_controller = lambda *_args, **_kwargs: setattr(
+    planner, "accel_controller_result",
+    SimpleNamespace(enabled=controller_active, active=controller_active, shadow_active=controller_active,
+                    stock_mode=not controller_active, target_speed=20.0, mpc_accel_max=None,
+                    state=AccelControllerState.free, effective_accel_max=0.8 if controller_active else np.inf),
+  )
+  calls = []
+  planner._run_mpc = lambda *_args, **kwargs: calls.append(kwargs)
+
+  is_e2e = planner.update_accel_controller_mpc(
+    {}, 20.0, 20.0, True, reset_state=False, cruise_initialized=True, planner_accel=0.1,
+    previous_output_accel=-1.2, available_accel_max=ACCEL_MAX, previous_should_stop=False, force_decel=False,
+  )
+
+  assert not is_e2e
+  assert calls[0]["current_accel"] == expected_accel
+  assert calls[0]["seed_target"] is None
+
+
+def test_failed_e2e_to_acc_handoff_retries_without_custom_state():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner._previous_is_e2e = True
+  planner.accel_personality_enabled = True
+  planner.accel_controller_fault_latched = False
+  planner.is_e2e = lambda _sm: False
+  reset_calls = []
+  planner.accel_controller = SimpleNamespace(reset=lambda: reset_calls.append(True))
+  planner.mpc = SimpleNamespace(
+    a_prev=np.zeros(N + 1), crash_cnt=0, v_solution=np.zeros(N + 1), a_solution=np.zeros(N + 1),
+    j_solution=np.zeros(N), last_solution_status=0,
+  )
+  planner.update_accel_controller = lambda *_args, **_kwargs: setattr(
+    planner, "accel_controller_result",
+    SimpleNamespace(enabled=True, active=True, shadow_active=True, stock_mode=True, target_speed=15.0, mpc_accel_max=None,
+                    state=AccelControllerState.hold, effective_accel_max=np.inf),
+  )
+  calls = []
+  positional_calls = []
+
+  def run_mpc(*args, **kwargs):
+    positional_calls.append(args)
+    calls.append(kwargs)
+    planner.mpc.last_solution_status = 1 if len(calls) == 1 else 0
+
+  planner._run_mpc = run_mpc
+  planner.update_accel_controller_mpc(
+    {}, 20.0, 20.0, True, reset_state=False, cruise_initialized=True, planner_accel=0.1,
+    previous_output_accel=-1.2, available_accel_max=ACCEL_MAX, previous_should_stop=False, force_decel=False,
+  )
+
+  assert [call.get("current_accel") for call in calls] == [-1.2, None]
+  assert [args[1] for args in positional_calls] == [15.0, 20.0]
+  assert len(positional_calls[1]) == 3
+  assert calls[0]["seed_target"] is None
+  assert calls[1]["seed"]
+  assert "current_accel" not in calls[1]
+  assert "retry_state" in calls[1]
+  assert reset_calls == [True]
+  assert planner.accel_controller_fault_latched
+
+
+def test_e2e_to_acc_handoff_never_turns_braking_into_acceleration():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner._previous_is_e2e = True
+  planner.accel_personality_enabled = True
+  planner.accel_controller_fault_latched = False
+  planner.is_e2e = lambda _sm: False
+  planner.accel_controller = SimpleNamespace(reset=lambda: None)
+  planner.mpc = SimpleNamespace(
+    a_prev=np.zeros(N + 1), crash_cnt=0, v_solution=np.zeros(N + 1), a_solution=np.zeros(N + 1),
+    j_solution=np.zeros(N), last_solution_status=0,
+  )
+  planner.update_accel_controller = lambda *_args, **_kwargs: setattr(
+    planner, "accel_controller_result",
+    SimpleNamespace(enabled=True, active=True, shadow_active=True, stock_mode=True, target_speed=20.0, mpc_accel_max=None,
+                    state=AccelControllerState.free, effective_accel_max=np.inf),
+  )
+  calls = []
+  planner._run_mpc = lambda *_args, **kwargs: calls.append(kwargs)
+
+  planner.update_accel_controller_mpc(
+    {}, 20.0, 20.0, True, reset_state=False, cruise_initialized=True, planner_accel=-0.7,
+    previous_output_accel=0.3, available_accel_max=ACCEL_MAX, previous_should_stop=False, force_decel=False,
+  )
+
+  assert calls[0]["current_accel"] == -0.7
+
+
 def test_shadow_telemetry_publishes_controller_fields():
   planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
   planner.source = LongitudinalPlanSource.cruise

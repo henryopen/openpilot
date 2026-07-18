@@ -18,6 +18,9 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   PROFILE_TRANSITION_JERK,
   RADAR_STALE_TIMEOUT,
   RELIEF_CONFIRM_FRAMES,
+  SHALLOW_BRAKE_BOUND,
+  STOP_GAP_RESERVE,
+  STOP_HOLD_CREEP_ABORT_FRAMES,
   STOP_HOLD_EXIT_FRAMES,
   AccelController,
   AccelControllerState,
@@ -134,6 +137,27 @@ class TestEnergyEnvelope:
     caps = [controller.calculate_energy_envelope(radar, 10.0, 0.0, profile).cap for profile in AccelProfile]
     assert caps[0] < caps[1] < caps[2]
 
+  def test_stopped_lead_reserve_only_reduces_comfort_gap(self):
+    controller = make_controller()
+    lead = make_lead(status=True, d_rel=20.0, v_lead_k=0.0)
+    envelope = controller.calculate_energy_envelope(make_radar(lead), 2.0, 0.0, AccelProfile.normal)
+    expected = math.sqrt(2.0 * PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * envelope.usable_gap)
+
+    assert envelope.required_decel < 0.30
+    assert envelope.safety_usable_gap - envelope.usable_gap == pytest.approx(STOP_GAP_RESERVE)
+    assert envelope.cap == pytest.approx(expected)
+    assert envelope.departure_cap > envelope.cap
+
+  def test_stop_reserve_fades_out_of_urgent_braking(self):
+    controller = make_controller()
+    lead = make_lead(status=True, d_rel=20.0, v_lead_k=0.0)
+    envelope = controller.calculate_energy_envelope(make_radar(lead), 20.0, 0.0, AccelProfile.normal)
+
+    assert envelope.required_decel > 0.80
+    assert envelope.usable_gap == envelope.safety_usable_gap
+    assert envelope.cap == envelope.departure_cap
+    assert controller._ttc(envelope) == pytest.approx(envelope.safety_usable_gap / envelope.closing_speed)
+
   def test_more_restrictive_lead_is_selected(self):
     radar = make_radar(make_lead(status=True, d_rel=70.0, v_lead_k=12.0), make_lead(status=True, d_rel=25.0, v_lead_k=8.0))
     envelope = make_controller().calculate_energy_envelope(radar, 10.0, 0.0, AccelProfile.normal)
@@ -211,6 +235,35 @@ class TestAccelControllerState:
     accelerating = update(controller, moving_away)
     assert released.effective_accel_max < accelerating.effective_accel_max <= accelerating.positive_accel_max
 
+  def test_shallow_brake_relief_uses_long_confirmation_without_delaying_tightening(self):
+    controller = make_controller()
+    controller.live.state = AccelControllerState.restrict
+    controller.live.bound = SHALLOW_BRAKE_BOUND + 0.05
+    matched = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=10.0))
+
+    held = [update(controller, matched) for _ in range(controller.shallow_brake_relief_frames - 1)]
+    assert all(result.effective_accel_max == pytest.approx(SHALLOW_BRAKE_BOUND + 0.05) for result in held)
+    relaxed = update(controller, matched)
+    assert relaxed.effective_accel_max > held[-1].effective_accel_max
+
+    for _ in range(CAP_FILTER_FRAMES):
+      tightened = update(controller, restrictive_radar())
+    assert tightened.effective_accel_max < relaxed.effective_accel_max
+
+  def test_strong_brake_relief_keeps_existing_confirmation(self):
+    controller = make_controller()
+    controller.live.state = AccelControllerState.restrict
+    controller.live.bound = SHALLOW_BRAKE_BOUND - 0.25
+    matched = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=10.0))
+
+    held = [update(controller, matched) for _ in range(RELIEF_CONFIRM_FRAMES - 1)]
+    assert all(result.effective_accel_max == pytest.approx(SHALLOW_BRAKE_BOUND - 0.25) for result in held)
+    relaxed = update(controller, matched)
+    assert relaxed.effective_accel_max > held[-1].effective_accel_max
+    continuing = [update(controller, matched) for _ in range(8)]
+    assert all(current.effective_accel_max > previous.effective_accel_max
+               for previous, current in zip([relaxed, *continuing[:-1]], continuing, strict=True))
+
   def test_urgent_frame_uses_exact_stock_path(self):
     urgent = make_radar(make_lead(status=True, d_rel=18.0, v_lead_k=0.0))
     result = update(make_controller(), urgent, v_ego=20.0)
@@ -243,6 +296,93 @@ class TestAccelControllerState:
     assert launched.launching and launched.state == AccelControllerState.free
     assert launched.effective_accel_max == launched.positive_accel_max
 
+  def test_false_creep_speed_without_range_gain_stays_held(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+    update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
+
+    false_creep = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.30))
+    held = [update(controller, false_creep, base_speed=8.0, v_ego=0.1) for _ in range(20)]
+    assert all(result.state == AccelControllerState.stopHold and not result.launching for result in held)
+
+  def test_invalid_lead_geometry_cannot_confirm_departure(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+    update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
+
+    invalid = make_radar(make_lead(status=True, d_rel=math.nan, v_lead_k=0.30))
+    held = [update(controller, invalid, base_speed=8.0, v_ego=0.1) for _ in range(2 * STOP_HOLD_EXIT_FRAMES)]
+    assert all(result.state == AccelControllerState.stopHold and not result.launching for result in held)
+
+  def test_short_range_drop_and_restore_cannot_fake_creep_departure(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+    update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
+
+    low_range = make_radar(make_lead(status=True, d_rel=5.0, v_lead_k=0.0))
+    for _ in range(2):
+      update(controller, low_range, base_speed=8.0, v_ego=0.1)
+    restored = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.30))
+    results = [update(controller, restored, base_speed=8.0, v_ego=0.1) for _ in range(8)]
+
+    assert all(result.state == AccelControllerState.stopHold and not result.launching for result in results)
+
+  def test_slow_creep_with_confirmed_range_gain_releases(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+    update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
+
+    results = []
+    for frame in range(20):
+      creep = make_radar(make_lead(status=True, d_rel=6.0 + 0.05 * frame, v_lead_k=0.30))
+      results.append(update(controller, creep, base_speed=8.0, v_ego=0.1))
+
+    launched = [frame for frame, result in enumerate(results) if result.launching]
+    assert launched and launched[0] >= STOP_HOLD_EXIT_FRAMES
+    assert all(result.state == AccelControllerState.stopHold for result in results[:launched[0]])
+
+  def test_slow_creep_survives_lead_slot_switching(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0), make_lead(status=True, d_rel=6.1))
+    update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
+
+    results = []
+    for frame in range(24):
+      distance = 6.0 + 0.04 * frame
+      offset = 0.05 if frame % 2 else 0.0
+      lead_one = make_lead(status=True, d_rel=distance + offset, v_lead_k=0.30)
+      lead_two = make_lead(status=True, d_rel=distance + 0.05 - offset, v_lead_k=0.30)
+      results.append(update(controller, make_radar(lead_one, lead_two), base_speed=8.0, v_ego=0.1))
+
+    assert any(result.launching for result in results)
+
+  def test_departure_that_stops_again_returns_to_hold(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+    update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
+    departing = make_radar(make_lead(status=True, d_rel=8.0, v_lead_k=2.0))
+    for _ in range(STOP_HOLD_EXIT_FRAMES):
+      launched = update(controller, departing, base_speed=8.0, v_ego=0.1)
+    assert launched.launching
+
+    stalled = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.11))
+    settling = [update(controller, stalled, base_speed=8.0, v_ego=0.1) for _ in range(STOP_HOLD_CREEP_ABORT_FRAMES)]
+    assert all(result.launching for result in settling[:-1])
+    assert settling[-1].state == AccelControllerState.stopHold and not settling[-1].launching
+
+  def test_invalid_geometry_after_departure_returns_to_hold(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+    update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
+    departing = make_radar(make_lead(status=True, d_rel=8.0, v_lead_k=2.0))
+    for _ in range(STOP_HOLD_EXIT_FRAMES):
+      launched = update(controller, departing, base_speed=8.0, v_ego=0.1)
+    assert launched.launching
+
+    invalid = make_radar(make_lead(status=True, d_rel=math.nan, v_lead_k=0.30))
+    settling = [update(controller, invalid, base_speed=8.0, v_ego=0.1) for _ in range(STOP_HOLD_CREEP_ABORT_FRAMES)]
+    assert settling[-1].state == AccelControllerState.stopHold and not settling[-1].launching
+
   def test_stale_radar_freezes_then_discards_live_state(self):
     controller = make_controller()
     for _ in range(CAP_FILTER_FRAMES):
@@ -252,6 +392,20 @@ class TestAccelControllerState:
     assert all(result.active and result.effective_accel_max == restricted.effective_accel_max for result in frozen)
     timed_out = update(controller, radar_fresh=False)
     assert not timed_out.active and timed_out.mpc_accel_max is None
+
+  def test_stale_radar_preserves_urgent_stock_passthrough_until_timeout(self):
+    controller = make_controller()
+    urgent = make_radar(make_lead(status=True, d_rel=18.0, v_lead_k=0.0))
+    result = update(controller, urgent, v_ego=20.0)
+    assert result.active and result.shadow_active and result.stock_mode
+
+    hold_frames = math.ceil(RADAR_STALE_TIMEOUT / DT_MDL) - 1
+    frozen = [update(controller, radar_fresh=False, v_ego=20.0) for _ in range(hold_frames)]
+    assert all(sample.active and sample.shadow_active and sample.stock_mode for sample in frozen)
+    assert all(sample.state == AccelControllerState.hold and sample.mpc_accel_max is None for sample in frozen)
+
+    timed_out = update(controller, radar_fresh=False, v_ego=20.0)
+    assert not timed_out.active and not timed_out.shadow_active and not timed_out.stock_mode
 
   @pytest.mark.parametrize("override", [
     {"enabled": False}, {"acc_selected": False}, {"engaged": False}, {"cruise_initialized": False}, {"controller_fault": True},

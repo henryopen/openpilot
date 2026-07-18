@@ -45,6 +45,7 @@ class LongitudinalPlannerSP:
     self.accel_controller = AccelController(CP, dt=dt)
     self.accel_controller_result = None
     self.accel_controller_fault_latched = False
+    self._previous_is_e2e = False
 
     self._param_read_frames = max(1, int(round(0.25 / dt)))
     self._param_frame = 0
@@ -120,12 +121,13 @@ class LongitudinalPlannerSP:
     return self.accel_controller_result.target_speed
 
   def _run_mpc(self, sm: messaging.SubMaster, v_cruise: float, prev_accel_constraint: bool, accel_max=None, *, seed=False,
-               seed_target=None, seed_rise_rate=MPC_SEED_RISE_RATE, retry_state=None) -> None:
+               seed_target=None, seed_rise_rate=MPC_SEED_RISE_RATE, retry_state=None, current_accel=None) -> None:
     if retry_state is not None:
       self.mpc.a_prev = retry_state[0].copy()
       self.mpc.crash_cnt = retry_state[1]
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
-    self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
+    mpc_accel = self.a_desired if current_accel is None else float(np.clip(current_accel, ACCEL_MIN, ACCEL_MAX))
+    self.mpc.set_cur_state(self.v_desired_filter.x, mpc_accel)
     if seed or seed_target is not None:
       self._seed_mpc_current_state(seed_target, seed_rise_rate)
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality, accel_max=accel_max)
@@ -158,6 +160,7 @@ class LongitudinalPlannerSP:
                                   planner_accel: float, previous_output_accel: float, available_accel_max: float,
                                   previous_should_stop: bool, force_decel: bool):
     is_e2e = self.is_e2e(sm)
+    was_e2e = self._previous_is_e2e
     if reset_state or not self.accel_personality_enabled:
       self.accel_controller_fault_latched = False
 
@@ -168,14 +171,19 @@ class LongitudinalPlannerSP:
       controller_fault=self.accel_controller_fault_latched,
     )
     result = self.accel_controller_result
+    handoff_context = result.enabled and result.shadow_active and not force_decel and not self.accel_controller_fault_latched
+    transition_from_e2e = handoff_context and was_e2e and not is_e2e and result.active
+    handoff_accel = (min(planner_accel, previous_output_accel)
+                     if transition_from_e2e and result.active and np.isfinite(previous_output_accel) else None)
+    self._previous_is_e2e = is_e2e and handoff_context
     controller_actuating = result.active and not result.stock_mode and not force_decel
     accel_max = result.mpc_accel_max if controller_actuating else None
     free_profile_limit = controller_actuating and result.state == AccelControllerState.free and result.effective_accel_max > 0.0
-    seed_target = result.effective_accel_max if free_profile_limit else None
-    custom_mpc = controller_actuating and (accel_max is not None or seed_target is not None)
+    seed_target = result.effective_accel_max if free_profile_limit and handoff_accel is None else None
+    custom_mpc = handoff_accel is not None or (controller_actuating and (accel_max is not None or seed_target is not None))
     retry_state = (self.mpc.a_prev.copy(), self.mpc.crash_cnt)
     controller_v_cruise = min(mpc_v_cruise, result.target_speed)
-    self._run_mpc(sm, controller_v_cruise, prev_accel_constraint, accel_max, seed_target=seed_target)
+    self._run_mpc(sm, controller_v_cruise, prev_accel_constraint, accel_max, seed_target=seed_target, current_accel=handoff_accel)
 
     finite_solution = all(np.all(np.isfinite(solution)) for solution in (self.mpc.v_solution, self.mpc.a_solution, self.mpc.j_solution))
     custom_failed = custom_mpc and (self.mpc.last_solution_status != 0 or not finite_solution)
