@@ -4,15 +4,18 @@ from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimen
 
 
 class MockLeadOne:
-  def __init__(self, status=0.0, dRel=30.0, vRel=0.0):
+  def __init__(self, status=0.0, dRel=30.0, vRel=0.0, radar=False, radarTrackId=-1):
     self.status = status
     self.dRel = dRel
     self.vRel = vRel
+    self.radar = radar
+    self.radarTrackId = radarTrackId
 
 
 class MockRadarState:
-  def __init__(self, status=0.0, dRel=30.0, vRel=0.0):
-    self.leadOne = MockLeadOne(status=status, dRel=dRel, vRel=vRel)
+  def __init__(self, status=0.0, dRel=30.0, vRel=0.0, radar=False, radarTrackId=-1, leadTwo=None):
+    self.leadOne = MockLeadOne(status=status, dRel=dRel, vRel=vRel, radar=radar, radarTrackId=radarTrackId)
+    self.leadTwo = leadTwo if leadTwo is not None else MockLeadOne()
 
 
 class MockCarState:
@@ -55,7 +58,7 @@ class MockParams:
 def default_sm():
   sm = {
     'carState': MockCarState(vEgo=10.0, vCruise=20.0),
-    'radarState': MockRadarState(status=1.0),
+    'radarState': MockRadarState(status=1.0, radar=True, radarTrackId=7),
     'modelV2': MockModelData(valid=True),
     'selfdriveState': MockSelfDriveState(experimentalMode=True),
   }
@@ -157,7 +160,7 @@ def test_model_should_stop_triggers_blended_without_valid_trajectory(mock_cp, mo
 
 def test_radar_lead_keeps_acc_over_model_slowdown(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
-  default_sm['radarState'] = MockRadarState(status=1.0)
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
   default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
 
   for _ in range(3):
@@ -168,36 +171,94 @@ def test_radar_lead_keeps_acc_over_model_slowdown(mock_cp, mock_mpc, default_sm)
   assert controller.mode() == "acc"
 
 
-def test_far_radar_lead_allows_blended_until_acc_relevant(mock_cp, mock_mpc, default_sm):
+def test_far_radar_lead_always_uses_acc(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
-  default_sm['radarState'] = MockRadarState(status=1.0, dRel=120.0, vRel=0.0)
+  default_sm['radarState'] = MockRadarState(status=1.0, dRel=120.0, vRel=0.0, radar=True)
   default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
 
   controller.update(default_sm)
 
   assert controller._has_lead_filtered
-  assert not controller._has_radar_acc_lead
-  assert controller.mode() == "blended"
+  assert controller._has_radar_acc_lead
+  assert controller.mode() == "acc"
 
 
-def test_relevant_radar_lead_smoothly_returns_to_acc(mock_cp, mock_mpc, default_sm):
+def test_radar_acquisition_immediately_returns_blended_to_acc(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
-  default_sm['radarState'] = MockRadarState(status=1.0, dRel=120.0, vRel=0.0)
+  default_sm['radarState'] = MockRadarState(status=0.0)
   default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
   controller.update(default_sm)
   assert controller.mode() == "blended"
 
-  default_sm['radarState'] = MockRadarState(status=1.0, dRel=45.0, vRel=0.0)
+  default_sm['radarState'] = MockRadarState(status=1.0, dRel=120.0, radar=True, radarTrackId=7)
+  controller.update(default_sm)
+
+  assert controller._has_radar_acc_lead
+  assert controller.mode() == "acc"
+
+  default_sm['radarState'] = MockRadarState(status=0.0)
+  default_sm['modelV2'] = MockModelData(valid=True)
   for _ in range(20):
     controller.update(default_sm)
+  assert controller.mode() == "acc"
+
+
+def test_close_vision_only_lead_can_use_blended(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=1.0, dRel=30.0, vRel=-5.0)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm)
+
+  assert not controller._has_radar_acc_lead
+  assert controller.mode() == "blended"
+
+
+def test_second_radar_lead_forces_acc(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  lead_two = MockLeadOne(status=1.0, dRel=120.0, radar=True, radarTrackId=8)
+  default_sm['radarState'] = MockRadarState(status=1.0, dRel=30.0, vRel=-5.0, leadTwo=lead_two)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm)
 
   assert controller._has_radar_acc_lead
   assert controller.mode() == "acc"
 
 
+def test_second_vision_only_lead_does_not_force_acc(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  lead_two = MockLeadOne(status=1.0, dRel=20.0, vRel=-10.0)
+  default_sm['radarState'] = MockRadarState(status=0.0, leadTwo=lead_two)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm)
+
+  assert not controller._has_radar_acc_lead
+  assert controller.mode() == "blended"
+
+
+def test_inactive_lead_with_radar_marker_does_not_force_acc(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=0.0, radar=True, radarTrackId=7)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm)
+
+  assert not controller._has_radar_acc_lead
+  assert controller.mode() == "blended"
+
+
+def test_radarless_car_ignores_marked_radar_track(mock_cp, mock_mpc, default_sm):
+  mock_cp.radarUnavailable = True
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm)
+
+  assert controller._has_radar_acc_lead
+  assert controller.mode() == "blended"
+
+
 def test_closing_far_radar_lead_returns_to_acc(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
-  default_sm['radarState'] = MockRadarState(status=1.0, dRel=120.0, vRel=-25.0)
+  default_sm['radarState'] = MockRadarState(status=1.0, dRel=120.0, vRel=-25.0, radarTrackId=7)
   default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
 
   for _ in range(20):
@@ -209,7 +270,7 @@ def test_closing_far_radar_lead_returns_to_acc(mock_cp, mock_mpc, default_sm):
 
 def test_radar_lead_keeps_acc_over_fcw_and_standstill(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
-  default_sm['radarState'] = MockRadarState(status=1.0)
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
   default_sm['carState'].standstill = True
   default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0, should_stop=True)
   mock_mpc.crash_cnt = 1
@@ -224,7 +285,7 @@ def test_radar_lead_keeps_acc_over_fcw_and_standstill(mock_cp, mock_mpc, default
 
 def test_lead_flicker_hold_prevents_one_frame_mode_flip(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
-  default_sm['radarState'] = MockRadarState(status=1.0)
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
   controller.update(default_sm)
 
   default_sm['radarState'] = MockRadarState(status=0.0)
@@ -233,3 +294,20 @@ def test_lead_flicker_hold_prevents_one_frame_mode_flip(mock_cp, mock_mpc, defau
 
   assert controller._has_lead_filtered
   assert controller.mode() == "acc"
+
+
+def test_radar_lead_dropout_guard_expires(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
+  controller.update(default_sm)
+
+  default_sm['radarState'] = MockRadarState(status=0.0)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  for _ in range(3):
+    controller.update(default_sm)
+    assert controller._has_radar_acc_lead
+    assert controller.mode() == "acc"
+
+  controller.update(default_sm)
+  assert not controller._has_radar_acc_lead
+  assert controller.mode() == "blended"

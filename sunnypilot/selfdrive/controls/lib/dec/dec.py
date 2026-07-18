@@ -69,7 +69,7 @@ class ModeTransitionManager:
 
   def request_mode(self, mode: ModeType, immediate: bool = False, hold_frames: int = 0, cancel_hold: bool = False) -> None:
     if immediate:
-      self._blended_hold_frames = max(self._blended_hold_frames, hold_frames)
+      self._blended_hold_frames = max(self._blended_hold_frames, hold_frames) if mode == 'blended' else 0
       self._pending_mode = mode
       self._pending_count = 0
       self._switch_mode(mode)
@@ -188,7 +188,9 @@ class DynamicExperimentalController:
 
   def _update_calculations(self, sm: messaging.SubMaster) -> None:
     car_state = sm['carState']
-    lead_one = sm['radarState'].leadOne
+    radar_state = sm['radarState']
+    lead_one = radar_state.leadOne
+    lead_two = radar_state.leadTwo
     md = sm['modelV2']
 
     self._v_ego_kph = car_state.vEgo * 3.6
@@ -201,7 +203,8 @@ class DynamicExperimentalController:
       self._standstill_count = max(0, self._standstill_count - 1)
 
     self._has_lead_filtered = self._lead_tracker.update(float(lead_one.status))
-    self._has_radar_acc_lead = self._radar_acc_lead_tracker.update(self._radar_acc_lead_score(lead_one))
+    radar_acc_lead_score = max(self._radar_acc_lead_score(lead_one), self._radar_acc_lead_score(lead_two))
+    self._has_radar_acc_lead = self._radar_acc_lead_tracker.update(radar_acc_lead_score)
     self._has_mpc_fcw = self._mpc_fcw_crash_cnt > 0
     self._calculate_slow_down(md)
 
@@ -231,16 +234,8 @@ class DynamicExperimentalController:
     self._urgency = self._slow_down_tracker.value
 
   def _radar_acc_lead_score(self, lead_one) -> float:
-    if not lead_one.status:
-      return 0.0
-
-    d_rel = float(getattr(lead_one, 'dRel', float('inf')))
-    v_rel = float(getattr(lead_one, 'vRel', 0.0))
-    if d_rel <= WMACConstants.RADAR_LEAD_ACC_MAX_DREL:
-      return 1.0
-    if v_rel <= WMACConstants.RADAR_LEAD_ACC_MIN_CLOSING_SPEED and d_rel / max(-v_rel, 0.1) <= WMACConstants.RADAR_LEAD_ACC_MAX_TTC:
-      return 1.0
-    return 0.0
+    radar_track_id = int(getattr(lead_one, 'radarTrackId', -1))
+    return float(lead_one.status and (bool(getattr(lead_one, 'radar', False)) or radar_track_id >= 0))
 
   def _model_action_urgency(self, md) -> float:
     action = getattr(md, 'action', None)
@@ -271,7 +266,7 @@ class DynamicExperimentalController:
 
   def _desired_mode(self) -> tuple[ModeType, bool]:
     if not self._CP.radarUnavailable and self._has_radar_acc_lead:
-      return 'acc', False
+      return 'acc', True
 
     if self._has_mpc_fcw:
       return 'blended', True
@@ -296,7 +291,7 @@ class DynamicExperimentalController:
 
     mode, immediate = self._desired_mode()
     self._mode_manager.request_mode(mode, immediate=immediate, hold_frames=WMACConstants.EMERGENCY_HOLD_FRAMES,
-                                    cancel_hold=self._has_radar_acc_lead)
+                                    cancel_hold=not self._CP.radarUnavailable and self._has_radar_acc_lead)
     self._mode_manager.update()
 
     self._active = sm['selfdriveState'].experimentalMode and self._enabled
