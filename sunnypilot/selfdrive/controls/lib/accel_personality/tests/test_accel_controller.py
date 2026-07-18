@@ -21,7 +21,10 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   MOVING_LEAD_DECEL_ACCEL_SLEW_RATE,
   MOVING_LEAD_DECEL_RELEASE_RATE,
   RELIEF_CONFIRM_FRAMES,
+  STOP_HOLD_EXIT_CAP,
   STOP_HOLD_EXIT_FRAMES,
+  STOP_HOLD_PRECONDITION_ACCEL_MAX,
+  STOPPED_LEAD_SPEED,
   AccelController,
   AccelControllerState,
   AccelProfile,
@@ -655,7 +658,8 @@ class TestPaceGovernor:
     moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
     held = update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6)
     waiting = [update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6) for _ in range(13)]
-    confirmations = [update(controller, moving, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6) for _ in range(STOP_HOLD_EXIT_FRAMES)]
+    confirmation_frames = CAP_FILTER_FRAMES // 2 + STOP_HOLD_EXIT_FRAMES
+    confirmations = [update(controller, moving, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6) for _ in range(confirmation_frames)]
     released = update(controller, moving, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6)
 
     assert held.state == AccelControllerState.stopHold
@@ -675,18 +679,32 @@ class TestPaceGovernor:
     assert released.target_speed >= confirmations[-1].target_speed
     assert released.launching
 
-  def test_slow_queue_creep_exits_after_four_frames(self):
+  def test_slow_queue_creep_waits_for_safe_exit_cap(self):
     controller = make_controller()
     stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
     creeping = make_radar(make_lead(status=True, d_rel=6.1, v_lead_k=0.5))
     update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
     results = [update(controller, creeping, base_speed=8.0, v_ego=0.1, planner_speed=0.1) for _ in range(STOP_HOLD_EXIT_FRAMES)]
-    released = update(controller, creeping, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
 
-    assert all(result.state == AccelControllerState.stopHold for result in results[:-1])
-    assert results[-1].state == AccelControllerState.release
-    assert results[-1].target_speed > 0.0
-    assert released.target_speed > 0.0
+    assert all(result.raw_energy_cap <= STOP_HOLD_EXIT_CAP for result in results)
+    assert all(result.state == AccelControllerState.stopHold for result in results)
+    assert all(result.target_speed == 0.0 for result in results)
+
+  def test_decelerating_departure_below_exit_cap_does_not_gas_then_brake(self):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=2.6, v_lead_k=0.0))
+    decelerating = make_radar(make_lead(status=True, d_rel=2.6, v_lead_k=0.675, a_lead_k=-1.8))
+    update(controller, stopped, profile=AccelProfile.eco, base_speed=8.0, v_ego=0.0, planner_speed=0.0)
+    results = [
+      update(controller, decelerating, profile=AccelProfile.eco, base_speed=8.0, v_ego=0.0, planner_speed=0.0)
+      for _ in range(STOP_HOLD_EXIT_FRAMES + 2)
+    ]
+
+    assert all(STOPPED_LEAD_SPEED < result.raw_energy_cap < STOP_HOLD_EXIT_CAP for result in results)
+    assert all(result.state == AccelControllerState.stopHold for result in results)
+    assert all(result.target_speed == 0.0 for result in results)
+    assert all(result.effective_accel_max == STOP_HOLD_PRECONDITION_ACCEL_MAX for result in results)
+    assert all(not result.launching for result in results)
 
   def test_far_stopped_lead_does_not_enter_stop_hold(self):
     far_stopped = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=0.0))
@@ -701,7 +719,7 @@ class TestPaceGovernor:
     stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
     moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
     update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
-    for _ in range(STOP_HOLD_EXIT_FRAMES - 1):
+    for _ in range(CAP_FILTER_FRAMES // 2 + STOP_HOLD_EXIT_FRAMES - 1):
       update(controller, moving, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
     interrupted = update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
 
@@ -713,7 +731,7 @@ class TestPaceGovernor:
     stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
     moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
     update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1, previous_should_stop=True)
-    for _ in range(STOP_HOLD_EXIT_FRAMES):
+    for _ in range(CAP_FILTER_FRAMES // 2 + STOP_HOLD_EXIT_FRAMES):
       result = update(
         controller,
         moving,

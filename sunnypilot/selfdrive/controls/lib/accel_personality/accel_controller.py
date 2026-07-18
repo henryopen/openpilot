@@ -77,6 +77,7 @@ STOP_HOLD_PRECONDITION_SPEED = 0.05
 STOP_HOLD_PRECONDITION_ACCEL_MAX = -0.25
 STOP_HOLD_PRECONDITION_EXTRA = 0.20
 STOPPED_LEAD_SPEED = 0.30
+STOP_HOLD_EXIT_CAP = 0.80
 STOP_HOLD_EXIT_FRAMES = 4
 MAX_LEAD_ACCEL_TAU = 10.0
 VEGO_NOISE_TOLERANCE = 0.10
@@ -379,7 +380,7 @@ class AccelController:
       path.pace = max(planner_speed, 0.0)
 
     if path.state == AccelControllerState.stopHold:
-      moving_lead = envelope.departure_lead_speed > STOPPED_LEAD_SPEED and math.isfinite(raw_cap)
+      moving_lead = raw_cap > STOP_HOLD_EXIT_CAP and filtered_cap > STOP_HOLD_EXIT_CAP
       confirmed_lead_loss = not math.isfinite(raw_cap) and not math.isfinite(filtered_cap)
       path.departure_frames = path.departure_frames + 1 if moving_lead or confirmed_lead_loss else 0
       if path.departure_frames < STOP_HOLD_EXIT_FRAMES:
