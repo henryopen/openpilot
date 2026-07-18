@@ -19,7 +19,7 @@ sections:
   - key: DynamicExperimentalControl
     widget: toggle
     title: Dynamic Experimental Control
-    description: Let the model choose between sunnypilot ACC and End to End Longitudinal. Stable stop trajectories can brake to a full stop and hold.
+    description: Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal.
     visibility:
     - $ref: '#/macros/longitudinal'
     enablement:

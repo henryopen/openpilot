@@ -13,7 +13,6 @@ from numpy import interp
 from opendbc.car import structs
 from openpilot.common.params import Params
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.constants import WMACConstants
-from openpilot.sunnypilot.selfdrive.controls.lib.dec.stop_intent import StopConstraint, StopIntentController, StopIntentState
 
 ModeType = Literal['acc', 'blended']
 
@@ -70,7 +69,7 @@ class ModeTransitionManager:
 
   def request_mode(self, mode: ModeType, immediate: bool = False, hold_frames: int = 0, cancel_hold: bool = False) -> None:
     if immediate:
-      self._blended_hold_frames = max(self._blended_hold_frames, hold_frames) if mode == 'blended' else 0
+      self._blended_hold_frames = max(self._blended_hold_frames, hold_frames)
       self._pending_mode = mode
       self._pending_count = 0
       self._switch_mode(mode)
@@ -129,8 +128,6 @@ class DynamicExperimentalController:
     self._urgency = 0.0
 
     self._mode_manager = ModeTransitionManager()
-    self._stop_intent = StopIntentController()
-    self._stop_constraint = StopConstraint()
 
     self._lead_tracker = HysteresisSignal(
       enter_threshold=WMACConstants.LEAD_PROB,
@@ -186,9 +183,6 @@ class DynamicExperimentalController:
   def active(self) -> bool:
     return self._active
 
-  def stop_constraint(self) -> StopConstraint:
-    return self._stop_constraint
-
   def set_mpc_fcw_crash_cnt(self) -> None:
     self._mpc_fcw_crash_cnt = self._mpc.crash_cnt
 
@@ -237,8 +231,16 @@ class DynamicExperimentalController:
     self._urgency = self._slow_down_tracker.value
 
   def _radar_acc_lead_score(self, lead_one) -> float:
-    radar_track_id = int(getattr(lead_one, 'radarTrackId', -1))
-    return float(lead_one.status and (bool(getattr(lead_one, 'radar', False)) or radar_track_id >= 0))
+    if not lead_one.status:
+      return 0.0
+
+    d_rel = float(getattr(lead_one, 'dRel', float('inf')))
+    v_rel = float(getattr(lead_one, 'vRel', 0.0))
+    if d_rel <= WMACConstants.RADAR_LEAD_ACC_MAX_DREL:
+      return 1.0
+    if v_rel <= WMACConstants.RADAR_LEAD_ACC_MIN_CLOSING_SPEED and d_rel / max(-v_rel, 0.1) <= WMACConstants.RADAR_LEAD_ACC_MAX_TTC:
+      return 1.0
+    return 0.0
 
   def _model_action_urgency(self, md) -> float:
     action = getattr(md, 'action', None)
@@ -269,13 +271,7 @@ class DynamicExperimentalController:
 
   def _desired_mode(self) -> tuple[ModeType, bool]:
     if not self._CP.radarUnavailable and self._has_radar_acc_lead:
-      return 'acc', True
-
-    if self._stop_constraint.state == StopIntentState.suppressed:
-      return 'acc', True
-
-    if self._stop_constraint.active:
-      return 'blended', True
+      return 'acc', False
 
     if self._has_mpc_fcw:
       return 'blended', True
@@ -293,34 +289,15 @@ class DynamicExperimentalController:
 
     return 'acc', False
 
-  @staticmethod
-  def _model_observation_valid(sm: messaging.SubMaster) -> bool:
-    validity = getattr(sm, 'valid', None)
-    updated = getattr(sm, 'updated', None)
-    try:
-      return (validity is None or bool(validity['modelV2'])) and (updated is None or bool(updated['modelV2']))
-    except (KeyError, TypeError):
-      return False
-
   def update(self, sm: messaging.SubMaster) -> None:
     self._read_params()
-    self._active = sm['selfdriveState'].experimentalMode and self._enabled
     self.set_mpc_fcw_crash_cnt()
     self._update_calculations(sm)
 
-    gas_pressed = bool(sm['carState'].gasPressed)
-    stop_enabled = self._active and self._CP.openpilotLongitudinalControl and (bool(sm['carControl'].longActive) or gas_pressed)
-    self._stop_constraint = self._stop_intent.update(
-      sm['modelV2'],
-      sm['carState'],
-      enabled=stop_enabled,
-      lead_present=bool(sm['radarState'].leadOne.status),
-      observation_valid=self._model_observation_valid(sm),
-    )
-
     mode, immediate = self._desired_mode()
     self._mode_manager.request_mode(mode, immediate=immediate, hold_frames=WMACConstants.EMERGENCY_HOLD_FRAMES,
-                                    cancel_hold=not self._CP.radarUnavailable and self._has_radar_acc_lead)
+                                    cancel_hold=self._has_radar_acc_lead)
     self._mode_manager.update()
 
+    self._active = sm['selfdriveState'].experimentalMode and self._enabled
     self._frame += 1

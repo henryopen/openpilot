@@ -2,7 +2,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   AccelController,
   AccelControllerResult,
   AccelControllerState,
-  AccelProfile,
 )
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import AccelProfile
 
 __all__ = ["AccelController", "AccelControllerResult", "AccelControllerState", "AccelProfile"]

@@ -5,64 +5,41 @@ import numpy as np
 import pytest
 
 from cereal import log
-from opendbc.car.interfaces import ACCEL_MAX
+from opendbc.car.interfaces import ACCEL_MAX, ACCEL_MIN
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource, STOP_DISTANCE, T_IDXS, get_T_FOLLOW
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE, T_IDXS, LongitudinalMpc, get_T_FOLLOW
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_controller import (
-  ACCEL_LIMIT_BYPASS_RATE,
-  ACCEL_LIMIT_RAISE_RATE,
   ACCEL_PROFILE_MAX_BP,
   ACCEL_PROFILE_MAX_V,
-  ACCEL_SHAPE_WARMUP_FRAMES,
   CAP_FILTER_FRAMES,
-  MOVING_LEAD_DECEL_ACCEL_MAX,
-  MOVING_LEAD_DECEL_CONFIRM_FRAMES,
-  MOVING_LEAD_DECEL_EXIT_FRAMES,
-  MOVING_LEAD_DECEL_ACCEL_SLEW_RATE,
-  MOVING_LEAD_DECEL_RELEASE_RATE,
+  HORIZON_SPEED_BUDGET,
+  POSITIVE_MPC_HEADROOM,
+  PROFILE_CONFIGS,
+  PROFILE_TRANSITION_JERK,
+  RADAR_STALE_TIMEOUT,
   RELIEF_CONFIRM_FRAMES,
-  STOP_HOLD_EXIT_CAP,
   STOP_HOLD_EXIT_FRAMES,
-  STOP_HOLD_PRECONDITION_ACCEL_MAX,
-  STOPPED_LEAD_SPEED,
   AccelController,
   AccelControllerState,
   AccelProfile,
-  EnergyEnvelope,
-  PROFILE_CONFIGS,
 )
 
 
-def make_lead(
-  *,
-  status: bool = False,
-  d_rel: float = 0.0,
-  v_lead_k: float = 0.0,
-  a_lead_k: float = 0.0,
-  a_lead_tau: float = 1.5,
-  radar_track_id: int = -1,
-):
-  return SimpleNamespace(
-    status=status,
-    dRel=d_rel,
-    vLeadK=v_lead_k,
-    aLeadK=a_lead_k,
-    aLeadTau=a_lead_tau,
-    radarTrackId=radar_track_id,
-  )
+def make_lead(*, status=False, d_rel=0.0, v_lead_k=0.0, a_lead_k=0.0, a_lead_tau=1.5):
+  return SimpleNamespace(status=status, dRel=d_rel, vLeadK=v_lead_k, aLeadK=a_lead_k, aLeadTau=a_lead_tau)
 
 
 def make_radar(lead_one=None, lead_two=None):
   return SimpleNamespace(leadOne=lead_one or make_lead(), leadTwo=lead_two or make_lead())
 
 
-def make_controller(delay: float = 0.10):
+def make_controller(delay=0.10):
   return AccelController(SimpleNamespace(longitudinalActuatorDelay=delay))
 
 
 def update(controller, radar_state=None, **overrides):
   args = {
-    "base_speed": 20.0,
+    "base_speed": 25.0,
     "v_ego": 10.0,
     "a_ego": 0.0,
     "profile": AccelProfile.normal,
@@ -71,755 +48,244 @@ def update(controller, radar_state=None, **overrides):
     "acc_selected": True,
     "engaged": True,
     "cruise_initialized": True,
-    "previous_mpc_source": LongitudinalPlanSource.cruise,
-    "planner_speed": 10.0,
-    "stock_accel_max": 1.2,
     "planner_accel": 0.0,
+    "action_accel": 0.0,
+    "stock_accel_max": ACCEL_MAX,
     "previous_should_stop": False,
   }
   args.update(overrides)
   return controller.update(radar_state or make_radar(), **args)
 
 
-class TestAccelProfile:
-  def test_lookup_table_values(self):
+def restrictive_radar():
+  return make_radar(make_lead(status=True, d_rel=25.0, v_lead_k=8.0, a_lead_k=-0.5))
+
+
+class TestProfiles:
+  def test_lookup_table_is_explicit_and_tunable(self):
     assert ACCEL_PROFILE_MAX_BP == [0.0, 3.0, 10.0, 25.0, 40.0]
     assert ACCEL_PROFILE_MAX_V == {
       AccelProfile.eco: [1.55, 1.25, 0.85, 0.50, 0.30],
       AccelProfile.normal: [1.70, 1.40, 1.05, 0.65, 0.45],
-      AccelProfile.sport: [2.00, 1.90, 1.70, 1.20, 0.90],
+      AccelProfile.sport: [2.00, 1.90, 1.70, 1.00, 0.70],
     }
 
   @pytest.mark.parametrize("profile", list(AccelProfile))
-  def test_lookup_table_interpolates_and_clamps(self, profile):
+  def test_lookup_interpolates_and_stays_inside_global_limit(self, profile):
     for speed, expected in zip(ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V[profile], strict=True):
       assert AccelController.get_profile_accel_max(profile, speed) == expected
+    limits = [AccelController.get_profile_accel_max(profile, speed) for speed in np.linspace(-1.0, 50.0, 201)]
+    assert all(0.0 <= limit <= ACCEL_MAX for limit in limits)
 
-    assert AccelController.get_profile_accel_max(profile, -1.0) == ACCEL_PROFILE_MAX_V[profile][0]
-    assert AccelController.get_profile_accel_max(profile, 50.0) == ACCEL_PROFILE_MAX_V[profile][-1]
-
-  @pytest.mark.parametrize("profile", list(AccelProfile))
-  def test_lookup_table_stays_within_global_limit(self, profile):
-    for speed in np.linspace(0.0, 40.0, 161):
-      assert 0.0 <= AccelController.get_profile_accel_max(profile, speed) <= ACCEL_MAX
-
-  def test_launch_knots_are_prompt_and_profiles_separate_after_walking_speed(self):
-    launch_limits = [AccelController.get_profile_accel_max(profile, 0.0) for profile in AccelProfile]
-    rolling_limits = [AccelController.get_profile_accel_max(profile, 10.0) for profile in AccelProfile]
-
-    assert min(launch_limits) >= 1.55
-    assert rolling_limits[0] < rolling_limits[1] < rolling_limits[2]
-
-  def test_active_profile_is_clipped_to_stock_before_mpc(self):
-    controller = make_controller()
-    results = [update(controller, profile=AccelProfile.sport, stock_accel_max=1.2) for _ in range(12)]
-
-    assert all(result.profile_accel_max == 1.7 for result in results)
-    assert all(result.mpc_accel_max is None for result in results[:ACCEL_SHAPE_WARMUP_FRAMES])
-    assert results[-1].effective_accel_max == 1.2
-    assert results[-1].mpc_accel_max == tuple(1.2 for _ in T_IDXS)
-    assert results[-1].mpc_shape_cruise
-    assert results[-1].mpc_apply_accel_constraint
-    assert max(results[-1].mpc_accel_max) <= min(1.2, ACCEL_MAX)
+  @pytest.mark.parametrize("speed", [0.0, 3.0, 10.0, 25.0, 40.0])
+  def test_profile_order_is_distinct(self, speed):
+    limits = [AccelController.get_profile_accel_max(profile, speed) for profile in AccelProfile]
+    assert limits[0] < limits[1] < limits[2]
 
   @pytest.mark.parametrize("profile", list(AccelProfile))
-  @pytest.mark.parametrize("stock_accel_max", [0.6, 1.2, ACCEL_MAX])
-  def test_settled_mpc_limit_respects_profile_stock_and_global_ceiling(self, profile, stock_accel_max):
+  def test_clear_road_applies_profile_immediately(self, profile):
+    result = update(make_controller(), v_ego=0.0, profile=profile)
+    expected = ACCEL_PROFILE_MAX_V[profile][0]
+    assert result.active and result.state == AccelControllerState.free
+    assert result.target_speed == result.base_speed == 25.0
+    assert result.positive_accel_max == expected
+    assert result.effective_accel_max == expected
+    if expected == ACCEL_MAX:
+      assert result.mpc_accel_max is None
+    else:
+      np.testing.assert_array_equal(result.mpc_accel_max, min(expected + POSITIVE_MPC_HEADROOM, ACCEL_MAX))
+
+  def test_turn_or_throttle_limit_intersects_profile(self):
+    result = update(make_controller(), profile=AccelProfile.sport, stock_accel_max=0.0)
+    assert result.positive_accel_max == 0.0
+    assert result.effective_accel_max == 0.0
+    np.testing.assert_array_equal(result.mpc_accel_max, 0.0)
+
+  def test_profile_switch_changes_ceiling_without_a_step(self):
     controller = make_controller()
-    result = [update(controller, profile=profile, stock_accel_max=stock_accel_max) for _ in range(40)][-1]
-    expected = min(AccelController.get_profile_accel_max(profile, 10.0), stock_accel_max, ACCEL_MAX)
+    sport = update(controller, profile=AccelProfile.sport, v_ego=10.0)
+    eco = update(controller, profile=AccelProfile.eco, v_ego=10.0)
+    assert sport.effective_accel_max > eco.effective_accel_max > eco.positive_accel_max
+    assert sport.effective_accel_max - eco.effective_accel_max == pytest.approx(PROFILE_TRANSITION_JERK * DT_MDL)
 
-    assert result.effective_accel_max == pytest.approx(expected)
-    assert result.mpc_accel_max is not None
-    assert max(result.mpc_accel_max) <= expected
-    assert result.mpc_apply_accel_constraint
-
-  def test_profiles_produce_distinct_effective_limits(self):
-    results = [update(make_controller(), profile=profile, stock_accel_max=1.2) for profile in AccelProfile]
-
-    assert [result.effective_accel_max for result in results] == [0.85, 1.05, 1.2]
-    assert all(result.mpc_accel_max is None for result in results)
-
-  def test_nonpositive_stock_limit_does_not_create_custom_braking_horizon(self):
-    result = update(make_controller(), stock_accel_max=-0.2)
-
-    assert result.effective_accel_max == -0.2
-    assert result.mpc_accel_max is None
-    assert not result.mpc_shape_cruise
-
-  def test_profile_switch_reaches_new_limit_without_a_step(self):
-    controller = make_controller()
-    eco = [update(controller, profile=AccelProfile.eco) for _ in range(20)]
-    sport = [update(controller, profile=AccelProfile.sport) for _ in range(8)]
-    limits = np.array([eco[-1].effective_accel_max, *(result.effective_accel_max for result in sport)])
-
-    assert eco[-1].effective_accel_max == 0.85
-    assert sport[-1].effective_accel_max == 1.2
-    assert np.all(np.diff(limits) >= 0.0)
-    assert np.max(np.diff(limits)) <= ACCEL_LIMIT_RAISE_RATE * DT_MDL + 1e-9
-
-  def test_lead_transitions_preserve_profile_without_constraining_a_closing_lead(self):
-    controller = make_controller()
-    clear = [update(controller, profile=AccelProfile.eco) for _ in range(20)]
-    faster_lead = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=15.0))
-    nonclosing = update(controller, faster_lead, profile=AccelProfile.eco)
-
-    assert clear[-1].effective_accel_max == pytest.approx(ACCEL_PROFILE_MAX_V[AccelProfile.eco][2])
-    assert nonclosing.effective_accel_max == clear[-1].effective_accel_max
-    assert nonclosing.mpc_apply_accel_constraint
-
-    closing_lead = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=5.0))
-    bypass = [update(controller, closing_lead, profile=AccelProfile.eco) for _ in range(20)]
-
-    transition_bounds = [result.mpc_accel_max[0] for result in bypass if result.mpc_accel_max is not None]
-    assert transition_bounds[0] == pytest.approx(nonclosing.effective_accel_max + ACCEL_LIMIT_BYPASS_RATE * DT_MDL)
-    assert np.max(np.diff(transition_bounds)) <= ACCEL_LIMIT_BYPASS_RATE * DT_MDL + 1e-9
-    assert all(not result.mpc_apply_accel_constraint for result in bypass)
-    assert bypass[-1].mpc_accel_max is None
-    assert not bypass[-1].mpc_shape_cruise
-
-    rejoin = [update(controller, profile=AccelProfile.eco) for _ in range(20)]
-    rejoin_bounds = np.array([result.mpc_accel_max[0] for result in rejoin])
-
-    assert all(result.mpc_apply_accel_constraint for result in rejoin)
-    assert rejoin_bounds[0] == pytest.approx(ACCEL_MAX - ACCEL_LIMIT_BYPASS_RATE * DT_MDL)
-    assert np.max(np.abs(np.diff(rejoin_bounds))) <= ACCEL_LIMIT_BYPASS_RATE * DT_MDL + 1e-9
-    assert rejoin_bounds[-1] == ACCEL_PROFILE_MAX_V[AccelProfile.eco][2]
-    assert np.max(rejoin_bounds) <= ACCEL_MAX
+  def test_invalid_profile_defaults_to_normal(self):
+    result = update(make_controller(), profile=999)
+    assert result.profile == AccelProfile.normal
 
 
 class TestEnergyEnvelope:
-  def test_relative_energy_formula(self):
+  def test_relative_pace_energy_formula(self):
     controller = make_controller()
-    lead = make_lead(status=True, d_rel=60.0, v_lead_k=10.0)
-    envelope = controller.calculate_energy_envelope(make_radar(lead), 20.0, 0.0, AccelProfile.normal)
-
-    delay = controller.CP.longitudinalActuatorDelay + DT_MDL
-    x_ego = 20.0 * delay
-    x_lead = lead.dRel + lead.vLeadK * delay
-    usable_gap = x_lead - x_ego - STOP_DISTANCE - get_T_FOLLOW() * lead.vLeadK
-    expected = lead.vLeadK + math.sqrt(2.0 * PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * usable_gap)
-    incorrect = math.sqrt(lead.vLeadK**2 + 2.0 * PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * usable_gap)
-
-    assert envelope.usable_gap == pytest.approx(usable_gap)
+    lead = make_lead(status=True, d_rel=50.0, v_lead_k=8.0)
+    envelope = controller.calculate_energy_envelope(make_radar(lead), 10.0, 0.0, AccelProfile.normal)
+    delay = controller._delay()
+    lead_xv = LongitudinalMpc.extrapolate_lead(lead.dRel, lead.vLeadK, lead.aLeadK, lead.aLeadTau)
+    x_lead = float(np.interp(delay, T_IDXS, lead_xv[:, 0]))
+    v_lead = float(np.interp(delay, T_IDXS, lead_xv[:, 1]))
+    x_ego, _ = controller._project_ego(10.0, 0.0, delay)
+    gap = max(x_lead - x_ego - STOP_DISTANCE - get_T_FOLLOW(log.LongitudinalPersonality.standard) * v_lead, 0.0)
+    expected = v_lead + math.sqrt(2.0 * PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * gap)
     assert envelope.cap == pytest.approx(expected)
-    assert envelope.cap != pytest.approx(incorrect)
+    assert envelope.cap != pytest.approx(math.sqrt(v_lead**2 + 2.0 * PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * gap))
 
-  def test_more_restrictive_lead_is_selected(self):
-    leads = make_radar(
-      make_lead(status=True, d_rel=100.0, v_lead_k=18.0),
-      make_lead(status=True, d_rel=35.0, v_lead_k=5.0),
-    )
-
-    envelope = make_controller().calculate_energy_envelope(leads, 20.0, 0.0, AccelProfile.normal)
-
-    assert envelope.selected_lead == 1
-
-  def test_profiles_order_early_deceleration(self):
-    radar = make_radar(make_lead(status=True, d_rel=60.0, v_lead_k=10.0))
-    caps = [make_controller().calculate_energy_envelope(radar, 20.0, 0.0, profile).cap for profile in AccelProfile]
-
+  def test_profile_order_controls_approach_timing(self):
+    controller = make_controller()
+    radar = make_radar(make_lead(status=True, d_rel=50.0, v_lead_k=8.0))
+    caps = [controller.calculate_energy_envelope(radar, 10.0, 0.0, profile).cap for profile in AccelProfile]
     assert caps[0] < caps[1] < caps[2]
 
-  def test_follow_personality_remains_stock_authority(self):
-    controller = make_controller()
-    radar = make_radar(make_lead(status=True, d_rel=60.0, v_lead_k=10.0))
-    aggressive = controller.calculate_energy_envelope(radar, 20.0, 0.0, AccelProfile.normal, log.LongitudinalPersonality.aggressive)
-    relaxed = controller.calculate_energy_envelope(radar, 20.0, 0.0, AccelProfile.normal, log.LongitudinalPersonality.relaxed)
-
-    assert relaxed.usable_gap < aggressive.usable_gap
-    assert relaxed.cap < aggressive.cap
-
-  def test_lead_acceleration_is_clipped_before_projection(self):
-    controller = make_controller(delay=0.30)
-    extreme = make_radar(make_lead(status=True, d_rel=60.0, v_lead_k=10.0, a_lead_k=-100.0))
-    clipped = make_radar(make_lead(status=True, d_rel=60.0, v_lead_k=10.0, a_lead_k=-10.0))
-
-    assert controller.calculate_energy_envelope(extreme, 20.0, 0.0, 1) == controller.calculate_energy_envelope(clipped, 20.0, 0.0, 1)
-
-  def test_ego_projection_stops_at_zero(self):
-    assert AccelController._project_ego(0.2, -4.0, 0.15) == pytest.approx((0.005, 0.0))
-
-  @pytest.mark.parametrize("field", ["dRel", "vLeadK", "aLeadK", "aLeadTau"])
-  @pytest.mark.parametrize("invalid", [math.nan, math.inf, -math.inf])
-  def test_nonfinite_lead_values_are_ignored(self, field, invalid):
-    lead = make_lead(status=True, d_rel=40.0, v_lead_k=10.0)
-    setattr(lead, field, invalid)
-
-    envelope = make_controller().calculate_energy_envelope(make_radar(lead), 20.0, 0.0, AccelProfile.normal)
-
-    assert envelope == EnergyEnvelope()
-
-  @pytest.mark.parametrize(
-    "field, invalid",
-    [
-      ("dRel", -0.01),
-      ("vLeadK", -1.0),
-      ("aLeadTau", 0.0),
-      ("aLeadTau", -0.01),
-      ("aLeadTau", 1e6),
-    ],
-  )
-  def test_physically_invalid_lead_values_are_ignored(self, field, invalid):
-    lead = make_lead(status=True, d_rel=40.0, v_lead_k=10.0)
-    setattr(lead, field, invalid)
-
-    envelope = make_controller().calculate_energy_envelope(make_radar(lead), 20.0, 0.0, AccelProfile.normal)
-
-    assert envelope == EnergyEnvelope()
-
-  @pytest.mark.parametrize(
-    "malformed_lead",
-    [
-      SimpleNamespace(status=True, dRel=40.0, vLeadK=10.0, aLeadK=0.0),
-      SimpleNamespace(status=True, dRel="invalid", vLeadK=10.0, aLeadK=0.0, aLeadTau=1.5),
-      SimpleNamespace(status=True, dRel=40.0, vLeadK=None, aLeadK=0.0, aLeadTau=1.5),
-    ],
-  )
-  def test_malformed_lead_does_not_hide_valid_second_lead(self, malformed_lead):
-    valid_lead = make_lead(status=True, d_rel=35.0, v_lead_k=5.0)
-
-    envelope = make_controller().calculate_energy_envelope(
-      make_radar(malformed_lead, valid_lead),
-      20.0,
-      0.0,
-      AccelProfile.normal,
-    )
-
+  def test_more_restrictive_lead_is_selected(self):
+    radar = make_radar(make_lead(status=True, d_rel=70.0, v_lead_k=12.0), make_lead(status=True, d_rel=25.0, v_lead_k=8.0))
+    envelope = make_controller().calculate_energy_envelope(radar, 10.0, 0.0, AccelProfile.normal)
     assert envelope.selected_lead == 1
+
+  @pytest.mark.parametrize("field,value", [("aLeadK", math.nan), ("aLeadK", math.inf), ("aLeadTau", math.nan), ("aLeadTau", -1.0)])
+  def test_nonessential_invalid_lead_fields_are_sanitized(self, field, value):
+    lead = make_lead(status=True, d_rel=30.0, v_lead_k=8.0)
+    setattr(lead, field, value)
+    envelope = make_controller().calculate_energy_envelope(make_radar(lead), 10.0, 0.0, AccelProfile.normal)
+    assert envelope.selected_lead == 0
     assert math.isfinite(envelope.cap)
 
-  @pytest.mark.parametrize("invalid_column", [0, 1])
-  @pytest.mark.parametrize("invalid", [math.nan, math.inf, -math.inf])
-  def test_nonfinite_projected_lead_is_ignored(self, monkeypatch, invalid_column, invalid):
-    projected = np.column_stack((np.full_like(T_IDXS, 40.0), np.full_like(T_IDXS, 10.0)))
-    projected[:, invalid_column] = invalid
-    monkeypatch.setattr(LongitudinalMpc, "extrapolate_lead", staticmethod(lambda *_args: projected))
+  @pytest.mark.parametrize("field,value", [("dRel", math.nan), ("dRel", -1.0), ("vLeadK", math.nan), ("vLeadK", -2.0)])
+  def test_invalid_geometry_is_not_used(self, field, value):
+    lead = make_lead(status=True, d_rel=30.0, v_lead_k=8.0)
+    setattr(lead, field, value)
+    envelope = make_controller().calculate_energy_envelope(make_radar(lead), 10.0, 0.0, AccelProfile.normal)
+    assert envelope.selected_lead == -1
+    assert envelope.lead_status
 
-    envelope = make_controller().calculate_energy_envelope(
-      make_radar(make_lead(status=True, d_rel=40.0, v_lead_k=10.0)),
-      20.0,
-      0.0,
-      AccelProfile.normal,
-    )
-
-    assert envelope == EnergyEnvelope()
+  def test_raw_radar_is_never_mutated(self):
+    lead = make_lead(status=True, d_rel=30.0, v_lead_k=8.0, a_lead_k=-15.0, a_lead_tau=math.nan)
+    before = vars(lead).copy()
+    make_controller().calculate_energy_envelope(make_radar(lead), 10.0, 0.0, AccelProfile.normal)
+    assert vars(lead) == before
 
 
-class TestPaceGovernor:
-  restrictive_lead = make_lead(status=True, d_rel=40.0, v_lead_k=5.0)
-  nonrestrictive_lead = make_lead(status=True, d_rel=100.0, v_lead_k=15.0)
-  gentle_restrictive_lead = make_lead(status=True, d_rel=60.0, v_lead_k=8.0)
-
-  @classmethod
-  def establish_gentle_restriction(cls, controller, frames=6):
-    for _ in range(CAP_FILTER_FRAMES // 2 + 1):
-      update(controller, make_radar(cls.nonrestrictive_lead))
-    return [update(controller, make_radar(cls.gentle_restrictive_lead)) for _ in range(frames)]
-
-  def test_clear_road_targets_base_immediately(self):
+class TestAccelControllerState:
+  def test_five_frame_median_needs_three_restrictive_samples(self):
     controller = make_controller()
-    result = update(controller, base_speed=25.0, v_ego=0.0, planner_speed=0.0, stock_accel_max=1.6)
-    settled = [update(controller, base_speed=25.0, v_ego=0.0, planner_speed=0.0, stock_accel_max=1.6) for _ in range(13)]
+    results = [update(controller, restrictive_radar()) for _ in range(CAP_FILTER_FRAMES)]
+    assert math.isinf(results[1].live_filtered_cap)
+    assert math.isfinite(results[2].live_filtered_cap)
 
-    assert result.target_speed == 25.0
-    assert result.live_pace == 25.0
-    assert result.effective_accel_max == 0.95
-    assert settled[-1].effective_accel_max == 1.6
-    assert all(sample.mpc_accel_max is not None for sample in [result, *settled])
-    assert all(max(sample.mpc_accel_max) <= min(sample.profile_accel_max, 1.6, ACCEL_MAX) for sample in [result, *settled])
-    assert all(sample.target_speed == 25.0 for sample in settled)
-
-  def test_median_needs_three_leads_and_holds_two_dropouts(self):
+  def test_routine_approach_builds_safe_finite_horizon_ceiling(self):
     controller = make_controller()
-    radar = make_radar(self.restrictive_lead)
-    acquisitions = [update(controller, radar) for _ in range(3)]
-    dropouts = [update(controller) for _ in range(3)]
+    result = None
+    for _ in range(CAP_FILTER_FRAMES):
+      result = update(controller, restrictive_radar())
+    assert result is not None and result.state == AccelControllerState.restrict
+    ceiling = np.asarray(result.mpc_accel_max)
+    assert ceiling.shape == T_IDXS.shape
+    assert np.all(np.isfinite(ceiling))
+    assert np.all((ceiling >= ACCEL_MIN) & (ceiling <= ACCEL_MAX))
+    assert ceiling[0] >= 0.0
+    assert np.min(ceiling) < -0.05 and ceiling[-1] == pytest.approx(0.0)
+    assert np.trapezoid(-np.minimum(ceiling, 0.0), T_IDXS) <= HORIZON_SPEED_BUDGET * 10.0 + 1e-9
 
-    assert all(math.isinf(result.live_filtered_cap) for result in acquisitions[:2])
-    assert math.isfinite(acquisitions[2].live_filtered_cap)
-    assert all(math.isfinite(result.live_filtered_cap) for result in dropouts[:2])
-    assert math.isinf(dropouts[2].live_filtered_cap)
-
-  def test_invalid_lead_expires_and_cannot_resurrect_filtered_geometry(self):
+  def test_ongoing_mpc_braking_does_not_ratchet_the_controller(self):
     controller = make_controller()
-    valid = make_radar(self.restrictive_lead)
-    invalid = make_radar(make_lead(status=True, d_rel=-1.0, v_lead_k=5.0))
+    for _ in range(CAP_FILTER_FRAMES):
+      previous = update(controller, restrictive_radar())
+    result = update(controller, restrictive_radar(), action_accel=-1.2, planner_accel=-1.0)
+    assert result.effective_accel_max >= previous.effective_accel_max - 0.60 * DT_MDL - 1e-9
 
-    acquired = [update(controller, valid) for _ in range(CAP_FILTER_FRAMES // 2 + 1)]
-    expired = [update(controller, invalid) for _ in range(CAP_FILTER_FRAMES // 2 + 1)]
-    reacquired = [update(controller, valid) for _ in range(CAP_FILTER_FRAMES // 2 + 1)]
-
-    assert math.isfinite(acquired[-1].live_filtered_cap)
-    assert math.isinf(expired[-1].live_filtered_cap)
-    assert all(math.isinf(result.live_filtered_cap) for result in reacquired[:-1])
-    assert math.isfinite(reacquired[-1].live_filtered_cap)
-
-  @pytest.mark.parametrize(
-    "field, invalid",
-    [
-      ("dRel", -1.0),
-      ("vLeadK", -1.0),
-      ("aLeadTau", -1.0),
-      ("aLeadTau", math.inf),
-    ],
-  )
-  def test_invalid_lead_never_produces_nan_telemetry(self, field, invalid):
-    lead = make_lead(status=True, d_rel=40.0, v_lead_k=5.0)
-    setattr(lead, field, invalid)
-
-    result = update(make_controller(), make_radar(lead))
-
-    telemetry = (
-      result.target_speed,
-      result.profile_accel_max,
-      result.effective_accel_max,
-      result.raw_energy_cap,
-      result.live_filtered_cap,
-      result.live_pace,
-      result.closing_speed,
-      result.required_decel,
-    )
-    assert not any(math.isnan(value) for value in telemetry)
-
-  def test_small_negative_stopped_lead_speed_is_treated_as_zero(self):
-    lead = make_lead(status=True, d_rel=6.0, v_lead_k=-0.01)
-
-    result = update(make_controller(), make_radar(lead), base_speed=8.0, v_ego=0.1, planner_speed=0.1)
-
-    assert result.selected_lead == 0
-    assert result.raw_energy_cap == 0.0
-    assert result.state == AccelControllerState.stopHold
-
-  def test_restriction_changes_only_pace_at_comfort_rate(self):
+  def test_two_dropouts_cannot_release_restriction(self):
     controller = make_controller()
-    results = self.establish_gentle_restriction(controller, frames=3)
-    restricted = results[-1]
+    for _ in range(CAP_FILTER_FRAMES):
+      restricted = update(controller, restrictive_radar())
+    results = [update(controller) for _ in range(2)]
+    assert all(result.active and result.effective_accel_max <= 0.0 for result in results)
+    assert all(result.effective_accel_max >= restricted.effective_accel_max for result in results)
 
-    assert all(result.live_pace == 20.0 for result in results[:2])
-    assert restricted.live_pace == pytest.approx(20.0 - PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * DT_MDL)
-    assert restricted.state == AccelControllerState.restrict
-    assert restricted.mpc_accel_max is None
-    assert not restricted.mpc_shape_cruise
-    assert not restricted.mpc_apply_accel_constraint
-
-  def test_far_slower_lead_acquisition_is_bounded_then_holds_for_mpc(self):
+  def test_relief_requires_consecutive_confirmation(self):
     controller = make_controller()
-    radar = make_radar(make_lead(status=True, d_rel=200.0, v_lead_k=15.0))
-    results = [update(controller, radar, base_speed=30.0, v_ego=25.0, planner_speed=25.0) for _ in range(3)]
-
-    assert all(result.live_pace == 30.0 for result in results[:2])
-    assert 24.5 <= results[-1].live_pace < 25.0
-    assert results[-1].state == AccelControllerState.hold
-    assert results[-1].mpc_accel_max is None
-    assert not results[-1].mpc_apply_accel_constraint
-
-  def test_material_closing_lead_returns_acceleration_authority_to_stock(self):
-    controller = make_controller()
-    radar = make_radar(self.restrictive_lead)
-    results = [update(controller, radar) for _ in range(20)]
-
-    assert all(0.0 < result.effective_accel_max <= min(result.profile_accel_max, 1.2, ACCEL_MAX) for result in results)
-    assert all(result.mpc_accel_max is None for result in results)
-    assert all(not result.mpc_shape_cruise for result in results)
-    assert all(not result.mpc_apply_accel_constraint for result in results)
-
-  def test_route_threshold_crossing_keeps_direct_stock_authority(self):
-    controller = make_controller()
-    leads = [
-      make_radar(make_lead(status=True, d_rel=31.0, v_lead_k=5.0)),
-      make_radar(make_lead(status=True, d_rel=29.0, v_lead_k=5.0)),
-    ]
-    results = [update(controller, radar, v_ego=10.0, planner_speed=10.0) for radar in leads]
-
-    assert all(result.mpc_accel_max is None for result in results)
-    assert all(not result.mpc_shape_cruise for result in results)
-    assert all(not result.mpc_apply_accel_constraint for result in results)
-
-  def test_decelerating_moving_lead_uses_gradual_bounded_ceiling_until_confirmed_match(self):
-    controller = make_controller()
-
-    def moving_lead(speed):
-      return make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=speed))
-
-    update(controller, moving_lead(15.0), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
-    confirmation = []
-    for frame in range(MOVING_LEAD_DECEL_CONFIRM_FRAMES):
-      confirmation.append(
-        update(controller, moving_lead(15.0 - 0.01 * (frame + 1)), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
-      )
-      if frame < MOVING_LEAD_DECEL_CONFIRM_FRAMES - 1:
-        assert not controller.live.moving_lead_decel
-
-    assert controller.live.moving_lead_decel
-    assert confirmation[-1].effective_accel_max == pytest.approx(-MOVING_LEAD_DECEL_ACCEL_SLEW_RATE * DT_MDL)
-    assert confirmation[-1].mpc_apply_accel_constraint
-
-    falling_speed = 15.0 - 0.01 * MOVING_LEAD_DECEL_CONFIRM_FRAMES
-    constrained = [
-      update(controller, moving_lead(falling_speed - 0.01 * (frame + 1)), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
-      for frame in range(20)
-    ]
-    limits = np.array([confirmation[-1].effective_accel_max, *(result.effective_accel_max for result in constrained)])
-    assert constrained[-1].effective_accel_max == MOVING_LEAD_DECEL_ACCEL_MAX
-    assert np.all(np.diff(limits) <= 0.0)
-    assert np.max(np.abs(np.diff(limits))) <= MOVING_LEAD_DECEL_ACCEL_SLEW_RATE * DT_MDL + 1e-9
-    assert np.min(limits) >= MOVING_LEAD_DECEL_ACCEL_MAX
-    assert np.all(np.diff([result.live_pace for result in constrained]) <= 1e-9)
-
-    matched = [update(controller, moving_lead(5.0), base_speed=30.0, v_ego=5.05, planner_speed=5.05) for _ in range(MOVING_LEAD_DECEL_EXIT_FRAMES)]
-    assert all(result.effective_accel_max <= 0.0 for result in matched[:-1])
-    assert not controller.live.moving_lead_decel
-    assert controller.live.moving_lead_release
-    assert matched[-1].effective_accel_max < 0.0
-
-    unwind_frames = math.ceil(abs(matched[-1].effective_accel_max) / (MOVING_LEAD_DECEL_RELEASE_RATE * DT_MDL))
-    unwinding = [update(controller, moving_lead(5.0), base_speed=30.0, v_ego=5.05, planner_speed=5.05) for _ in range(unwind_frames)]
-    unwind_limits = np.array([matched[-1].effective_accel_max, *(result.effective_accel_max for result in unwinding)])
-    assert np.all(np.diff(unwind_limits) >= 0.0)
-    assert np.max(np.diff(unwind_limits)) <= MOVING_LEAD_DECEL_RELEASE_RATE * DT_MDL + 1e-9
-    assert unwinding[-1].effective_accel_max == 0.0
-    assert not controller.live.moving_lead_release
-    assert controller.live.moving_lead_accel_max is None
-
-    released = update(controller, moving_lead(5.0), base_speed=30.0, v_ego=5.05, planner_speed=5.05)
-    assert released.effective_accel_max == min(released.profile_accel_max, 1.2, ACCEL_MAX)
-
-  def test_moving_lead_ceiling_unwinds_smoothly_after_filtered_dropout(self):
-    controller = make_controller()
-
-    def moving_lead(speed):
-      return make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=speed))
-
-    update(controller, moving_lead(15.0), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
-    for frame in range(MOVING_LEAD_DECEL_CONFIRM_FRAMES + 20):
-      update(controller, moving_lead(14.99 - 0.01 * frame), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
-
-    assert controller.live.moving_lead_decel
-    assert controller.live.moving_lead_accel_max == MOVING_LEAD_DECEL_ACCEL_MAX
-    dropouts = [update(controller, make_radar(), base_speed=30.0, v_ego=20.0, planner_speed=20.0) for _ in range(3)]
-    assert all(result.effective_accel_max == MOVING_LEAD_DECEL_ACCEL_MAX for result in dropouts[:2])
-    assert dropouts[-1].effective_accel_max == pytest.approx(MOVING_LEAD_DECEL_ACCEL_MAX + MOVING_LEAD_DECEL_RELEASE_RATE * DT_MDL)
-    assert controller.live.moving_lead_release
-
-    stock_coast = update(controller, make_radar(), base_speed=30.0, v_ego=20.0, planner_speed=20.0, stock_accel_max=-0.5)
-    assert stock_coast.effective_accel_max == -0.5
-    assert stock_coast.mpc_accel_max[-1] == -0.5
-
-  def test_far_or_noisy_decelerating_lead_does_not_force_braking(self):
-    far_controller = make_controller()
-    far_results = [
-      update(
-        far_controller,
-        make_radar(make_lead(status=True, d_rel=500.0, v_lead_k=15.0 - 0.01 * frame)),
-        base_speed=30.0,
-        v_ego=20.0,
-        planner_speed=20.0,
-      )
-      for frame in range(10)
-    ]
-
-    noisy_controller = make_controller()
-    noisy_results = [
-      update(
-        noisy_controller,
-        make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=15.0 - 0.01 * (frame % 2))),
-        base_speed=30.0,
-        v_ego=20.0,
-        planner_speed=20.0,
-      )
-      for frame in range(10)
-    ]
-
-    assert not far_controller.live.moving_lead_decel
-    assert not noisy_controller.live.moving_lead_decel
-    assert all(result.effective_accel_max >= 0.0 for result in [*far_results, *noisy_results])
-    assert all(result.mpc_accel_max is None or min(result.mpc_accel_max) >= 0.0 for result in [*far_results, *noisy_results])
-
-  def test_filtered_relief_returns_pace_authority_to_accel_profile(self):
-    controller = make_controller()
-    restricted = self.establish_gentle_restriction(controller, frames=30)[-1]
-    restricted_pace = restricted.live_pace
-
-    results = [update(controller) for _ in range(CAP_FILTER_FRAMES // 2 + RELIEF_CONFIRM_FRAMES)]
-    released = results[-1]
-
-    assert all(result.state != AccelControllerState.release for result in results[:-1])
-    assert all(result.live_pace <= restricted_pace for result in results[:-1])
+    for _ in range(CAP_FILTER_FRAMES):
+      update(controller, restrictive_radar())
+    moving_away = make_radar(make_lead(status=True, d_rel=45.0, v_lead_k=13.0))
+    early = [update(controller, moving_away) for _ in range(RELIEF_CONFIRM_FRAMES - 1)]
+    assert all(result.state == AccelControllerState.hold and result.effective_accel_max <= 0.0 for result in early)
+    released = update(controller, moving_away)
     assert released.state == AccelControllerState.free
-    assert released.live_pace == released.base_speed
+    assert released.effective_accel_max <= 0.0
+    accelerating = update(controller, moving_away)
+    assert released.effective_accel_max < accelerating.effective_accel_max <= accelerating.positive_accel_max
 
-  def test_restrictive_lead_reacquisition_holds_pace_until_filter_recovers(self):
+  def test_urgent_frame_uses_exact_stock_path(self):
+    urgent = make_radar(make_lead(status=True, d_rel=18.0, v_lead_k=0.0))
+    result = update(make_controller(), urgent, v_ego=20.0)
+    assert result.active and result.stock_mode
+    assert result.mpc_accel_max is None
+    assert math.isinf(result.effective_accel_max)
+
+  def test_urgent_relief_stays_stock_until_braking_has_recovered(self):
     controller = make_controller()
-    restricted = self.establish_gentle_restriction(controller, frames=30)[-1]
-    missing = [update(controller) for _ in range(CAP_FILTER_FRAMES // 2 + 1)]
-    reacquired = [update(controller, make_radar(self.gentle_restrictive_lead)) for _ in range(CAP_FILTER_FRAMES // 2 + 1)]
+    urgent = make_radar(make_lead(status=True, d_rel=18.0, v_lead_k=0.0))
+    update(controller, urgent, v_ego=20.0)
+    result = update(controller, action_accel=-1.5, planner_accel=-1.2, v_ego=19.8)
+    assert result.stock_mode
+    assert result.mpc_accel_max is None
+    recovered = [update(controller, action_accel=0.0, planner_accel=0.0, v_ego=19.8) for _ in range(RELIEF_CONFIRM_FRAMES)]
+    assert all(sample.stock_mode for sample in recovered[:-1])
+    assert recovered[-1].state == AccelControllerState.free
 
-    assert math.isinf(missing[-1].live_filtered_cap)
-    assert all(result.live_pace <= restricted.live_pace for result in missing)
-    assert all(result.live_pace == missing[-1].live_pace for result in reacquired[:-1])
-    assert reacquired[-1].live_pace == pytest.approx(missing[-1].live_pace - PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * DT_MDL)
-
-  def test_confirmed_clear_finishes_release_at_base(self):
-    controller = make_controller()
-    self.establish_gentle_restriction(controller, frames=30)
-
-    results = [update(controller) for _ in range(200)]
-
-    assert results[-1].state == AccelControllerState.free
-    assert results[-1].target_speed == results[-1].base_speed
-
-  def test_cruise_source_dropout_holds_pace_without_a_target_lurch(self):
-    controller = make_controller()
-    restricted = self.establish_gentle_restriction(controller)[-1]
-
-    dropout = update(
-      controller,
-      previous_mpc_source=LongitudinalPlanSource.cruise,
-      planner_speed=7.0,
-      v_ego=8.0,
-    )
-
-    assert math.isfinite(dropout.live_filtered_cap)
-    assert dropout.state == AccelControllerState.hold
-    assert dropout.live_pace == restricted.live_pace
-    assert dropout.target_speed == restricted.target_speed
-
-  def test_far_geometry_jump_cannot_release_filtered_restriction(self):
-    controller = make_controller()
-    far = make_radar(make_lead(status=True, d_rel=200.0, v_lead_k=20.0))
-    restricted = self.establish_gentle_restriction(controller)[-1]
-
-    jumped = update(controller, far, planner_speed=8.0, v_ego=9.0)
-
-    assert math.isfinite(jumped.live_filtered_cap)
-    assert jumped.state == AccelControllerState.hold
-    assert jumped.live_pace == restricted.live_pace
-    assert jumped.target_speed == restricted.target_speed
-
-  def test_previous_lead_plan_synchronizes_pace_after_lead_loss(self):
-    controller = make_controller()
-    self.establish_gentle_restriction(controller)
-
-    lost = update(
-      controller,
-      previous_mpc_source=LongitudinalPlanSource.lead0,
-      planner_speed=7.0,
-    )
-
-    assert lost.state == AccelControllerState.hold
-    assert lost.live_pace == 7.0
-    assert lost.target_speed == 7.0
-
-  def test_existing_lead_plan_keeps_relative_pace_restriction(self):
-    controller = make_controller()
-    restricted = self.establish_gentle_restriction(controller)[-1]
-    radar = make_radar(self.gentle_restrictive_lead)
-
-    handed_off = update(
-      controller,
-      radar,
-      previous_mpc_source=LongitudinalPlanSource.lead0,
-      planner_speed=restricted.live_pace,
-    )
-
-    assert restricted.live_pace < restricted.base_speed
-    assert handed_off.state == AccelControllerState.restrict
-    assert handed_off.live_pace <= restricted.live_pace
-    assert handed_off.target_speed < handed_off.base_speed
-    assert handed_off.mpc_accel_max is None
-    assert not handed_off.mpc_apply_accel_constraint
-
-  @pytest.mark.parametrize(("v_ego", "uses_standstill_preconditioner"), [(0.0, True), (0.05, True), (0.051, False), (0.1, False)])
-  def test_stop_hold_negative_bound_is_limited_to_stationary_preconditioning(self, v_ego, uses_standstill_preconditioner):
+  def test_stop_hold_needs_four_departure_frames(self):
     controller = make_controller()
     stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
-
-    result = update(controller, stopped, base_speed=8.0, v_ego=v_ego, planner_speed=v_ego, stock_accel_max=1.6)
-
-    assert result.state == AccelControllerState.stopHold
-    assert result.target_speed == 0.0
-    if uses_standstill_preconditioner:
-      guard_time = controller._delay() + 0.20
-      expected = tuple(-0.25 if t <= guard_time else ACCEL_MAX for t in T_IDXS)
-      assert result.effective_accel_max == -0.25
-      assert result.mpc_accel_max == expected
-      assert result.mpc_shape_cruise
-      assert result.mpc_apply_accel_constraint
-    else:
-      assert result.effective_accel_max > 0.0
-      assert result.mpc_accel_max is None
-      assert not result.mpc_shape_cruise
-      assert not result.mpc_apply_accel_constraint
-
-  def test_stop_hold_requires_four_moving_lead_frames_then_targets_base(self):
-    controller = make_controller()
-    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
-    moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
-    held = update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6)
-    waiting = [update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6) for _ in range(13)]
-    confirmation_frames = CAP_FILTER_FRAMES // 2 + STOP_HOLD_EXIT_FRAMES
-    confirmations = [update(controller, moving, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6) for _ in range(confirmation_frames)]
-    released = update(controller, moving, base_speed=8.0, v_ego=0.1, planner_speed=0.1, stock_accel_max=1.6)
-
+    held = update(controller, stopped, base_speed=8.0, v_ego=0.1, previous_should_stop=True)
     assert held.state == AccelControllerState.stopHold
-    assert held.target_speed == 0.0
-    held_results = [held, *waiting, *confirmations[:-1]]
-    assert all(result.effective_accel_max > 0.0 for result in held_results)
-    assert all(result.mpc_accel_max is None for result in held_results)
-    assert all(not result.mpc_shape_cruise for result in held_results)
-    assert all(not result.mpc_apply_accel_constraint for result in held_results)
-    assert all(result.target_speed == 0.0 for result in confirmations[:-1])
-    assert confirmations[-1].target_speed == confirmations[-1].base_speed
-    assert confirmations[-1].effective_accel_max <= ACCEL_MAX
-    assert confirmations[-1].mpc_accel_max is None
-    assert not confirmations[-1].mpc_shape_cruise
-    assert not confirmations[-1].mpc_apply_accel_constraint
-    assert confirmations[-1].launching
-    assert released.target_speed >= confirmations[-1].target_speed
-    assert released.launching
+    np.testing.assert_array_equal(held.mpc_accel_max, 0.0)
 
-  def test_slow_queue_creep_waits_for_safe_exit_cap(self):
+    departing = make_radar(make_lead(status=True, d_rel=8.0, v_lead_k=2.0))
+    confirmation = [update(controller, departing, base_speed=8.0, v_ego=0.1) for _ in range(STOP_HOLD_EXIT_FRAMES)]
+    assert all(result.effective_accel_max == 0.0 for result in confirmation[:-1])
+    launched = confirmation[-1]
+    assert launched.launching and launched.state == AccelControllerState.free
+    assert launched.effective_accel_max == launched.positive_accel_max
+
+  def test_stale_radar_freezes_then_discards_live_state(self):
     controller = make_controller()
-    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
-    creeping = make_radar(make_lead(status=True, d_rel=6.1, v_lead_k=0.5))
-    update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
-    results = [update(controller, creeping, base_speed=8.0, v_ego=0.1, planner_speed=0.1) for _ in range(STOP_HOLD_EXIT_FRAMES)]
+    for _ in range(CAP_FILTER_FRAMES):
+      restricted = update(controller, restrictive_radar())
+    hold_frames = math.ceil(RADAR_STALE_TIMEOUT / DT_MDL) - 1
+    frozen = [update(controller, radar_fresh=False) for _ in range(hold_frames)]
+    assert all(result.active and result.effective_accel_max == restricted.effective_accel_max for result in frozen)
+    timed_out = update(controller, radar_fresh=False)
+    assert not timed_out.active and timed_out.mpc_accel_max is None
 
-    assert all(result.raw_energy_cap <= STOP_HOLD_EXIT_CAP for result in results)
-    assert all(result.state == AccelControllerState.stopHold for result in results)
-    assert all(result.target_speed == 0.0 for result in results)
-
-  def test_decelerating_departure_below_exit_cap_does_not_gas_then_brake(self):
-    controller = make_controller()
-    stopped = make_radar(make_lead(status=True, d_rel=2.6, v_lead_k=0.0))
-    decelerating = make_radar(make_lead(status=True, d_rel=2.6, v_lead_k=0.675, a_lead_k=-1.8))
-    update(controller, stopped, profile=AccelProfile.eco, base_speed=8.0, v_ego=0.0, planner_speed=0.0)
-    results = [
-      update(controller, decelerating, profile=AccelProfile.eco, base_speed=8.0, v_ego=0.0, planner_speed=0.0)
-      for _ in range(STOP_HOLD_EXIT_FRAMES + 2)
-    ]
-
-    assert all(STOPPED_LEAD_SPEED < result.raw_energy_cap < STOP_HOLD_EXIT_CAP for result in results)
-    assert all(result.state == AccelControllerState.stopHold for result in results)
-    assert all(result.target_speed == 0.0 for result in results)
-    assert all(result.effective_accel_max == STOP_HOLD_PRECONDITION_ACCEL_MAX for result in results)
-    assert all(not result.launching for result in results)
-
-  def test_far_stopped_lead_does_not_enter_stop_hold(self):
-    far_stopped = make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=0.0))
-
-    result = update(make_controller(), far_stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
-
-    assert result.state != AccelControllerState.stopHold
-    assert result.target_speed == 8.0
-
-  def test_departure_confirmation_must_be_consecutive(self):
-    controller = make_controller()
-    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
-    moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
-    update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
-    for _ in range(CAP_FILTER_FRAMES // 2 + STOP_HOLD_EXIT_FRAMES - 1):
-      update(controller, moving, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
-    interrupted = update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1)
-
-    assert interrupted.state == AccelControllerState.stopHold
-    assert controller.live.departure_frames == 0
-
-  def test_stale_should_stop_does_not_reenter_after_confirmed_departure(self):
-    controller = make_controller()
-    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
-    moving = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=5.0))
-    update(controller, stopped, base_speed=8.0, v_ego=0.1, planner_speed=0.1, previous_should_stop=True)
-    for _ in range(CAP_FILTER_FRAMES // 2 + STOP_HOLD_EXIT_FRAMES):
-      result = update(
-        controller,
-        moving,
-        base_speed=8.0,
-        v_ego=0.1,
-        planner_speed=0.1,
-        previous_should_stop=True,
-      )
-    released = update(
-      controller,
-      moving,
-      base_speed=8.0,
-      v_ego=0.1,
-      planner_speed=0.1,
-      previous_should_stop=True,
-    )
-
-    assert result.state != AccelControllerState.stopHold
-    assert result.target_speed > 0.0
-    assert released.state != AccelControllerState.stopHold
-    assert released.target_speed > 0.0
-
-  def test_live_never_adopts_shadow_history(self):
-    controller = make_controller()
-    for _ in range(CAP_FILTER_FRAMES // 2 + 1):
-      update(controller, make_radar(self.nonrestrictive_lead), enabled=False)
-    for _ in range(CAP_FILTER_FRAMES // 2 + 1):
-      shadow = update(controller, make_radar(self.gentle_restrictive_lead), enabled=False)
-    active = update(controller, enabled=True)
-
-    assert shadow.shadow_state == AccelControllerState.restrict
-    assert active.target_speed == active.base_speed
-    assert active.live_pace == active.base_speed
-
-  @pytest.mark.parametrize("bypass", [{"enabled": False}, {"acc_selected": False}, {"engaged": False}])
-  def test_bypass_is_exact_base_and_resets_live(self, bypass):
-    controller = make_controller()
-    update(controller, make_radar(self.restrictive_lead))
-    result = update(controller, **bypass)
-
+  @pytest.mark.parametrize("override", [
+    {"enabled": False}, {"acc_selected": False}, {"engaged": False}, {"cruise_initialized": False}, {"controller_fault": True},
+  ])
+  def test_bypass_never_actuates(self, override):
+    result = update(make_controller(), restrictive_radar(), **override)
     assert not result.active
     assert result.target_speed == result.base_speed
     assert result.mpc_accel_max is None
     assert math.isinf(result.effective_accel_max)
-    assert controller.live.pace is None
 
-  @pytest.mark.parametrize("invalid", [{"base_speed": math.nan}, {"stock_accel_max": math.nan}, {"controller_fault": True}])
-  def test_invalid_context_resets_without_changing_base(self, invalid):
+  def test_shadow_history_never_enters_live_actuation(self):
     controller = make_controller()
-    update(controller)
-    result = update(controller, **invalid)
+    for _ in range(CAP_FILTER_FRAMES):
+      shadow = update(controller, restrictive_radar(), enabled=False)
+    assert shadow.shadow_state == AccelControllerState.restrict
+    live = update(controller)
+    assert live.state == AccelControllerState.free
+    assert live.effective_accel_max > 0.0
 
-    assert not result.active
-    assert controller.live.pace is None
-    if "base_speed" not in invalid:
-      assert result.target_speed == result.base_speed
 
-    recovered = update(controller)
-    assert recovered.active
-    assert recovered.live_pace == recovered.base_speed
-
-  def test_fault_recovery_is_discarded_when_context_is_invalid(self):
-    controller = make_controller()
-    for _ in range(ACCEL_SHAPE_WARMUP_FRAMES + 1):
-      update(controller)
-    assert controller.recovery_accel_max is not None
-
-    result = update(controller, controller_fault=True, base_speed=math.nan)
-    assert not result.active
-    assert result.mpc_accel_max is None
-    assert not controller.recovery_available
-
-  def test_invalid_profile_defaults_to_normal(self):
-    result = update(make_controller(), profile=99)
-
-    assert result.profile == AccelProfile.normal
-
-  def test_small_negative_ego_noise_is_sanitized(self):
-    result = update(make_controller(), v_ego=-0.05, planner_speed=0.0, stock_accel_max=1.6)
-
-    assert result.active
-    assert result.profile_accel_max == ACCEL_PROFILE_MAX_V[AccelProfile.normal][0]
-
-  def test_radar_input_is_not_mutated(self):
-    lead = make_lead(status=True, d_rel=60.0, v_lead_k=10.0, a_lead_k=-2.0)
-    radar = make_radar(lead)
-    before = vars(lead).copy()
-
-    update(make_controller(), radar)
-
-    assert vars(lead) == before
+@pytest.mark.parametrize("v_ego", [0.0, 0.2, 0.5, 1.0, 2.0, 10.0, 40.0])
+@pytest.mark.parametrize("bound", [-3.5, -2.0, -1.0, -0.1, 0.0, 0.8, 2.0])
+def test_accel_ceiling_properties(v_ego, bound):
+  result = AccelController._build_accel_ceiling(bound, v_ego, planner_accel=0.3, action_time=0.25)
+  if bound >= ACCEL_MAX:
+    assert result is None
+    return
+  ceiling = np.asarray(result)
+  assert ceiling.shape == T_IDXS.shape
+  assert np.all(np.isfinite(ceiling))
+  assert np.all((ceiling >= ACCEL_MIN) & (ceiling <= ACCEL_MAX))
+  assert ceiling[0] >= 0.3 - 1e-9
+  if bound > 0.0:
+    np.testing.assert_array_equal(ceiling, min(bound + POSITIVE_MPC_HEADROOM, ACCEL_MAX))
+  if bound < 0.0:
+    assert np.trapezoid(-np.minimum(ceiling, 0.0), T_IDXS) <= HORIZON_SPEED_BUDGET * v_ego + 1e-9

@@ -1,0 +1,67 @@
+from dataclasses import dataclass
+from enum import IntEnum
+
+
+class AccelProfile(IntEnum):
+  eco = 0
+  normal = 1
+  sport = 2
+
+
+@dataclass(frozen=True)
+class ProfileConfig:
+  comfort_decel: float
+  anticipation_margin: float
+  glide_decel: float
+
+
+PROFILE_CONFIGS = {
+  AccelProfile.eco: ProfileConfig(comfort_decel=0.25, anticipation_margin=0.15, glide_decel=0.12),
+  AccelProfile.normal: ProfileConfig(comfort_decel=0.35, anticipation_margin=1.00, glide_decel=0.16),
+  AccelProfile.sport: ProfileConfig(comfort_decel=0.50, anticipation_margin=2.00, glide_decel=0.20),
+}
+
+ACCEL_PROFILE_MAX_BP = [0.0, 3.0, 10.0, 25.0, 40.0]
+ACCEL_PROFILE_MAX_V = {
+  AccelProfile.eco: [1.55, 1.25, 0.85, 0.50, 0.30],
+  AccelProfile.normal: [1.70, 1.40, 1.05, 0.65, 0.45],
+  AccelProfile.sport: [2.00, 1.90, 1.70, 1.00, 0.70],
+}
+
+CAP_FILTER_FRAMES = 5
+RELIEF_CONFIRM_FRAMES = 5
+STOP_HOLD_EXIT_FRAMES = 4
+STOP_HOLD_EGO_SPEED = 0.30
+STOPPED_LEAD_SPEED = 0.30
+STOP_HOLD_EXIT_SPEED = 0.80
+MPC_SEED_RISE_RATE = 6.0
+APPROACH_MIN_SPEED = 2.0
+APPROACH_CLOSING_SPEED = 0.15
+BRAKE_CAP_MARGIN = 0.50
+APPROACH_LEAD_DECEL = 0.10
+APPROACH_LEAD_SPEED_MARGIN = 0.50
+RELIEF_CAP_MARGIN = 0.35
+COAST_MATCH_CLOSING_SPEED = 2.50
+COAST_MATCH_USABLE_GAP = 4.0
+REQUIRED_DECEL_MARGIN = 0.03
+ROUTINE_DECEL_MAX = 1.0
+CAP_TIGHTEN_JERK = 0.60
+CAP_RELAX_JERK = 0.80
+RELIEF_MPC_JERK = 3.20
+RELIEF_LEAD_SPEED_STEP = 0.05
+DROPOUT_ACTION_ACCEL_MARGIN = 0.08
+PROFILE_TRANSITION_JERK = 1.50
+POSITIVE_MPC_HEADROOM = 0.02
+URGENT_CLOSING_SPEED = 12.0
+URGENT_REQUIRED_DECEL = 1.0
+URGENT_TTC = 3.2
+URGENT_TTC_MIN_CLOSING = 1.0
+URGENT_RELEASE_ACCEL = -0.20
+HORIZON_DOWN_JERK = 2.0
+HORIZON_UP_JERK = 1.0
+HORIZON_HOLD_TIME = 0.50
+HORIZON_SPEED_BUDGET = 0.80
+RADAR_STALE_TIMEOUT = 0.50
+MAX_LEAD_ACCEL_TAU = 10.0
+MIN_LEAD_SPEED = -1.0
+VEGO_NOISE_TOLERANCE = 0.10

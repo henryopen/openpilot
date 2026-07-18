@@ -113,6 +113,7 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     accel_clip = [ACCEL_MIN, get_max_accel(v_ego)]
     steer_angle_without_offset = sm['carState'].steeringAngleDeg - sm['liveParameters'].angleOffsetDeg
     accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, accel_clip, self.CP)
+    profile_accel_clip = limit_accel_in_turns(v_ego, steer_angle_without_offset, [ACCEL_MIN, ACCEL_MAX], self.CP)
 
     if reset_state:
       self.v_desired_filter.x = v_ego
@@ -129,29 +130,17 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
       clipped_accel_coast = max(accel_coast, accel_clip[0])
       clipped_accel_coast_interp = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [accel_clip[1], clipped_accel_coast])
       accel_clip[1] = min(accel_clip[1], clipped_accel_coast_interp)
+    controller_accel_max = profile_accel_clip[1] if self.allow_throttle else 0.0
 
     # Get new v_cruise and a_desired from Smart Cruise Control and Speed Limit Assist
+    previous_output_a_target = self.output_a_target
     v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
-
-    # Cache DEC's ACC/e2e decision for controller and output arbitration.
-    is_e2e = self.is_e2e(sm)
-    stop_constraint = self.dec.stop_constraint()
-    v_cruise = LongitudinalPlannerSP.update_accel_controller(
-      self, sm, v_cruise, engaged=not reset_state, cruise_initialized=v_cruise_initialized, acc_selected=not is_e2e,
-      planner_speed=self.v_desired_filter.x, previous_mpc_source=self.mpc.source, previous_should_stop=self.output_should_stop,
-      stock_accel_max=accel_clip[1], planner_accel=self.a_desired, controller_fault=self.mpc.last_solution_status != 0,
-    )
-
-    if force_slow_decel:
-      v_cruise = 0.0
-
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
-    self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
-    self.mpc.update(
-      sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality,
-      accel_max=self.accel_controller_result.mpc_accel_max,
-      shape_accel_max_in_cruise=self.accel_controller_result.mpc_shape_cruise,
-      apply_accel_max_constraint=self.accel_controller_result.mpc_apply_accel_constraint,
+    base_v_cruise = v_cruise
+    mpc_v_cruise = 0.0 if force_slow_decel else base_v_cruise
+    is_e2e = LongitudinalPlannerSP.update_accel_controller_mpc(
+      self, sm, base_v_cruise, mpc_v_cruise, prev_accel_constraint, reset_state=reset_state,
+      cruise_initialized=v_cruise_initialized, planner_accel=self.a_desired, previous_output_accel=previous_output_a_target,
+      available_accel_max=controller_accel_max, previous_should_stop=self.output_should_stop, force_decel=force_slow_decel,
     )
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -176,15 +165,13 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     if is_e2e:
-      output_a_target = min(output_a_target_e2e, output_a_target_mpc, stop_constraint.accel_ceiling_mps2)
+      output_a_target = min(output_a_target_e2e, output_a_target_mpc)
       self.output_should_stop = output_should_stop_e2e or output_should_stop_mpc
       if output_a_target < output_a_target_mpc:
         self.mpc.source = LongitudinalPlanSource.e2e
     else:
-      output_a_target = min(output_a_target_mpc, stop_constraint.accel_ceiling_mps2)
+      output_a_target = output_a_target_mpc
       self.output_should_stop = output_should_stop_mpc
-
-    self.output_should_stop |= stop_constraint.hold
 
     for idx in range(2):
       accel_clip[idx] = np.clip(accel_clip[idx], self.prev_accel_clip[idx] - 0.05, self.prev_accel_clip[idx] + 0.05)

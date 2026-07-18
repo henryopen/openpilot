@@ -5,14 +5,19 @@ This file is part of sunnypilot and is licensed under the MIT License.
 See the LICENSE.md file in the root directory for more details.
 """
 
+import numpy as np
+
 from cereal import messaging, custom
 from opendbc.car import structs
+from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import N, T_IDXS
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelController, AccelProfile
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelController, AccelControllerState, AccelProfile
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import MPC_SEED_RISE_RATE
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -39,6 +44,7 @@ class LongitudinalPlannerSP:
     self.e2e_alerts_helper = E2EAlertsHelper()
     self.accel_controller = AccelController(CP, dt=dt)
     self.accel_controller_result = None
+    self.accel_controller_fault_latched = False
 
     self._param_read_frames = max(1, int(round(0.25 / dt)))
     self._param_frame = 0
@@ -94,17 +100,98 @@ class LongitudinalPlannerSP:
     self.output_v_target, self.output_a_target = targets[self.source]
     return self.output_v_target, self.output_a_target
 
+  @staticmethod
+  def _radar_fresh(sm: messaging.SubMaster) -> bool:
+    try:
+      return bool(sm.updated['radarState'] and sm.valid['radarState'] and sm.alive['radarState'])
+    except (AttributeError, KeyError, TypeError):
+      return True
+
   def update_accel_controller(self, sm: messaging.SubMaster, base_speed: float, engaged: bool, cruise_initialized: bool,
-                              acc_selected: bool, planner_speed: float, previous_mpc_source, previous_should_stop: bool,
-                              stock_accel_max: float, planner_accel: float, controller_fault: bool = False) -> float:
+                              acc_selected: bool, planner_accel: float, action_accel: float, stock_accel_max: float,
+                              previous_should_stop: bool, controller_fault: bool = False) -> float:
     self.accel_controller_result = self.accel_controller.update(
       sm['radarState'], base_speed=base_speed, v_ego=sm['carState'].vEgo, a_ego=sm['carState'].aEgo,
       profile=self.accel_personality, follow_personality=sm['selfdriveState'].personality,
       enabled=self.accel_personality_enabled, acc_selected=acc_selected, engaged=engaged, cruise_initialized=cruise_initialized,
-      previous_mpc_source=previous_mpc_source, planner_speed=planner_speed, stock_accel_max=stock_accel_max,
-      planner_accel=planner_accel, previous_should_stop=previous_should_stop, controller_fault=controller_fault,
+      planner_accel=planner_accel, action_accel=action_accel, stock_accel_max=stock_accel_max,
+      previous_should_stop=previous_should_stop, controller_fault=controller_fault, radar_fresh=self._radar_fresh(sm),
     )
     return self.accel_controller_result.target_speed
+
+  def _run_mpc(self, sm: messaging.SubMaster, v_cruise: float, prev_accel_constraint: bool, accel_max=None, *, seed=False,
+               seed_target=None, seed_rise_rate=MPC_SEED_RISE_RATE, retry_state=None) -> None:
+    if retry_state is not None:
+      self.mpc.a_prev = retry_state[0].copy()
+      self.mpc.crash_cnt = retry_state[1]
+    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+    self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
+    if seed or seed_target is not None:
+      self._seed_mpc_current_state(seed_target, seed_rise_rate)
+    self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality, accel_max=accel_max)
+
+  def _seed_mpc_current_state(self, accel_target=None, rise_rate=MPC_SEED_RISE_RATE) -> None:
+    target = float(np.clip(self.mpc.x0[2] if accel_target is None else accel_target, ACCEL_MIN, ACCEL_MAX))
+    desired_accel = target * np.ones(N + 1) if accel_target is None else np.minimum(self.mpc.x0[2] + rise_rate * T_IDXS, target)
+    acceleration = np.zeros(N + 1)
+    velocity = np.zeros(N + 1)
+    position = np.zeros(N + 1)
+    jerk = np.zeros(N)
+    acceleration[0] = self.mpc.x0[2]
+    velocity[0] = max(self.mpc.x0[1], 0.0)
+    position[0] = self.mpc.x0[0]
+    for idx in range(1, N + 1):
+      dt = T_IDXS[idx] - T_IDXS[idx - 1]
+      min_accel = 0.0 if velocity[idx - 1] <= 1e-3 and acceleration[idx - 1] < 0.0 else -2.0 * velocity[idx - 1] / dt - acceleration[idx - 1]
+      acceleration[idx] = np.clip(max(desired_accel[idx], min_accel), ACCEL_MIN, ACCEL_MAX)
+      jerk[idx - 1] = (acceleration[idx] - acceleration[idx - 1]) / dt
+      position[idx] = max(position[idx - 1], position[idx - 1] + velocity[idx - 1] * dt + 0.5 * acceleration[idx - 1] * dt**2
+                          + jerk[idx - 1] * dt**3 / 6.0)
+      velocity[idx] = max(0.0, velocity[idx - 1] + 0.5 * (acceleration[idx - 1] + acceleration[idx]) * dt)
+    for idx in range(N + 1):
+      self.mpc.solver.set(idx, 'x', np.array([position[idx], velocity[idx], acceleration[idx]]))
+    for idx in range(N):
+      self.mpc.solver.set(idx, 'u', np.array([jerk[idx]]))
+
+  def update_accel_controller_mpc(self, sm: messaging.SubMaster, base_v_cruise: float, mpc_v_cruise: float,
+                                  prev_accel_constraint: bool, *, reset_state: bool, cruise_initialized: bool,
+                                  planner_accel: float, previous_output_accel: float, available_accel_max: float,
+                                  previous_should_stop: bool, force_decel: bool):
+    is_e2e = self.is_e2e(sm)
+    if reset_state or not self.accel_personality_enabled:
+      self.accel_controller_fault_latched = False
+
+    self.update_accel_controller(
+      sm, base_v_cruise, engaged=not reset_state and not force_decel, cruise_initialized=cruise_initialized,
+      acc_selected=not is_e2e, planner_accel=planner_accel, action_accel=previous_output_accel,
+      stock_accel_max=available_accel_max, previous_should_stop=previous_should_stop,
+      controller_fault=self.accel_controller_fault_latched,
+    )
+    result = self.accel_controller_result
+    controller_actuating = result.active and not result.stock_mode and not force_decel
+    accel_max = result.mpc_accel_max if controller_actuating else None
+    free_profile_limit = controller_actuating and result.state == AccelControllerState.free and result.effective_accel_max > 0.0
+    seed_target = result.effective_accel_max if free_profile_limit else None
+    custom_mpc = controller_actuating and (accel_max is not None or seed_target is not None)
+    retry_state = (self.mpc.a_prev.copy(), self.mpc.crash_cnt)
+    controller_v_cruise = min(mpc_v_cruise, result.target_speed)
+    self._run_mpc(sm, controller_v_cruise, prev_accel_constraint, accel_max, seed_target=seed_target)
+
+    finite_solution = all(np.all(np.isfinite(solution)) for solution in (self.mpc.v_solution, self.mpc.a_solution, self.mpc.j_solution))
+    custom_failed = custom_mpc and (self.mpc.last_solution_status != 0 or not finite_solution)
+    if custom_failed:
+      self.accel_controller_fault_latched = True
+      self.accel_controller.reset()
+      self._run_mpc(sm, mpc_v_cruise, prev_accel_constraint, seed=True, retry_state=retry_state)
+      self.update_accel_controller(
+        sm, base_v_cruise, engaged=not reset_state and not force_decel, cruise_initialized=cruise_initialized,
+        acc_selected=not is_e2e, planner_accel=planner_accel, action_accel=previous_output_accel,
+        stock_accel_max=available_accel_max, previous_should_stop=previous_should_stop, controller_fault=True,
+      )
+    if custom_failed and self.mpc.last_solution_status != 0:
+      self.mpc.a_prev, self.mpc.crash_cnt = retry_state
+
+    return is_e2e
 
   def update(self, sm: messaging.SubMaster) -> None:
     self._read_accel_controller_params()
@@ -129,7 +216,6 @@ class LongitudinalPlannerSP:
     dec.enabled = self.dec.enabled()
     dec.active = self.dec.active()
 
-    # Accel Controller
     if self.accel_controller_result is not None:
       result = self.accel_controller_result
       accel_controller = longitudinalPlanSP.accelController
