@@ -236,11 +236,13 @@ def test_active_controller_is_pre_mpc_and_preserves_stock_lead_authority():
   lead_plant = Plant(lead_relevancy=True, speed=0.0, distance_lead=6.0, actuator_delay=0.15, actuator_lag=0.20)
   lead_plant.step(v_lead=0.0, v_cruise=15.0)
   controller = lead_plant.planner.accel_controller_result
-  assert controller.mpc_accel_max[0] < 0.0
+  assert controller.target_speed == 0.0
+  assert min(controller.mpc_accel_max) == -0.25
   assert controller.mpc_accel_max[-1] == ACCEL_MAX
   assert controller.mpc_shape_cruise
   assert controller.mpc_apply_accel_constraint
-  assert np.max(lead_plant.planner.mpc.params[T_IDXS <= 0.40, 1]) <= 0.0
+  preconditioned = lead_plant.planner.mpc.params[(T_IDXS > 0.0) & (T_IDXS <= 0.40), 1]
+  assert len(preconditioned) and np.max(preconditioned) <= -0.25
 
 
 def test_clear_road_launch_is_immediate_and_profiles_separate():
@@ -453,7 +455,9 @@ def test_low_speed_stopped_lead_never_accelerates_during_stop_hold():
   stop_hold = trace.state == int(AccelControllerState.stopHold)
   assert urgent_demand.any() and stop_hold.any()
   assert np.max(trace.a_target[urgent_demand]) < 0.0
-  assert np.max(trace.a_target[stop_hold]) <= 0.0
+  assert np.max(trace.a_target[stop_hold]) < 0.1
+  assert np.max(trace.speed[stop_hold]) < 0.30
+  assert np.max(trace.acceleration[stop_hold]) <= 0.0
   assert not _has_brake_gas_brake(trace.a_target[trace.time >= 1.0])
   assert _first_time_below(trace, -1.0) <= _first_time_below(baseline, -1.0) + 1e-9
   assert np.min(trace.distance_lead - trace.distance) >= np.min(baseline.distance_lead - baseline.distance) - 1e-3
@@ -485,6 +489,37 @@ def test_moving_lead_dropout_and_false_relief_do_not_release_pace():
     guard = (trace.time >= start) & (trace.time < start + 0.2) & trace.active
     assert np.all(trace.pace[guard] <= before + 1e-9)
   assert not _has_brake_gas_brake(trace.a_target[trace.time >= 1.0])
+  assert trace.solver_failures <= baseline.solver_failures
+
+
+def test_confirmed_finite_relief_stays_latched_and_smooth():
+  def lead_speed(current_time: float) -> float:
+    return 8.0 if current_time < 5.0 else min(15.0, 8.0 + 3.5 * (current_time - 5.0))
+
+  common = dict(
+    duration=9.0,
+    profile=1,
+    lead_relevancy=True,
+    speed=12.0,
+    distance_lead=50.0,
+    v_lead=lead_speed,
+    v_cruise=20.0,
+    actuator_delay=0.15,
+    actuator_lag=0.20,
+  )
+  baseline = _run(controller_enabled=False, **common)
+  trace = _run(controller_enabled=True, **common)
+
+  released = np.flatnonzero((trace.time >= 5.0) & (trace.state == int(AccelControllerState.release)))
+  assert len(released)
+  reached_base = np.flatnonzero((np.arange(len(trace.time)) >= released[0]) & (trace.target_speed >= 20.0 - 1e-6))
+  release_end = reached_base[0] if len(reached_base) else len(trace.time)
+  rising = (np.arange(len(trace.time)) >= released[0]) & (np.arange(len(trace.time)) < release_end)
+  assert rising.any()
+  assert np.all(trace.state[rising] == int(AccelControllerState.release))
+  assert np.all(np.diff(trace.target_speed[rising]) >= -1e-9)
+  assert not _has_brake_gas_brake(trace.a_target[trace.time >= 5.0])
+  assert np.max(np.abs(_command_jerk(trace, after=5.0))) <= np.max(np.abs(_command_jerk(baseline, after=5.0))) + 0.1
   assert trace.solver_failures <= baseline.solver_failures
 
 
@@ -601,9 +636,11 @@ def test_decelerating_moving_lead_unwinds_without_brake_gas_brake(profile):
   baseline = _run(controller_enabled=False, **common)
   trace = _run(controller_enabled=True, **common)
   after_lead_settles = trace.time >= 8.0
-  moving_lead_decel = trace.effective_accel_max < 0.0
-  assert moving_lead_decel.any()
-  assert np.min(trace.effective_accel_max[moving_lead_decel]) >= MOVING_LEAD_DECEL_ACCEL_MAX - 1e-9
+  lead_decelerating = (trace.time >= 2.0) & (trace.time <= 8.0) & trace.active
+  moving_lead_guard = trace.effective_accel_max < 0.0
+  assert moving_lead_guard.any()
+  assert np.min(trace.effective_accel_max[moving_lead_guard]) >= MOVING_LEAD_DECEL_ACCEL_MAX - 1e-9
+  assert np.all(np.diff(trace.pace[lead_decelerating]) <= 1e-9)
   assert not trace.should_stop[after_lead_settles].any()
   assert np.max(np.abs(_command_jerk(trace, after=1.0))) < 3.5
   assert np.min(trace.speed[after_lead_settles]) >= 2.0

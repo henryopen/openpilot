@@ -16,9 +16,11 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.accel_control
   ACCEL_SHAPE_WARMUP_FRAMES,
   CAP_FILTER_FRAMES,
   MOVING_LEAD_DECEL_ACCEL_MAX,
-  MOVING_LEAD_DECEL_ACCEL_SLEW_RATE,
   MOVING_LEAD_DECEL_CONFIRM_FRAMES,
   MOVING_LEAD_DECEL_EXIT_FRAMES,
+  MOVING_LEAD_DECEL_ACCEL_SLEW_RATE,
+  MOVING_LEAD_DECEL_RELEASE_RATE,
+  RELIEF_CONFIRM_FRAMES,
   STOP_HOLD_EXIT_FRAMES,
   AccelController,
   AccelControllerState,
@@ -431,7 +433,7 @@ class TestPaceGovernor:
     assert all(not result.mpc_shape_cruise for result in results)
     assert all(not result.mpc_apply_accel_constraint for result in results)
 
-  def test_decelerating_moving_lead_uses_smooth_ceiling_until_confirmed_match(self):
+  def test_decelerating_moving_lead_uses_gradual_bounded_ceiling_until_confirmed_match(self):
     controller = make_controller()
 
     def moving_lead(speed):
@@ -441,13 +443,7 @@ class TestPaceGovernor:
     confirmation = []
     for frame in range(MOVING_LEAD_DECEL_CONFIRM_FRAMES):
       confirmation.append(
-        update(
-          controller,
-          moving_lead(15.0 - 0.01 * (frame + 1)),
-          base_speed=30.0,
-          v_ego=20.0,
-          planner_speed=20.0,
-        )
+        update(controller, moving_lead(15.0 - 0.01 * (frame + 1)), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
       )
       if frame < MOVING_LEAD_DECEL_CONFIRM_FRAMES - 1:
         assert not controller.live.moving_lead_decel
@@ -457,17 +453,55 @@ class TestPaceGovernor:
     assert confirmation[-1].mpc_apply_accel_constraint
 
     falling_speed = 15.0 - 0.01 * MOVING_LEAD_DECEL_CONFIRM_FRAMES
-    constrained = [update(controller, moving_lead(falling_speed - 0.01 * (frame + 1)), base_speed=30.0, v_ego=20.0, planner_speed=20.0) for frame in range(20)]
-    limits = np.array([result.effective_accel_max for result in [confirmation[-1], *constrained]])
+    constrained = [
+      update(controller, moving_lead(falling_speed - 0.01 * (frame + 1)), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
+      for frame in range(20)
+    ]
+    limits = np.array([confirmation[-1].effective_accel_max, *(result.effective_accel_max for result in constrained)])
     assert constrained[-1].effective_accel_max == MOVING_LEAD_DECEL_ACCEL_MAX
     assert np.all(np.diff(limits) <= 0.0)
     assert np.max(np.abs(np.diff(limits))) <= MOVING_LEAD_DECEL_ACCEL_SLEW_RATE * DT_MDL + 1e-9
+    assert np.min(limits) >= MOVING_LEAD_DECEL_ACCEL_MAX
+    assert np.all(np.diff([result.live_pace for result in constrained]) <= 1e-9)
 
     matched = [update(controller, moving_lead(5.0), base_speed=30.0, v_ego=5.05, planner_speed=5.05) for _ in range(MOVING_LEAD_DECEL_EXIT_FRAMES)]
     assert all(result.effective_accel_max <= 0.0 for result in matched[:-1])
     assert not controller.live.moving_lead_decel
+    assert controller.live.moving_lead_release
+    assert matched[-1].effective_accel_max < 0.0
+
+    unwind_frames = math.ceil(abs(matched[-1].effective_accel_max) / (MOVING_LEAD_DECEL_RELEASE_RATE * DT_MDL))
+    unwinding = [update(controller, moving_lead(5.0), base_speed=30.0, v_ego=5.05, planner_speed=5.05) for _ in range(unwind_frames)]
+    unwind_limits = np.array([matched[-1].effective_accel_max, *(result.effective_accel_max for result in unwinding)])
+    assert np.all(np.diff(unwind_limits) >= 0.0)
+    assert np.max(np.diff(unwind_limits)) <= MOVING_LEAD_DECEL_RELEASE_RATE * DT_MDL + 1e-9
+    assert unwinding[-1].effective_accel_max == 0.0
+    assert not controller.live.moving_lead_release
     assert controller.live.moving_lead_accel_max is None
-    assert matched[-1].effective_accel_max > 0.0
+
+    released = update(controller, moving_lead(5.0), base_speed=30.0, v_ego=5.05, planner_speed=5.05)
+    assert released.effective_accel_max == min(released.profile_accel_max, 1.2, ACCEL_MAX)
+
+  def test_moving_lead_ceiling_unwinds_smoothly_after_filtered_dropout(self):
+    controller = make_controller()
+
+    def moving_lead(speed):
+      return make_radar(make_lead(status=True, d_rel=100.0, v_lead_k=speed))
+
+    update(controller, moving_lead(15.0), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
+    for frame in range(MOVING_LEAD_DECEL_CONFIRM_FRAMES + 20):
+      update(controller, moving_lead(14.99 - 0.01 * frame), base_speed=30.0, v_ego=20.0, planner_speed=20.0)
+
+    assert controller.live.moving_lead_decel
+    assert controller.live.moving_lead_accel_max == MOVING_LEAD_DECEL_ACCEL_MAX
+    dropouts = [update(controller, make_radar(), base_speed=30.0, v_ego=20.0, planner_speed=20.0) for _ in range(3)]
+    assert all(result.effective_accel_max == MOVING_LEAD_DECEL_ACCEL_MAX for result in dropouts[:2])
+    assert dropouts[-1].effective_accel_max == pytest.approx(MOVING_LEAD_DECEL_ACCEL_MAX + MOVING_LEAD_DECEL_RELEASE_RATE * DT_MDL)
+    assert controller.live.moving_lead_release
+
+    stock_coast = update(controller, make_radar(), base_speed=30.0, v_ego=20.0, planner_speed=20.0, stock_accel_max=-0.5)
+    assert stock_coast.effective_accel_max == -0.5
+    assert stock_coast.mpc_accel_max[-1] == -0.5
 
   def test_far_or_noisy_decelerating_lead_does_not_force_braking(self):
     far_controller = make_controller()
@@ -497,21 +531,31 @@ class TestPaceGovernor:
     assert not far_controller.live.moving_lead_decel
     assert not noisy_controller.live.moving_lead_decel
     assert all(result.effective_accel_max >= 0.0 for result in [*far_results, *noisy_results])
+    assert all(result.mpc_accel_max is None or min(result.mpc_accel_max) >= 0.0 for result in [*far_results, *noisy_results])
 
-  def test_release_waits_then_raises_pace_at_profile_rate(self):
+  def test_filtered_relief_returns_pace_authority_to_accel_profile(self):
     controller = make_controller()
     restricted = self.establish_gentle_restriction(controller, frames=30)[-1]
     restricted_pace = restricted.live_pace
 
-    confirmation_frames = math.ceil(PROFILE_CONFIGS[AccelProfile.normal].release_confirm / DT_MDL)
-    results = [update(controller) for _ in range(CAP_FILTER_FRAMES // 2 + confirmation_frames)]
+    results = [update(controller) for _ in range(CAP_FILTER_FRAMES // 2 + RELIEF_CONFIRM_FRAMES)]
     released = results[-1]
 
-    assert all(result.state == AccelControllerState.hold for result in results[:-1])
-    assert all(result.live_pace == restricted_pace for result in results[:-1])
-    assert released.state == AccelControllerState.release
-    assert released.live_pace > restricted_pace
-    assert released.live_pace == pytest.approx(restricted_pace + PROFILE_CONFIGS[AccelProfile.normal].release_rate * DT_MDL)
+    assert all(result.state != AccelControllerState.release for result in results[:-1])
+    assert all(result.live_pace <= restricted_pace for result in results[:-1])
+    assert released.state == AccelControllerState.free
+    assert released.live_pace == released.base_speed
+
+  def test_restrictive_lead_reacquisition_holds_pace_until_filter_recovers(self):
+    controller = make_controller()
+    restricted = self.establish_gentle_restriction(controller, frames=30)[-1]
+    missing = [update(controller) for _ in range(CAP_FILTER_FRAMES // 2 + 1)]
+    reacquired = [update(controller, make_radar(self.gentle_restrictive_lead)) for _ in range(CAP_FILTER_FRAMES // 2 + 1)]
+
+    assert math.isinf(missing[-1].live_filtered_cap)
+    assert all(result.live_pace <= restricted.live_pace for result in missing)
+    assert all(result.live_pace == missing[-1].live_pace for result in reacquired[:-1])
+    assert reacquired[-1].live_pace == pytest.approx(missing[-1].live_pace - PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * DT_MDL)
 
   def test_confirmed_clear_finishes_release_at_base(self):
     controller = make_controller()
@@ -583,6 +627,28 @@ class TestPaceGovernor:
     assert handed_off.mpc_accel_max is None
     assert not handed_off.mpc_apply_accel_constraint
 
+  @pytest.mark.parametrize(("v_ego", "uses_standstill_preconditioner"), [(0.0, True), (0.05, True), (0.051, False), (0.1, False)])
+  def test_stop_hold_negative_bound_is_limited_to_stationary_preconditioning(self, v_ego, uses_standstill_preconditioner):
+    controller = make_controller()
+    stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
+
+    result = update(controller, stopped, base_speed=8.0, v_ego=v_ego, planner_speed=v_ego, stock_accel_max=1.6)
+
+    assert result.state == AccelControllerState.stopHold
+    assert result.target_speed == 0.0
+    if uses_standstill_preconditioner:
+      guard_time = controller._delay() + 0.20
+      expected = tuple(-0.25 if t <= guard_time else ACCEL_MAX for t in T_IDXS)
+      assert result.effective_accel_max == -0.25
+      assert result.mpc_accel_max == expected
+      assert result.mpc_shape_cruise
+      assert result.mpc_apply_accel_constraint
+    else:
+      assert result.effective_accel_max > 0.0
+      assert result.mpc_accel_max is None
+      assert not result.mpc_shape_cruise
+      assert not result.mpc_apply_accel_constraint
+
   def test_stop_hold_requires_four_moving_lead_frames_then_targets_base(self):
     controller = make_controller()
     stopped = make_radar(make_lead(status=True, d_rel=6.0, v_lead_k=0.0))
@@ -595,14 +661,16 @@ class TestPaceGovernor:
     assert held.state == AccelControllerState.stopHold
     assert held.target_speed == 0.0
     held_results = [held, *waiting, *confirmations[:-1]]
-    assert all(result.effective_accel_max == 0.0 for result in held_results)
-    assert all(result.mpc_accel_max[0] < 0.0 and result.mpc_accel_max[-1] == ACCEL_MAX for result in held_results)
-    assert all(result.mpc_shape_cruise for result in held_results)
-    assert all(result.mpc_apply_accel_constraint for result in held_results)
+    assert all(result.effective_accel_max > 0.0 for result in held_results)
+    assert all(result.mpc_accel_max is None for result in held_results)
+    assert all(not result.mpc_shape_cruise for result in held_results)
+    assert all(not result.mpc_apply_accel_constraint for result in held_results)
     assert all(result.target_speed == 0.0 for result in confirmations[:-1])
-    assert confirmations[-1].target_speed > 0.0
+    assert confirmations[-1].target_speed == confirmations[-1].base_speed
     assert confirmations[-1].effective_accel_max <= ACCEL_MAX
     assert confirmations[-1].mpc_accel_max is None
+    assert not confirmations[-1].mpc_shape_cruise
+    assert not confirmations[-1].mpc_apply_accel_constraint
     assert confirmations[-1].launching
     assert released.target_speed >= confirmations[-1].target_speed
     assert released.launching
