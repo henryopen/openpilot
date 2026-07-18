@@ -65,9 +65,9 @@ class TestProfiles:
   def test_lookup_table_is_explicit_and_tunable(self):
     assert ACCEL_PROFILE_MAX_BP == [0.0, 3.0, 10.0, 25.0, 40.0]
     assert ACCEL_PROFILE_MAX_V == {
-      AccelProfile.eco: [1.55, 1.25, 0.85, 0.50, 0.30],
-      AccelProfile.normal: [1.70, 1.40, 1.05, 0.65, 0.45],
-      AccelProfile.sport: [2.00, 1.90, 1.70, 1.00, 0.70],
+      AccelProfile.eco: [1.55, 1.25, 0.85, 0.40, 0.20],
+      AccelProfile.normal: [1.70, 1.40, 1.05, 0.55, 0.35],
+      AccelProfile.sport: [2.00, 1.90, 1.70, 0.90, 0.60],
     }
 
   @pytest.mark.parametrize("profile", list(AccelProfile))
