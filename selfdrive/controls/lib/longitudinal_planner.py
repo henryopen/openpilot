@@ -136,9 +136,12 @@ class LongitudinalPlanner(LongitudinalPlannerSP):
     previous_output_a_target = self.output_a_target
     v_cruise, self.a_desired = LongitudinalPlannerSP.update_targets(self, sm, self.v_desired_filter.x, self.a_desired, v_cruise)
     base_v_cruise = v_cruise
-    mpc_v_cruise = 0.0 if force_slow_decel else base_v_cruise
+
+    if force_slow_decel:
+      v_cruise = 0.0
+
     is_e2e = LongitudinalPlannerSP.update_accel_controller_mpc(
-      self, sm, base_v_cruise, mpc_v_cruise, prev_accel_constraint, reset_state=reset_state,
+      self, sm, base_v_cruise, v_cruise, prev_accel_constraint, reset_state=reset_state,
       cruise_initialized=v_cruise_initialized, planner_accel=self.a_desired, previous_output_accel=previous_output_a_target,
       available_accel_max=controller_accel_max, previous_should_stop=self.output_should_stop, force_decel=force_slow_decel,
     )
