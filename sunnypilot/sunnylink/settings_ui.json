@@ -310,6 +310,37 @@
                   "equals": false
                 }
               ]
+            },
+            {
+              "key": "FrictionJerkDeadzoneEnabled",
+              "widget": "toggle",
+              "title": "Reduce Friction Torque Chatter",
+              "description": "Ignores small, short-lived steering jerk from planner noise when computing friction compensation, reducing steering chatter on straight roads. Does not change torque during real turns or lane changes.",
+              "visibility": [
+                {
+                  "type": "not",
+                  "condition": {
+                    "type": "capability",
+                    "field": "steer_control_type",
+                    "equals": "angle"
+                  }
+                }
+              ],
+              "enablement": [
+                {
+                  "type": "offroad_only"
+                },
+                {
+                  "type": "capability",
+                  "field": "torque_allowed",
+                  "equals": true
+                },
+                {
+                  "type": "param",
+                  "key": "NeuralNetworkLateralControl",
+                  "equals": false
+                }
+              ]
             }
           ],
           "sub_panels": [
