@@ -68,9 +68,9 @@ class TestProfiles:
   def test_lookup_table_is_explicit_and_tunable(self):
     assert ACCEL_PROFILE_MAX_BP == [0.0, 3.0, 10.0, 25.0, 40.0]
     assert ACCEL_PROFILE_MAX_V == {
-      AccelProfile.eco: [1.55, 1.25, 0.85, 0.40, 0.20],
-      AccelProfile.normal: [1.70, 1.40, 1.05, 0.55, 0.35],
-      AccelProfile.sport: [2.00, 1.90, 1.70, 0.90, 0.60],
+      AccelProfile.eco: [1.55, 1.25, 0.72, 0.32, 0.16],
+      AccelProfile.normal: [1.70, 1.40, 0.97, 0.48, 0.30],
+      AccelProfile.sport: [2.00, 1.90, 1.55, 0.80, 0.50],
     }
 
   @pytest.mark.parametrize("profile", list(AccelProfile))
@@ -79,6 +79,8 @@ class TestProfiles:
       assert AccelController.get_profile_accel_max(profile, speed) == expected
     limits = [AccelController.get_profile_accel_max(profile, speed) for speed in np.linspace(-1.0, 50.0, 201)]
     assert all(0.0 <= limit <= ACCEL_MAX for limit in limits)
+    post_launch_limits = [AccelController.get_profile_accel_max(profile, speed) for speed in np.linspace(3.0, 40.0, 149)]
+    assert np.all(np.diff(post_launch_limits) <= 0.0)
 
   @pytest.mark.parametrize("speed", [0.0, 3.0, 10.0, 25.0, 40.0])
   def test_profile_order_is_distinct(self, speed):
@@ -97,6 +99,15 @@ class TestProfiles:
       assert result.mpc_accel_max is None
     else:
       np.testing.assert_array_equal(result.mpc_accel_max, min(expected + POSITIVE_MPC_HEADROOM, ACCEL_MAX))
+
+  @pytest.mark.parametrize(("profile", "expected"), [
+    (AccelProfile.eco, 1.25), (AccelProfile.normal, 1.40), (AccelProfile.sport, 1.90),
+  ])
+  def test_launch_strength_is_preserved_through_three_meters_per_second(self, profile, expected):
+    result = update(make_controller(), v_ego=3.0, profile=profile)
+    assert result.profile_accel_max == expected
+    assert result.positive_accel_max == expected
+    assert result.effective_accel_max == expected
 
   def test_turn_or_throttle_limit_intersects_profile(self):
     result = update(make_controller(), profile=AccelProfile.sport, stock_accel_max=0.0)

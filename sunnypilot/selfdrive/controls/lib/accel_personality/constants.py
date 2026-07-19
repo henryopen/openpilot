@@ -23,9 +23,9 @@ PROFILE_CONFIGS = {
 
 ACCEL_PROFILE_MAX_BP = [0.0, 3.0, 10.0, 25.0, 40.0]
 ACCEL_PROFILE_MAX_V = {
-  AccelProfile.eco: [1.55, 1.25, 0.85, 0.40, 0.20],
-  AccelProfile.normal: [1.70, 1.40, 1.05, 0.55, 0.35],
-  AccelProfile.sport: [2.00, 1.90, 1.70, 0.90, 0.60],
+  AccelProfile.eco: [1.55, 1.25, 0.72, 0.32, 0.16],
+  AccelProfile.normal: [1.70, 1.40, 0.97, 0.48, 0.30],
+  AccelProfile.sport: [2.00, 1.90, 1.55, 0.80, 0.50],
 }
 
 CAP_FILTER_FRAMES = 5

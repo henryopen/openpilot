@@ -1,5 +1,6 @@
 import pytest
 
+from openpilot.sunnypilot.selfdrive.controls.lib.dec.constants import WMACConstants
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController, HysteresisSignal
 
 
@@ -286,28 +287,171 @@ def test_radar_lead_keeps_acc_over_fcw_and_standstill(mock_cp, mock_mpc, default
 def test_lead_flicker_hold_prevents_one_frame_mode_flip(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
   default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
-  controller.update(default_sm)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=50.0)
+  for _ in range(2):
+    controller.update(default_sm)
+  assert controller._has_slow_down
 
   default_sm['radarState'] = MockRadarState(status=0.0)
-  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
   controller.update(default_sm)
 
   assert controller._has_lead_filtered
   assert controller.mode() == "acc"
 
 
-def test_radar_lead_dropout_guard_expires(mock_cp, mock_mpc, default_sm):
+def test_radar_lead_continuity_with_vision_fallback_expires_into_confirmed_transition(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
   default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
-  controller.update(default_sm)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=50.0)
+  for _ in range(2):
+    controller.update(default_sm)
+  assert controller._has_slow_down
 
-  default_sm['radarState'] = MockRadarState(status=0.0)
-  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
-  for _ in range(3):
+  default_sm['radarState'] = MockRadarState(status=1.0)
+  for _ in range(WMACConstants.RADAR_LEAD_CONTINUITY_FRAMES):
     controller.update(default_sm)
     assert controller._has_radar_acc_lead
     assert controller.mode() == "acc"
 
   controller.update(default_sm)
   assert not controller._has_radar_acc_lead
+  assert controller.mode() == "acc"
+
+  for _ in range(WMACConstants.ENTER_BLENDED_FRAMES - 1):
+    controller.update(default_sm)
   assert controller.mode() == "blended"
+
+
+def test_radar_lead_short_dropout_guard_expires_without_any_lead(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
+  controller.update(default_sm)
+
+  default_sm['radarState'] = MockRadarState(status=0.0)
+  for _ in range(WMACConstants.RADAR_LEAD_DROPOUT_FRAMES):
+    controller.update(default_sm)
+    assert controller._has_radar_acc_lead
+
+  controller.update(default_sm)
+  assert not controller._has_radar_acc_lead
+
+
+def test_one_stale_radar_frame_does_not_drop_acc_authority(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  controller.update(default_sm)
+
+  controller.update(default_sm, radar_fresh=False)
+
+  assert not controller._has_current_radar_acc_lead
+  assert controller._has_radar_acc_lead
+  assert controller._radar_acc_lead_frames == WMACConstants.RADAR_LEAD_CONTINUITY_FRAMES - 1
+  assert controller._radar_stale_frames == 1
+  assert controller.mode() == "acc"
+
+
+def test_frozen_radar_marker_cannot_rearm_acc_authority(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  controller.update(default_sm)
+
+  for _ in range(WMACConstants.RADAR_STALE_FRAMES - 1):
+    controller.update(default_sm, radar_fresh=False)
+    assert controller._has_radar_acc_lead
+
+  controller.update(default_sm, radar_fresh=False)
+
+  assert not controller._has_current_radar_acc_lead
+  assert not controller._has_radar_acc_lead
+  assert not controller._has_any_lead
+  assert not controller._has_lead_filtered
+
+
+def test_fresh_radar_reacquisition_after_stale_timeout_is_immediate(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  controller.update(default_sm)
+  for _ in range(WMACConstants.RADAR_STALE_FRAMES):
+    controller.update(default_sm, radar_fresh=False)
+
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm, radar_fresh=False)
+  assert controller.mode() == "blended"
+
+  lead_two = MockLeadOne(status=1.0, radar=True, radarTrackId=8)
+  default_sm['radarState'] = MockRadarState(status=0.0, leadTwo=lead_two)
+  controller.update(default_sm, radar_fresh=True)
+
+  assert controller._radar_stale_frames == 0
+  assert controller._has_current_radar_acc_lead
+  assert controller.mode() == "acc"
+
+
+@pytest.mark.parametrize("urgent_source", ["fcw", "should_stop"])
+def test_no_lead_urgent_slowdown_bypasses_radar_dropout_guard(mock_cp, mock_mpc, default_sm, urgent_source):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
+  controller.update(default_sm)
+
+  default_sm['radarState'] = MockRadarState(status=0.0)
+  if urgent_source == "fcw":
+    mock_mpc.crash_cnt = 1
+  else:
+    default_sm['modelV2'] = MockModelData(valid=False, should_stop=True)
+  controller.update(default_sm)
+
+  assert not controller._has_radar_acc_lead
+  assert controller.mode() == "blended"
+
+  mock_mpc.crash_cnt = 0
+  default_sm['modelV2'] = MockModelData(valid=True)
+  controller.update(default_sm)
+  assert controller.mode() == "blended"
+
+
+def test_lead_two_radar_authority_continues_with_vision_lead_one(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  lead_two = MockLeadOne(status=1.0, radar=True, radarTrackId=8)
+  default_sm['radarState'] = MockRadarState(status=0.0, leadTwo=lead_two)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm)
+  assert controller._has_current_radar_acc_lead
+  assert controller.mode() == "acc"
+
+  default_sm['radarState'] = MockRadarState(status=1.0)
+  for _ in range(WMACConstants.RADAR_LEAD_CONTINUITY_FRAMES):
+    controller.update(default_sm)
+    assert controller._has_radar_acc_lead
+    assert controller.mode() == "acc"
+
+
+def test_alternating_radar_slots_keep_acc_authority(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+
+  for frame in range(WMACConstants.RADAR_LEAD_CONTINUITY_FRAMES * 2):
+    if frame % 2 == 0:
+      default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7, leadTwo=MockLeadOne(status=1.0))
+    else:
+      default_sm['radarState'] = MockRadarState(status=1.0, leadTwo=MockLeadOne(status=1.0, radar=True, radarTrackId=8))
+    controller.update(default_sm)
+
+    assert controller._has_current_radar_acc_lead
+    assert controller.mode() == "acc"
+
+
+def test_radar_reacquisition_immediately_restores_acc_after_continuity_expiry(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  default_sm['radarState'] = MockRadarState(status=1.0, radar=True, radarTrackId=7)
+  default_sm['modelV2'] = MockModelData(valid=True, endpoint_x=0.0)
+  controller.update(default_sm)
+
+  default_sm['radarState'] = MockRadarState(status=1.0)
+  for _ in range(WMACConstants.RADAR_LEAD_CONTINUITY_FRAMES + 1):
+    controller.update(default_sm)
+  assert not controller._has_radar_acc_lead
+  assert controller.mode() == "blended"
+
+  lead_two = MockLeadOne(status=1.0, radar=True, radarTrackId=8)
+  default_sm['radarState'] = MockRadarState(status=1.0, leadTwo=lead_two)
+  controller.update(default_sm)
+
+  assert controller._has_current_radar_acc_lead
+  assert controller.mode() == "acc"

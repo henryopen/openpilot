@@ -204,7 +204,7 @@ class LongitudinalPlannerSP:
   def update(self, sm: messaging.SubMaster) -> None:
     self._read_accel_controller_params()
     self.events_sp.clear()
-    self.dec.update(sm)
+    self.dec.update(sm, radar_fresh=self._radar_fresh(sm))
     self.e2e_alerts_helper.update(sm, self.events_sp)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:

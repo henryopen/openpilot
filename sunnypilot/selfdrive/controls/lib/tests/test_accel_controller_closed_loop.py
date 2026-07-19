@@ -282,6 +282,42 @@ def test_e2e_to_radar_acc_handoff_keeps_braking_continuous():
   assert active[transition]
 
 
+def test_dec_retains_acc_through_route_like_radar_marker_dropout():
+  dropout_start = 1.0
+  reacquisition_time = 1.8
+
+  def observe(current_time: float, lead_name: str, truth: LeadObservation) -> LeadObservation:
+    frame = round(current_time / DT_MDL)
+    if current_time < dropout_start:
+      marked_slot = "leadOne" if frame % 2 == 0 else "leadTwo"
+      return truth | {"radar": lead_name == marked_slot, "radarTrackId": 985 + frame if lead_name == marked_slot else -1}
+    if current_time < reacquisition_time:
+      return truth | {"radar": False, "radarTrackId": -1}
+    return truth | {"radar": lead_name == "leadOne", "radarTrackId": 1263 if lead_name == "leadOne" else -1}
+
+  plant = Plant(
+    e2e=True, lead_relevancy=True, speed=20.0, distance_lead=35.0, lead_observation_fn=observe,
+    model_action_fn=lambda _current_time, _v_ego, _a_ego: (-2.0, False), actuator_delay=0.15, actuator_lag=0.20,
+  )
+  _configure_plant(plant, enabled=True, dec_enabled=True)
+  rows = []
+  while plant.current_time < 2.5:
+    result = plant.step(v_lead=18.0, v_cruise=30.0)
+    rows.append((plant.current_time, result["a_target"], result["dec_mode"], str(result["mpc_source"]), result["fcw"]))
+
+  time_values = np.asarray([row[0] for row in rows])
+  acceleration = np.asarray([row[1] for row in rows])
+  dropout = (time_values >= dropout_start) & (time_values < reacquisition_time)
+  response = (time_values >= dropout_start - DT_MDL) & (time_values <= reacquisition_time + 0.5)
+  assert all(row[2] == "acc" for row in rows)
+  assert all(row[3] != "e2e" for row in rows)
+  assert not any(row[4] for row in rows)
+  assert dropout.any()
+  assert not _has_propulsion_brake_cycle(acceleration[response])
+  assert np.max(np.abs(np.diff(acceleration[response]) / DT_MDL)) < 3.0
+  assert not plant.planner.accel_controller_fault_latched
+
+
 def test_active_controller_is_pre_mpc_and_preserves_stock_lead_authority():
   plant = Plant(lead_relevancy=False, speed=0.0, actuator_delay=0.15, actuator_lag=0.20)
   _configure_plant(plant, enabled=True, profile=0)

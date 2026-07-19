@@ -31,6 +31,10 @@ _A_LAT_REG_MAX = 2.  # Maximum lateral acceleration
 
 _NO_OVERSHOOT_TIME_HORIZON = 4.  # s. Time to use for velocity desired based on a_target when not overshooting.
 
+_RELIEF_CONFIRMATION_FRAMES = max(1, int(round(0.5 / DT_MDL)))
+_TARGET_RELEASE_RATE = 1.  # m/s^2
+_ACCEL_RELEASE_RATE = 1.  # m/s^3
+
 # Lookup table for the minimum smooth deceleration during the ENTERING state
 # depending on the actual maximum absolute lateral acceleration predicted on the turn ahead.
 _ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]  # min decel value allowed on ENTERING state
@@ -65,13 +69,29 @@ class SmartCruiseControlVision:
     self.state = VisionState.disabled
     self.current_lat_acc = 0.
     self.max_pred_lat_acc = 0.
+    self.relief_frames = 0
 
   def get_a_target_from_control(self) -> float:
+    if self.is_active:
+      if self.relief_frames >= _RELIEF_CONFIRMATION_FRAMES:
+        return min(self.a_ego, self.output_a_target + _ACCEL_RELEASE_RATE * DT_MDL)
+      return min(self.a_target, self.output_a_target, self.a_ego)
     return self.a_target
+
+  def _accel_release_ready(self) -> bool:
+    return abs(self.output_a_target - self.a_ego) <= _ACCEL_RELEASE_RATE * DT_MDL
 
   def get_v_target_from_control(self) -> float:
     if self.is_active:
-      return max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      v_target = max(self.v_target, MIN_V) + self.a_target * _NO_OVERSHOOT_TIME_HORIZON
+      if self.output_v_target == V_CRUISE_UNSET:
+        return v_target
+      elif self.relief_frames >= _RELIEF_CONFIRMATION_FRAMES:
+        if self.v_cruise_setpoint < self.output_v_target:
+          return self.v_cruise_setpoint
+        released_v_target = min(self.v_cruise_setpoint, self.output_v_target + _TARGET_RELEASE_RATE * DT_MDL)
+        return self.output_v_target if released_v_target >= self.v_cruise_setpoint and not self._accel_release_ready() else released_v_target
+      return min(v_target, self.output_v_target)
 
     return V_CRUISE_UNSET
 
@@ -101,6 +121,9 @@ class SmartCruiseControlVision:
 
   def _update_state_machine(self) -> tuple[bool, bool]:
     # ENABLED, ENTERING, TURNING, LEAVING, OVERRIDING
+    relief = self.current_lat_acc < _FINISH_LAT_ACC_TH and self.max_pred_lat_acc < _ABORT_ENTERING_PRED_LAT_ACC_TH
+    self.relief_frames = self.relief_frames + 1 if self.state in ACTIVE_STATES and relief else 0
+
     if self.state != VisionState.disabled:
       # longitudinal and feature disable always have priority in a non-disabled state
       if not self.long_enabled or not self.enabled:
@@ -128,23 +151,27 @@ class SmartCruiseControlVision:
           # Transition to Turning if current lateral acceleration is over the threshold.
           if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
             self.state = VisionState.turning
-          # Abort if the predicted lateral acceleration drops
-          elif self.max_pred_lat_acc < _ABORT_ENTERING_PRED_LAT_ACC_TH:
-            self.state = VisionState.enabled
+          # Begin releasing only after both current and predicted lateral acceleration stay clear.
+          elif self.relief_frames >= _RELIEF_CONFIRMATION_FRAMES:
+            self.state = VisionState.leaving
 
         # TURNING
         elif self.state == VisionState.turning:
-          # Transition to Leaving if current lateral acceleration drops below a threshold.
+          # Transition out of Turning if current lateral acceleration drops below a threshold.
           if self.current_lat_acc <= _LEAVING_LAT_ACC_TH:
-            self.state = VisionState.leaving
+            self.state = VisionState.entering if self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH else VisionState.leaving
 
         # LEAVING
         elif self.state == VisionState.leaving:
           # Transition back to Turning if current lateral acceleration goes back over the threshold.
           if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
             self.state = VisionState.turning
-          # Finish if current lateral acceleration goes below a threshold.
-          elif self.current_lat_acc < _FINISH_LAT_ACC_TH:
+          # Start a new turn cycle immediately if another curve is predicted.
+          elif self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+            self.state = VisionState.entering
+          # Finish after confirmed relief and a gradual release to the cruise setpoint.
+          elif (self.relief_frames >= _RELIEF_CONFIRMATION_FRAMES and self.output_v_target >= self.v_cruise_setpoint
+                and self._accel_release_ready()):
             self.state = VisionState.enabled
 
     # DISABLED
@@ -157,6 +184,8 @@ class SmartCruiseControlVision:
 
     enabled = self.state in ENABLED_STATES
     active = self.state in ACTIVE_STATES
+    if not active:
+      self.relief_frames = 0
 
     return enabled, active
 

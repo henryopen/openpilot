@@ -135,12 +135,6 @@ class DynamicExperimentalController:
       rise_rate=WMACConstants.LEAD_RISE_RATE,
       fall_rate=WMACConstants.LEAD_FALL_RATE,
     )
-    self._radar_acc_lead_tracker = HysteresisSignal(
-      enter_threshold=WMACConstants.RADAR_LEAD_ACC_PROB,
-      exit_threshold=WMACConstants.RADAR_LEAD_ACC_EXIT_PROB,
-      rise_rate=WMACConstants.RADAR_LEAD_ACC_RISE_RATE,
-      fall_rate=WMACConstants.RADAR_LEAD_ACC_FALL_RATE,
-    )
     self._slow_down_tracker = HysteresisSignal(
       enter_threshold=WMACConstants.SLOW_DOWN_PROB,
       exit_threshold=WMACConstants.SLOW_DOWN_EXIT_PROB,
@@ -155,7 +149,12 @@ class DynamicExperimentalController:
     )
 
     self._has_lead_filtered = False
+    self._has_any_lead = False
+    self._has_current_radar_acc_lead = False
     self._has_radar_acc_lead = False
+    self._radar_acc_lead_frames = 0
+    self._radar_fresh = True
+    self._radar_stale_frames = 0
     self._has_slow_down = False
     self._has_slowness = False
     self._has_mpc_fcw = False
@@ -186,7 +185,7 @@ class DynamicExperimentalController:
   def set_mpc_fcw_crash_cnt(self) -> None:
     self._mpc_fcw_crash_cnt = self._mpc.crash_cnt
 
-  def _update_calculations(self, sm: messaging.SubMaster) -> None:
+  def _update_calculations(self, sm: messaging.SubMaster, radar_fresh: bool) -> None:
     car_state = sm['carState']
     radar_state = sm['radarState']
     lead_one = radar_state.leadOne
@@ -202,9 +201,24 @@ class DynamicExperimentalController:
     else:
       self._standstill_count = max(0, self._standstill_count - 1)
 
-    self._has_lead_filtered = self._lead_tracker.update(float(lead_one.status))
-    radar_acc_lead_score = max(self._radar_acc_lead_score(lead_one), self._radar_acc_lead_score(lead_two))
-    self._has_radar_acc_lead = self._radar_acc_lead_tracker.update(radar_acc_lead_score)
+    self._radar_fresh = bool(radar_fresh)
+    if self._radar_fresh:
+      self._radar_stale_frames = 0
+      self._has_lead_filtered = self._lead_tracker.update(float(lead_one.status))
+      self._has_any_lead = bool(lead_one.status or lead_two.status)
+      self._has_current_radar_acc_lead = bool(max(self._radar_acc_lead_score(lead_one), self._radar_acc_lead_score(lead_two)))
+      self._update_radar_acc_lead()
+    else:
+      self._radar_stale_frames += 1
+      self._has_current_radar_acc_lead = False
+      if self._radar_stale_frames < WMACConstants.RADAR_STALE_FRAMES:
+        self._update_radar_acc_lead()
+      else:
+        self._lead_tracker.reset()
+        self._has_lead_filtered = False
+        self._has_any_lead = False
+        self._has_radar_acc_lead = False
+        self._radar_acc_lead_frames = 0
     self._has_mpc_fcw = self._mpc_fcw_crash_cnt > 0
     self._calculate_slow_down(md)
 
@@ -237,6 +251,18 @@ class DynamicExperimentalController:
     radar_track_id = int(getattr(lead_one, 'radarTrackId', -1))
     return float(lead_one.status and (bool(getattr(lead_one, 'radar', False)) or radar_track_id >= 0))
 
+  def _update_radar_acc_lead(self) -> None:
+    if self._has_current_radar_acc_lead:
+      self._radar_acc_lead_frames = WMACConstants.RADAR_LEAD_CONTINUITY_FRAMES
+      self._has_radar_acc_lead = True
+      return
+
+    if not self._has_any_lead:
+      self._radar_acc_lead_frames = min(self._radar_acc_lead_frames, WMACConstants.RADAR_LEAD_DROPOUT_FRAMES)
+
+    self._has_radar_acc_lead = self._radar_acc_lead_frames > 0
+    self._radar_acc_lead_frames = max(0, self._radar_acc_lead_frames - 1)
+
   def _model_action_urgency(self, md) -> float:
     action = getattr(md, 'action', None)
     if action is None:
@@ -265,14 +291,22 @@ class DynamicExperimentalController:
     return urgency
 
   def _desired_mode(self) -> tuple[ModeType, bool]:
+    standstill = self._standstill_count > WMACConstants.STANDSTILL_FRAMES
+    urgent_slow_down = self._has_slow_down and self._raw_urgency > WMACConstants.URGENT_SLOW_DOWN_PROB
+
+    if not self._CP.radarUnavailable and self._has_current_radar_acc_lead:
+      return 'acc', True
+
+    if (not self._radar_fresh or not self._has_any_lead) and (self._has_mpc_fcw or urgent_slow_down):
+      self._radar_acc_lead_frames = 0
+      self._has_radar_acc_lead = False
+      return 'blended', True
+
     if not self._CP.radarUnavailable and self._has_radar_acc_lead:
       return 'acc', True
 
     if self._has_mpc_fcw:
       return 'blended', True
-
-    standstill = self._standstill_count > WMACConstants.STANDSTILL_FRAMES
-    urgent_slow_down = self._has_slow_down and self._raw_urgency > WMACConstants.URGENT_SLOW_DOWN_PROB
 
     if self._CP.radarUnavailable:
       if standstill or self._has_slow_down:
@@ -284,10 +318,10 @@ class DynamicExperimentalController:
 
     return 'acc', False
 
-  def update(self, sm: messaging.SubMaster) -> None:
+  def update(self, sm: messaging.SubMaster, *, radar_fresh: bool = True) -> None:
     self._read_params()
     self.set_mpc_fcw_crash_cnt()
-    self._update_calculations(sm)
+    self._update_calculations(sm, radar_fresh)
 
     mode, immediate = self._desired_mode()
     self._mode_manager.request_mode(mode, immediate=immediate, hold_frames=WMACConstants.EMERGENCY_HOLD_FRAMES,
