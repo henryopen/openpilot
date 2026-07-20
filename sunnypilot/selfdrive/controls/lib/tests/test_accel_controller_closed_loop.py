@@ -625,6 +625,29 @@ def test_moving_lead_dropout_and_false_relief_do_not_release_pace():
   assert trace.solver_failures == 0
 
 
+def test_positive_approach_bound_dropout_does_not_fault_mpc():
+  def observe(current_time: float, _lead_name: str, truth: LeadObservation) -> LeadObservation | None:
+    return truth if 0.50 <= current_time < 0.70 or current_time >= 0.95 else None
+
+  trace = _run(
+    duration=2.0,
+    controller_enabled=True,
+    profile=1,
+    lead_relevancy=True,
+    speed=20.0,
+    distance_lead=60.0,
+    v_lead=14.0,
+    v_cruise=30.0,
+    lead_observation_fn=observe,
+    actuator_delay=0.20,
+    actuator_lag=0.25,
+  )
+
+  assert not trace.solver_status.any()
+  assert trace.solver_failures == 0
+  assert not trace.controller_fault_latched.any()
+
+
 @pytest.mark.parametrize(
   ("actuator_delay", "actuator_lag"),
   [(0.10, 0.20), (0.15, 0.25), (0.20, 0.20), (0.25, 0.30), (0.30, 0.35)],

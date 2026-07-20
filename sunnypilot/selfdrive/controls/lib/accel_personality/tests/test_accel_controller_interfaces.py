@@ -15,6 +15,18 @@ def radar_state():
   return messaging.new_message('radarState').radarState
 
 
+class PlannerSM(dict):
+  def __init__(self, radar_log_mono_time, *, radar_updated=False):
+    super().__init__(
+      radarState=radar_state(), carState=SimpleNamespace(vEgo=10.0, aEgo=0.0),
+      selfdriveState=SimpleNamespace(personality=0),
+    )
+    self.updated = {'radarState': radar_updated}
+    self.valid = {'radarState': True}
+    self.alive = {'radarState': True}
+    self.logMonoTime = {'radarState': radar_log_mono_time}
+
+
 def test_legacy_profile_enum_keeps_toyota_importable():
   expected = {"eco": 0, "normal": 1, "sport": 2}
   assert custom.LongitudinalPlanSP.AccelerationPersonality.schema.enumerants == expected
@@ -103,6 +115,48 @@ def test_retry_seed_is_bounded_and_nonnegative_in_speed():
   assert np.all(np.diff(states[:, 0]) >= 0.0)
   assert np.all(states[:, 1] >= 0.0)
   assert np.all((states[:, 2] >= ACCEL_MIN) & (states[:, 2] <= ACCEL_MAX))
+
+
+def test_radar_freshness_is_cached_once_per_planner_cycle():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner._radar_log_mono_time = None
+  planner._radar_fresh_this_cycle = True
+  planner._read_accel_controller_params = lambda: None
+  planner.events_sp = SimpleNamespace(clear=lambda: None)
+  dec_freshness = []
+  planner.dec = SimpleNamespace(update=lambda _sm, *, radar_fresh: dec_freshness.append(radar_fresh))
+  planner.e2e_alerts_helper = SimpleNamespace(update=lambda *_args: None)
+  controller_freshness = []
+
+  def update_controller(*_args, **kwargs):
+    controller_freshness.append(kwargs['radar_fresh'])
+    return SimpleNamespace(target_speed=20.0)
+
+  planner.accel_controller = SimpleNamespace(update=update_controller)
+  planner.accel_personality = int(AccelProfile.normal)
+  planner.accel_personality_enabled = True
+
+  sm = PlannerSM(100, radar_updated=False)
+  planner.update(sm)
+  planner.update_accel_controller(sm, 20.0, True, True, True, 0.0, 0.0, ACCEL_MAX, False)
+  assert dec_freshness[-1] is True
+  assert controller_freshness[-1] is True
+
+  planner.update(sm)
+  sm.logMonoTime['radarState'] = 101
+  planner.update_accel_controller(sm, 20.0, True, True, True, 0.0, 0.0, ACCEL_MAX, False)
+  assert dec_freshness[-1] is False
+  assert controller_freshness[-1] is False
+
+  planner.update(sm)
+  planner.update_accel_controller(sm, 20.0, True, True, True, 0.0, 0.0, ACCEL_MAX, False)
+  assert dec_freshness[-1] is True
+  assert controller_freshness[-1] is True
+
+
+def test_radar_freshness_preserves_minimal_mock_compatibility():
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  assert planner._update_radar_freshness(SimpleNamespace()) is True
 
 
 def test_last_solve_failure_survives_internal_reset():

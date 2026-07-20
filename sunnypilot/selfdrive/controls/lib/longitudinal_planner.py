@@ -46,6 +46,8 @@ class LongitudinalPlannerSP:
     self.accel_controller_result = None
     self.accel_controller_fault_latched = False
     self._previous_is_e2e = False
+    self._radar_log_mono_time = None
+    self._radar_fresh_this_cycle = True
 
     self._param_read_frames = max(1, int(round(0.25 / dt)))
     self._param_frame = 0
@@ -101,12 +103,18 @@ class LongitudinalPlannerSP:
     self.output_v_target, self.output_a_target = targets[self.source]
     return self.output_v_target, self.output_a_target
 
-  @staticmethod
-  def _radar_fresh(sm: messaging.SubMaster) -> bool:
+  def _update_radar_freshness(self, sm: messaging.SubMaster) -> bool:
     try:
-      return bool(sm.updated['radarState'] and sm.valid['radarState'] and sm.alive['radarState'])
-    except (AttributeError, KeyError, TypeError):
+      radar_log_mono_time = int(sm.logMonoTime['radarState'])
+      radar_healthy = bool(sm.valid['radarState'] and sm.alive['radarState'])
+    except (AttributeError, KeyError, TypeError, ValueError):
       return True
+
+    previous_log_mono_time = getattr(self, '_radar_log_mono_time', None)
+    radar_advanced = previous_log_mono_time is None or radar_log_mono_time > previous_log_mono_time
+    if radar_advanced:
+      self._radar_log_mono_time = radar_log_mono_time
+    return radar_healthy and radar_advanced
 
   def update_accel_controller(self, sm: messaging.SubMaster, base_speed: float, engaged: bool, cruise_initialized: bool,
                               acc_selected: bool, planner_accel: float, action_accel: float, stock_accel_max: float,
@@ -116,7 +124,8 @@ class LongitudinalPlannerSP:
       profile=self.accel_personality, follow_personality=sm['selfdriveState'].personality,
       enabled=self.accel_personality_enabled, acc_selected=acc_selected, engaged=engaged, cruise_initialized=cruise_initialized,
       planner_accel=planner_accel, action_accel=action_accel, stock_accel_max=stock_accel_max,
-      previous_should_stop=previous_should_stop, controller_fault=controller_fault, radar_fresh=self._radar_fresh(sm),
+      previous_should_stop=previous_should_stop, controller_fault=controller_fault,
+      radar_fresh=getattr(self, '_radar_fresh_this_cycle', True),
     )
     return self.accel_controller_result.target_speed
 
@@ -202,9 +211,10 @@ class LongitudinalPlannerSP:
     return is_e2e
 
   def update(self, sm: messaging.SubMaster) -> None:
+    self._radar_fresh_this_cycle = self._update_radar_freshness(sm)
     self._read_accel_controller_params()
     self.events_sp.clear()
-    self.dec.update(sm, radar_fresh=self._radar_fresh(sm))
+    self.dec.update(sm, radar_fresh=self._radar_fresh_this_cycle)
     self.e2e_alerts_helper.update(sm, self.events_sp)
 
   def publish_longitudinal_plan_sp(self, sm: messaging.SubMaster, pm: messaging.PubMaster) -> None:
