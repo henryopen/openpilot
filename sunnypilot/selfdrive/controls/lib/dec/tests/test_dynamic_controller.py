@@ -349,6 +349,28 @@ def test_one_stale_radar_frame_does_not_drop_acc_authority(mock_cp, mock_mpc, de
   assert controller.mode() == "acc"
 
 
+def test_one_stale_radar_frame_does_not_override_retained_lead_for_model_urgency(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  controller.update(default_sm)
+  default_sm['modelV2'] = MockModelData(valid=False, should_stop=True)
+
+  controller.update(default_sm, radar_fresh=False)
+  assert controller.mode() == "acc"
+
+  controller.update(default_sm, radar_fresh=False)
+  assert controller.mode() == "blended"
+
+
+def test_one_stale_radar_frame_does_not_delay_fcw(mock_cp, mock_mpc, default_sm):
+  controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
+  controller.update(default_sm)
+  mock_mpc.crash_cnt = 1
+
+  controller.update(default_sm, radar_fresh=False)
+
+  assert controller.mode() == "blended"
+
+
 def test_frozen_radar_marker_cannot_rearm_acc_authority(mock_cp, mock_mpc, default_sm):
   controller = DynamicExperimentalController(mock_cp, mock_mpc, params=MockParams())
   controller.update(default_sm)

@@ -297,7 +297,8 @@ class DynamicExperimentalController:
     if not self._CP.radarUnavailable and self._has_current_radar_acc_lead:
       return 'acc', True
 
-    if (not self._radar_fresh or not self._has_any_lead) and (self._has_mpc_fcw or urgent_slow_down):
+    radar_stale = not self._radar_fresh if self._has_mpc_fcw else self._radar_stale_frames > 1
+    if (radar_stale or not self._has_any_lead) and (self._has_mpc_fcw or urgent_slow_down):
       self._radar_acc_lead_frames = 0
       self._has_radar_acc_lead = False
       return 'blended', True
