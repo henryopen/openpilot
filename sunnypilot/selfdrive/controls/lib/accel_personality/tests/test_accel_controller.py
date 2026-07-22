@@ -115,6 +115,43 @@ class TestProfiles:
     assert result.effective_accel_max == 0.0
     np.testing.assert_array_equal(result.mpc_accel_max, 0.0)
 
+  def test_nonbinding_clear_road_ceiling_releases_after_initialization(self):
+    controller = make_controller()
+    initial = update(controller, v_ego=10.0)
+    released = update(controller, v_ego=10.0)
+
+    assert initial.mpc_accel_max is not None
+    assert released.mpc_accel_max is None
+    assert released.effective_accel_max == released.profile_accel_max
+
+  def test_positive_ceiling_uses_demand_hysteresis(self):
+    controller = make_controller()
+    initial = update(controller, v_ego=10.0)
+    bound = initial.effective_accel_max
+    released = update(controller, v_ego=10.0)
+    entered = update(controller, v_ego=10.0, planner_accel=bound - 0.09)
+    retained = update(controller, v_ego=10.0, planner_accel=bound - 0.15)
+    exited = update(controller, v_ego=10.0, planner_accel=bound - 0.21)
+
+    assert released.mpc_accel_max is None
+    assert entered.mpc_accel_max is not None
+    assert retained.mpc_accel_max is not None
+    assert exited.mpc_accel_max is None
+
+  def test_low_speed_and_valid_leads_keep_positive_ceiling_active(self):
+    low_speed_controller = make_controller()
+    update(low_speed_controller, v_ego=3.0)
+    low_speed = update(low_speed_controller, v_ego=3.0)
+
+    lead_controller = make_controller()
+    far_lead = make_radar(make_lead(status=True, d_rel=200.0, v_lead_k=10.0))
+    for _ in range(CAP_FILTER_FRAMES):
+      with_lead = update(lead_controller, far_lead, v_ego=10.0)
+
+    assert low_speed.mpc_accel_max is not None
+    assert with_lead.state == AccelControllerState.free
+    assert with_lead.mpc_accel_max is not None
+
   def test_profile_switch_changes_ceiling_without_a_step(self):
     controller = make_controller()
     sport = update(controller, profile=AccelProfile.sport, v_ego=10.0)
@@ -403,6 +440,31 @@ class TestAccelControllerState:
     assert all(result.active and result.effective_accel_max == restricted.effective_accel_max for result in frozen)
     timed_out = update(controller, radar_fresh=False)
     assert not timed_out.active and timed_out.mpc_accel_max is None
+
+  def test_stale_radar_preserves_positive_lead_ceiling_until_timeout(self):
+    controller = make_controller()
+    far_lead = make_radar(make_lead(status=True, d_rel=200.0, v_lead_k=10.0))
+    for _ in range(CAP_FILTER_FRAMES):
+      active = update(controller, far_lead, v_ego=10.0)
+    hold_frames = math.ceil(RADAR_STALE_TIMEOUT / DT_MDL) - 1
+    frozen = [update(controller, far_lead, radar_fresh=False, v_ego=10.0) for _ in range(hold_frames)]
+
+    assert active.state == AccelControllerState.free and active.mpc_accel_max is not None
+    assert all(result.active and result.mpc_accel_max is not None for result in frozen)
+    timed_out = update(controller, far_lead, radar_fresh=False, v_ego=10.0)
+    assert not timed_out.active and timed_out.mpc_accel_max is None
+
+  def test_filtered_lead_dropout_guard_preserves_positive_ceiling(self):
+    controller = make_controller()
+    far_lead = make_radar(make_lead(status=True, d_rel=200.0, v_lead_k=10.0))
+    for _ in range(CAP_FILTER_FRAMES):
+      with_lead = update(controller, far_lead, v_ego=10.0)
+    guarded = [update(controller, v_ego=10.0) for _ in range(CAP_FILTER_FRAMES // 2)]
+    released = update(controller, v_ego=10.0)
+
+    assert with_lead.state == AccelControllerState.free and with_lead.mpc_accel_max is not None
+    assert all(result.mpc_accel_max is not None for result in guarded)
+    assert released.mpc_accel_max is None
 
   def test_stale_radar_preserves_urgent_stock_passthrough_until_timeout(self):
     controller = make_controller()

@@ -17,7 +17,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import N, T_IDXS
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelController, AccelControllerState, AccelProfile
-from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import MPC_SEED_RISE_RATE
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import MPC_SEED_RISE_RATE, POSITIVE_MPC_ALWAYS_ACTIVE_SPEED
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -187,8 +187,9 @@ class LongitudinalPlannerSP:
     self._previous_is_e2e = is_e2e and handoff_context
     controller_actuating = result.active and not result.stock_mode and not force_decel
     accel_max = result.mpc_accel_max if controller_actuating else None
-    free_profile_limit = controller_actuating and result.state == AccelControllerState.free and result.effective_accel_max > 0.0
-    seed_target = result.effective_accel_max if free_profile_limit and handoff_accel is None else None
+    free_profile_context = controller_actuating and result.state == AccelControllerState.free and result.effective_accel_max > 0.0
+    positive_profile_mpc = free_profile_context and (accel_max is not None or sm['carState'].vEgo <= POSITIVE_MPC_ALWAYS_ACTIVE_SPEED)
+    seed_target = result.effective_accel_max if positive_profile_mpc and handoff_accel is None else None
     custom_mpc = handoff_accel is not None or (controller_actuating and (accel_max is not None or seed_target is not None))
     retry_state = (self.mpc.a_prev.copy(), self.mpc.crash_cnt)
     controller_v_cruise = min(mpc_v_cruise, result.target_speed)

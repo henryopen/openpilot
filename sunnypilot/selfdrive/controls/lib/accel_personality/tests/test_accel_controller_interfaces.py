@@ -182,7 +182,8 @@ def test_e2e_to_acc_handoff_preserves_braking_only_when_controller_is_active(con
   planner.update_accel_controller = lambda *_args, **_kwargs: setattr(
     planner, "accel_controller_result",
     SimpleNamespace(enabled=controller_active, active=controller_active, shadow_active=controller_active,
-                    stock_mode=not controller_active, target_speed=20.0, mpc_accel_max=None,
+                    stock_mode=not controller_active, target_speed=20.0,
+                    mpc_accel_max=(0.8,) * (N + 1) if controller_active else None,
                     state=AccelControllerState.free, effective_accel_max=0.8 if controller_active else np.inf),
   )
   calls = []

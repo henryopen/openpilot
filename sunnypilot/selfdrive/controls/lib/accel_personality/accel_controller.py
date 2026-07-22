@@ -15,7 +15,8 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants imp
   ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V, APPROACH_CLOSING_SPEED, APPROACH_LEAD_DECEL, APPROACH_LEAD_SPEED_MARGIN, APPROACH_MIN_SPEED,
   BRAKE_CAP_MARGIN, CAP_FILTER_FRAMES, CAP_RELAX_JERK, CAP_TIGHTEN_JERK, COAST_MATCH_CLOSING_SPEED, COAST_MATCH_USABLE_GAP,
   DROPOUT_ACTION_ACCEL_MARGIN, HORIZON_DOWN_JERK, HORIZON_HOLD_TIME, HORIZON_SPEED_BUDGET, HORIZON_UP_JERK, MAX_LEAD_ACCEL_TAU,
-  MIN_LEAD_SPEED, POSITIVE_MPC_HEADROOM, PROFILE_CONFIGS, PROFILE_TRANSITION_JERK, RADAR_STALE_TIMEOUT, RELIEF_CAP_MARGIN,
+  MIN_LEAD_SPEED, POSITIVE_MPC_ALWAYS_ACTIVE_SPEED, POSITIVE_MPC_ENTER_MARGIN, POSITIVE_MPC_EXIT_MARGIN, POSITIVE_MPC_HEADROOM, PROFILE_CONFIGS,
+  PROFILE_TRANSITION_JERK, RADAR_STALE_TIMEOUT, RELIEF_CAP_MARGIN,
   RELIEF_CONFIRM_FRAMES, RELIEF_LEAD_SPEED_STEP, RELIEF_MPC_JERK, REQUIRED_DECEL_MARGIN, ROUTINE_DECEL_MAX, STOP_HOLD_EGO_SPEED,
   SHALLOW_BRAKE_BOUND, SHALLOW_BRAKE_RELIEF_TIME, STOP_GAP_RESERVE, STOP_GAP_RESERVE_DECEL_BP, STOP_GAP_RESERVE_LEAD_SPEED,
   STOP_HOLD_CREEP_ABORT_FRAMES, STOP_HOLD_CREEP_DISTANCE, STOP_HOLD_CREEP_SPEED,
@@ -102,6 +103,8 @@ class _ControllerPath:
   departing_from_stop: bool = False
   previous_lead_speed: float | None = None
   lead_speed_relief: bool = False
+  positive_limit_active: bool = False
+  positive_limit_initialized: bool = False
 
   @property
   def filtered_cap(self) -> float:
@@ -139,6 +142,8 @@ class _ControllerPath:
     self.departing_from_stop = False
     self.previous_lead_speed = None
     self.lead_speed_relief = False
+    self.positive_limit_active = False
+    self.positive_limit_initialized = False
 
 
 class AccelController:
@@ -592,8 +597,23 @@ class AccelController:
       effective_accel_max = float(np.clip(self.live.bound, ACCEL_MIN, ACCEL_MAX))
       if self.live.bound_relief_frames and self.live.lead_speed_relief:
         effective_accel_max = min(effective_accel_max, action_accel + RELIEF_MPC_JERK * self.dt)
-      mpc_accel_max = self._build_accel_ceiling(effective_accel_max, sanitized_v_ego, planner_accel, self._delay())
+      if effective_accel_max > 0.0:
+        if radar_fresh:
+          margin = POSITIVE_MPC_EXIT_MARGIN if self.live.positive_limit_active else POSITIVE_MPC_ENTER_MARGIN
+          self.live.positive_limit_active = (not self.live.positive_limit_initialized
+                                             or sanitized_v_ego <= POSITIVE_MPC_ALWAYS_ACTIVE_SPEED
+                                             or envelope.selected_lead >= 0
+                                             or math.isfinite(self.live.filtered_cap)
+                                             or max(planner_accel, action_accel) >= effective_accel_max - margin)
+          self.live.positive_limit_initialized = True
+      else:
+        self.live.positive_limit_active = False
+        self.live.positive_limit_initialized = False
+      mpc_accel_max = (self._build_accel_ceiling(effective_accel_max, sanitized_v_ego, planner_accel, self._delay())
+                       if effective_accel_max <= 0.0 or self.live.positive_limit_active else None)
     else:
+      self.live.positive_limit_active = False
+      self.live.positive_limit_initialized = False
       effective_accel_max = math.inf
       mpc_accel_max = None
 
