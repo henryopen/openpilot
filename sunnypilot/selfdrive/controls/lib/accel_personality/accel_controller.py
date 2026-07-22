@@ -9,20 +9,19 @@ import numpy as np
 from cereal import log
 from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.realtime import DT_MDL
-from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, STOP_DISTANCE, T_IDXS, get_T_FOLLOW, get_stopped_equivalence_factor
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
+  LongitudinalMpc, LongitudinalPlanSource, STOP_DISTANCE, T_IDXS, get_T_FOLLOW, get_stopped_equivalence_factor,
+)
 from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
-  ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V, APPROACH_CLOSING_SPEED, APPROACH_LEAD_DECEL, APPROACH_LEAD_SPEED_MARGIN, APPROACH_MIN_SPEED,
-  BRAKE_CAP_MARGIN, CAP_FILTER_FRAMES, CAP_RELAX_JERK, CAP_TIGHTEN_JERK, COAST_MATCH_CLOSING_SPEED, COAST_MATCH_USABLE_GAP,
-  DROPOUT_ACTION_ACCEL_MARGIN, HORIZON_DOWN_JERK, HORIZON_HOLD_TIME, HORIZON_SPEED_BUDGET, HORIZON_UP_JERK, MAX_LEAD_ACCEL_TAU,
-  MIN_LEAD_SPEED, POSITIVE_MPC_ALWAYS_ACTIVE_SPEED, POSITIVE_MPC_ENTER_MARGIN, POSITIVE_MPC_EXIT_MARGIN, POSITIVE_MPC_HEADROOM, PROFILE_CONFIGS,
-  PROFILE_TRANSITION_JERK, RADAR_STALE_TIMEOUT, RELIEF_CAP_MARGIN,
-  RELIEF_CONFIRM_FRAMES, RELIEF_LEAD_SPEED_STEP, RELIEF_MPC_JERK, REQUIRED_DECEL_MARGIN, ROUTINE_DECEL_MAX, STOP_HOLD_EGO_SPEED,
-  SHALLOW_BRAKE_BOUND, SHALLOW_BRAKE_RELIEF_TIME, STOP_GAP_RESERVE, STOP_GAP_RESERVE_DECEL_BP, STOP_GAP_RESERVE_LEAD_SPEED,
-  STOP_HOLD_CREEP_ABORT_FRAMES, STOP_HOLD_CREEP_DISTANCE, STOP_HOLD_CREEP_SPEED,
-  STOP_HOLD_EXIT_FRAMES, STOP_HOLD_EXIT_SPEED,
-  STOPPED_LEAD_SPEED, URGENT_CLOSING_SPEED, URGENT_RELEASE_ACCEL, URGENT_REQUIRED_DECEL, URGENT_TTC, URGENT_TTC_MIN_CLOSING,
-  VEGO_NOISE_TOLERANCE, AccelProfile,
+  ACCEL_LIMIT_HORIZON_JERK, ACCEL_LIMIT_TRANSITION_JERK, ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V, BRAKING_ACCEL_LIMIT_THRESHOLD,
+  CAP_FILTER_FRAMES, LAUNCH_END_SPEED, LAUNCH_TARGET_HEADROOM, LAUNCH_TARGET_SLEW, LEAD_LOSS_HOLD_TIME, LEAD_MATCH_ACCEL_GAIN,
+  LEAD_MATCH_ACCEL_SLEW, LEAD_MATCH_GAP_GAIN, LEAD_MATCH_SPEED_HEADROOM, MAX_LEAD_ACCEL_TAU, MIN_LEAD_SPEED,
+  PACE_RELIEF_DEADBAND, PACE_RESTRICT_DEADBAND, PROFILE_CONFIGS, RADAR_STALE_TIMEOUT, STOP_GAP_RESERVE, STOP_GAP_RESERVE_DECEL_BP,
+  STOP_GAP_RESERVE_LEAD_SPEED,
+  STOP_HOLD_CREEP_DISTANCE, STOP_HOLD_CREEP_SPEED, STOP_HOLD_EGO_SPEED, STOP_HOLD_EXIT_FRAMES, STOP_HOLD_EXIT_SPEED,
+  STOP_HOLD_ACCEL_MAX, STOP_HOLD_MAX_LEAD_DISTANCE,
+  STOPPED_LEAD_SPEED, VEGO_NOISE_TOLERANCE, AccelProfile,
 )
 
 
@@ -40,14 +39,12 @@ class EnergyEnvelope:
   cap: float = math.inf
   selected_lead: int = -1
   selected_lead_speed: float = math.inf
-  selected_lead_decel: float = 0.0
+  selected_lead_accel: float = 0.0
   departure_lead_index: int = -1
   departure_lead_speed: float = math.inf
   departure_cap: float = math.inf
-  departure_lead_speeds: tuple[float, float] = (math.inf, math.inf)
   departure_lead_separations: tuple[float, float] = (-math.inf, -math.inf)
   usable_gap: float = math.inf
-  safety_usable_gap: float = math.inf
   closing_speed: float = 0.0
   required_decel: float = 0.0
   has_nearly_stopped_lead: bool = False
@@ -61,7 +58,6 @@ class AccelControllerResult:
   active: bool
   shadow_active: bool
   launching: bool
-  stock_mode: bool
   profile: AccelProfile
   profile_accel_max: float
   positive_accel_max: float
@@ -83,40 +79,36 @@ class AccelControllerResult:
 @dataclass
 class _ControllerPath:
   cap_samples: deque[float] = field(default_factory=lambda: deque([math.inf] * CAP_FILTER_FRAMES, maxlen=CAP_FILTER_FRAMES))
-  required_samples: deque[float] = field(default_factory=lambda: deque(maxlen=CAP_FILTER_FRAMES))
-  lead_decel_samples: deque[float] = field(default_factory=lambda: deque(maxlen=CAP_FILTER_FRAMES))
+  lead_speed_samples: deque[float] = field(default_factory=lambda: deque([math.inf] * CAP_FILTER_FRAMES, maxlen=CAP_FILTER_FRAMES))
+  lead_accel_samples: deque[float] = field(default_factory=lambda: deque([0.0] * CAP_FILTER_FRAMES, maxlen=CAP_FILTER_FRAMES))
   departure_samples: tuple[deque[float], deque[float]] = field(
     default_factory=lambda: (deque(maxlen=CAP_FILTER_FRAMES), deque(maxlen=CAP_FILTER_FRAMES)),
   )
   departure_references: list[float | None] = field(default_factory=lambda: [None, None])
-  bound: float | None = None
+  pace: float | None = None
   state: AccelControllerState = AccelControllerState.inactive
-  relief_frames: int = 0
-  bound_relief_frames: int = 0
-  bound_relief_required_frames: int = 0
   departure_frames: int = 0
-  creep_abort_frames: int = 0
+  active_frames: int = 0
+  lead_loss_frames: int = 0
   stale_frames: int = 0
-  urgent: bool = False
-  urgent_severe: bool = False
-  urgent_safe_frames: int = 0
-  departing_from_stop: bool = False
-  previous_lead_speed: float | None = None
-  lead_speed_relief: bool = False
-  positive_limit_active: bool = False
-  positive_limit_initialized: bool = False
+  launching: bool = False
+  departure_launch: bool = False
+  matched_lead: bool = False
+  braking_limited: bool = False
+  accel_limit: float | None = None
+  matched_accel_limit: float | None = None
 
   @property
   def filtered_cap(self) -> float:
     return sorted(self.cap_samples)[CAP_FILTER_FRAMES // 2]
 
   @property
-  def robust_required_decel(self) -> float:
-    return float(np.median(self.required_samples)) if self.required_samples else 0.0
+  def filtered_lead_speed(self) -> float:
+    return sorted(self.lead_speed_samples)[CAP_FILTER_FRAMES // 2]
 
   @property
-  def robust_lead_decel(self) -> float:
-    return float(np.median(self.lead_decel_samples)) if self.lead_decel_samples else 0.0
+  def filtered_lead_accel(self) -> float:
+    return sorted(self.lead_accel_samples)[CAP_FILTER_FRAMES // 2]
 
   def robust_departure_separation(self, lead_index: int) -> float:
     samples = self.departure_samples[lead_index]
@@ -124,26 +116,22 @@ class _ControllerPath:
 
   def reset(self) -> None:
     self.cap_samples = deque([math.inf] * CAP_FILTER_FRAMES, maxlen=CAP_FILTER_FRAMES)
-    self.required_samples.clear()
-    self.lead_decel_samples.clear()
+    self.lead_speed_samples = deque([math.inf] * CAP_FILTER_FRAMES, maxlen=CAP_FILTER_FRAMES)
+    self.lead_accel_samples = deque([0.0] * CAP_FILTER_FRAMES, maxlen=CAP_FILTER_FRAMES)
     self.departure_samples = (deque(maxlen=CAP_FILTER_FRAMES), deque(maxlen=CAP_FILTER_FRAMES))
     self.departure_references = [None, None]
-    self.bound = None
+    self.pace = None
     self.state = AccelControllerState.inactive
-    self.relief_frames = 0
-    self.bound_relief_frames = 0
-    self.bound_relief_required_frames = 0
     self.departure_frames = 0
-    self.creep_abort_frames = 0
+    self.active_frames = 0
+    self.lead_loss_frames = 0
     self.stale_frames = 0
-    self.urgent = False
-    self.urgent_severe = False
-    self.urgent_safe_frames = 0
-    self.departing_from_stop = False
-    self.previous_lead_speed = None
-    self.lead_speed_relief = False
-    self.positive_limit_active = False
-    self.positive_limit_initialized = False
+    self.launching = False
+    self.departure_launch = False
+    self.matched_lead = False
+    self.braking_limited = False
+    self.accel_limit = None
+    self.matched_accel_limit = None
 
 
 class AccelController:
@@ -153,8 +141,8 @@ class AccelController:
 
     self.CP = CP
     self.dt = dt
+    self.lead_loss_hold_frames = max(CAP_FILTER_FRAMES, math.ceil(LEAD_LOSS_HOLD_TIME / dt))
     self.radar_stale_frames = max(1, math.ceil(RADAR_STALE_TIMEOUT / dt))
-    self.shallow_brake_relief_frames = max(RELIEF_CONFIRM_FRAMES, math.ceil(SHALLOW_BRAKE_RELIEF_TIME / dt))
     self.live = _ControllerPath()
     self.shadow = _ControllerPath()
 
@@ -192,8 +180,7 @@ class AccelController:
     try:
       if not lead.status:
         return None
-      d_rel = float(lead.dRel)
-      v_lead = float(lead.vLeadK)
+      d_rel, v_lead = float(lead.dRel), float(lead.vLeadK)
     except (AttributeError, OverflowError, TypeError, ValueError):
       return None
     if not math.isfinite(d_rel) or d_rel < 0.0 or not math.isfinite(v_lead) or v_lead < MIN_LEAD_SPEED:
@@ -240,6 +227,7 @@ class AccelController:
     departure_speeds = [math.inf, math.inf]
     departure_separations = [-math.inf, -math.inf]
     departure_caps = [math.inf, math.inf]
+
     for lead_index, lead in enumerate(leads):
       values = self._lead_values(lead)
       if values is None:
@@ -249,46 +237,47 @@ class AccelController:
         lead_xv = LongitudinalMpc.extrapolate_lead(d_rel, v_lead, a_lead, a_lead_tau)
         x_lead = float(np.interp(delay, T_IDXS, lead_xv[:, 0]))
         v_lead_delay = float(np.interp(delay, T_IDXS, lead_xv[:, 1]))
-        safety_usable_gap = max(x_lead - x_ego - STOP_DISTANCE - t_follow * v_lead_delay, 0.0)
+        safety_gap = max(x_lead - x_ego - STOP_DISTANCE - t_follow * v_lead_delay, 0.0)
         closing_speed = max(v_ego_delay - v_lead_delay, 0.0)
-        required_decel = (0.0 if closing_speed == 0.0 else math.inf if safety_usable_gap == 0.0
-                          else closing_speed**2 / (2.0 * safety_usable_gap))
-        reserve_speed = float(np.interp(v_lead_delay, (0.0, STOP_GAP_RESERVE_LEAD_SPEED), (STOP_GAP_RESERVE, 0.0)))
+        required_decel = 0.0 if closing_speed == 0.0 else math.inf if safety_gap == 0.0 else closing_speed**2 / (2.0 * safety_gap)
+        reserve = float(np.interp(v_lead_delay, (0.0, STOP_GAP_RESERVE_LEAD_SPEED), (STOP_GAP_RESERVE, 0.0)))
         reserve_scale = float(np.interp(required_decel, STOP_GAP_RESERVE_DECEL_BP, (1.0, 0.0)))
-        usable_gap = max(safety_usable_gap - reserve_speed * reserve_scale, 0.0)
+        usable_gap = max(safety_gap - reserve * reserve_scale, 0.0)
         cap = v_lead_delay + math.sqrt(2.0 * comfort_decel * usable_gap)
-        departure_cap = v_lead_delay + math.sqrt(2.0 * comfort_decel * safety_usable_gap)
-        projected_separation = x_lead - x_ego
+        departure_cap = v_lead_delay + math.sqrt(2.0 * comfort_decel * safety_gap)
+        separation = x_lead - x_ego
         departure_distance = x_lead + float(get_stopped_equivalence_factor(v_lead_delay))
       except (FloatingPointError, OverflowError, TypeError, ValueError):
         continue
-      finite_values = (x_lead, v_lead_delay, usable_gap, safety_usable_gap, closing_speed, cap, departure_cap, departure_distance)
+
+      finite_values = (x_lead, v_lead_delay, safety_gap, usable_gap, closing_speed, cap, departure_cap, departure_distance)
       if not all(math.isfinite(value) and value >= 0.0 for value in finite_values) or math.isnan(required_decel) or required_decel < 0.0:
         continue
-      if not math.isfinite(projected_separation):
+      if not math.isfinite(separation):
         continue
-      candidates.append(EnergyEnvelope(cap=cap, selected_lead=lead_index, selected_lead_speed=v_lead_delay,
-                                       selected_lead_decel=max(-a_lead, 0.0), usable_gap=usable_gap,
-                                       safety_usable_gap=safety_usable_gap, closing_speed=closing_speed,
-                                       required_decel=required_decel, lead_status=lead_status))
+
+      candidates.append(EnergyEnvelope(
+        cap=cap, selected_lead=lead_index, selected_lead_speed=v_lead_delay, selected_lead_accel=a_lead,
+        usable_gap=usable_gap, closing_speed=closing_speed, required_decel=required_decel, lead_status=lead_status,
+      ))
       departure_candidates.append((departure_distance, lead_index))
       departure_speeds[lead_index] = v_lead_delay
-      departure_separations[lead_index] = projected_separation
+      departure_separations[lead_index] = separation
       departure_caps[lead_index] = departure_cap
 
     if not candidates:
       return EnergyEnvelope(lead_status=lead_status)
+
     selected = min(candidates, key=lambda candidate: candidate.cap)
     departure_lead_index = min(departure_candidates, key=lambda candidate: candidate[0])[1]
     departure_lead_speed = departure_speeds[departure_lead_index]
     return EnergyEnvelope(
       cap=selected.cap, selected_lead=selected.selected_lead, selected_lead_speed=selected.selected_lead_speed,
-      selected_lead_decel=selected.selected_lead_decel, departure_lead_index=departure_lead_index,
-      departure_lead_speed=departure_lead_speed, departure_cap=departure_caps[departure_lead_index],
-      departure_lead_speeds=tuple(departure_speeds), departure_lead_separations=tuple(departure_separations),
-      usable_gap=selected.usable_gap, safety_usable_gap=selected.safety_usable_gap, closing_speed=selected.closing_speed,
-      required_decel=selected.required_decel, has_nearly_stopped_lead=departure_lead_speed < STOPPED_LEAD_SPEED,
-      lead_status=lead_status,
+      selected_lead_accel=selected.selected_lead_accel,
+      departure_lead_index=departure_lead_index, departure_lead_speed=departure_lead_speed,
+      departure_cap=departure_caps[departure_lead_index], departure_lead_separations=tuple(departure_separations),
+      usable_gap=selected.usable_gap, closing_speed=selected.closing_speed, required_decel=selected.required_decel,
+      has_nearly_stopped_lead=departure_lead_speed < STOPPED_LEAD_SPEED, lead_status=lead_status,
     )
 
   @staticmethod
@@ -296,29 +285,24 @@ class AccelController:
     return float(np.clip(target, value - rate * dt, value + rate * dt))
 
   @staticmethod
-  def _ttc(envelope: EnergyEnvelope) -> float:
-    return envelope.safety_usable_gap / envelope.closing_speed if envelope.closing_speed > 0.0 else math.inf
+  def _lead_source(source) -> bool:
+    return source in (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1)
 
-  def _update_samples(self, path: _ControllerPath, envelope: EnergyEnvelope) -> None:
+  @staticmethod
+  def _update_samples(path: _ControllerPath, envelope: EnergyEnvelope) -> bool:
+    had_filtered_lead = math.isfinite(path.filtered_cap)
     has_lead = envelope.selected_lead >= 0
-    path.lead_speed_relief = (has_lead and path.previous_lead_speed is not None
-                              and envelope.selected_lead_speed > path.previous_lead_speed + RELIEF_LEAD_SPEED_STEP)
-    path.previous_lead_speed = envelope.selected_lead_speed if has_lead else None
     path.cap_samples.append(envelope.cap if has_lead else math.inf)
+    path.lead_speed_samples.append(envelope.selected_lead_speed if has_lead else math.inf)
+    path.lead_accel_samples.append(envelope.selected_lead_accel if has_lead else 0.0)
+    path.lead_loss_frames = 0 if has_lead else path.lead_loss_frames + 1
     for lead_index, separation in enumerate(envelope.departure_lead_separations):
       if math.isfinite(separation):
         path.departure_samples[lead_index].append(separation)
-    if has_lead:
-      if math.isfinite(envelope.required_decel):
-        path.required_samples.append(envelope.required_decel)
-      if math.isfinite(envelope.selected_lead_decel):
-        path.lead_decel_samples.append(envelope.selected_lead_decel)
-    else:
-      path.required_samples.append(0.0)
-      path.lead_decel_samples.append(0.0)
+    return not had_filtered_lead and math.isfinite(path.filtered_cap)
 
   @staticmethod
-  def _reset_departure_tracking(path: _ControllerPath, envelope: EnergyEnvelope) -> None:
+  def _seed_departure_tracking(path: _ControllerPath, envelope: EnergyEnvelope) -> None:
     path.departure_samples = (deque(maxlen=CAP_FILTER_FRAMES), deque(maxlen=CAP_FILTER_FRAMES))
     path.departure_references = [None, None]
     for lead_index, separation in enumerate(envelope.departure_lead_separations):
@@ -326,234 +310,215 @@ class AccelController:
         path.departure_samples[lead_index].append(separation)
         path.departure_references[lead_index] = separation
     path.departure_frames = 0
-    path.creep_abort_frames = 0
-
-  @staticmethod
-  def _clear_bound_relief(path: _ControllerPath) -> None:
-    path.bound_relief_frames = 0
-    path.bound_relief_required_frames = 0
 
   @staticmethod
   def _creep_departure(path: _ControllerPath, envelope: EnergyEnvelope) -> bool:
     lead_index = envelope.departure_lead_index
     if lead_index < 0 or envelope.departure_lead_speed <= STOP_HOLD_CREEP_SPEED:
       return False
-
-    separation = path.robust_departure_separation(lead_index)
     reference = path.departure_references[lead_index]
+    separation = path.robust_departure_separation(lead_index)
     return reference is not None and separation - reference >= STOP_HOLD_CREEP_DISTANCE
 
-  def _update_path(self, path: _ControllerPath, envelope: EnergyEnvelope, base_speed: float, v_ego: float, action_accel: float,
-                   positive_accel_max: float, profile: AccelProfile, previous_should_stop: bool) -> bool:
-    self._update_samples(path, envelope)
+  def _enter_stop_hold(self, path: _ControllerPath, envelope: EnergyEnvelope) -> None:
+    if path.state != AccelControllerState.stopHold:
+      self._seed_departure_tracking(path, envelope)
+    path.pace = 0.0
+    path.state = AccelControllerState.stopHold
+    path.departure_frames = 0
+    path.launching = False
+    path.departure_launch = False
+    path.matched_lead = False
+    path.matched_accel_limit = None
+
+  def _update_path(self, path: _ControllerPath, envelope: EnergyEnvelope, base_speed: float, v_ego: float,
+                   profile: AccelProfile, positive_accel_max: float, stock_accel_max: float, previous_should_stop: bool,
+                   previous_mpc_source, planner_speed: float, planner_accel: float) -> float:
+    confirmed_lead = self._update_samples(path, envelope)
+    path.active_frames += 1
     has_lead = envelope.selected_lead >= 0
     filtered_cap = path.filtered_cap
-    robust_required = path.robust_required_decel
-    robust_lead_decel = path.robust_lead_decel
-    ttc = self._ttc(envelope)
-    moving_away = (has_lead and not envelope.has_nearly_stopped_lead
-                   and envelope.selected_lead_speed > v_ego + APPROACH_CLOSING_SPEED
-                   and envelope.cap > v_ego + RELIEF_CAP_MARGIN)
+    departure_separation = (envelope.departure_lead_separations[envelope.departure_lead_index]
+                            if envelope.departure_lead_index >= 0 else math.inf)
+    stopped_lead_hold = (has_lead and envelope.has_nearly_stopped_lead
+                         and (envelope.departure_cap < 0.50
+                              or (path.braking_limited and departure_separation <= STOP_HOLD_MAX_LEAD_DISTANCE)))
+    invalid_lead = envelope.lead_status and not has_lead
+    previous_stop = previous_should_stop and (not has_lead or envelope.departure_lead_speed < STOP_HOLD_EXIT_SPEED)
+    stop_evidence = (stopped_lead_hold or envelope.cap < 0.50 or filtered_cap < 0.50
+                     or (previous_stop and not path.launching) or invalid_lead)
+    confirmed_creep_departure = path.launching and path.departure_launch and self._creep_departure(path, envelope)
 
-    if path.departing_from_stop:
-      if v_ego >= STOP_HOLD_EGO_SPEED:
-        path.departing_from_stop = False
-        path.creep_abort_frames = 0
-      elif envelope.lead_status and (not has_lead or envelope.departure_lead_speed <= STOP_HOLD_CREEP_SPEED):
-        path.creep_abort_frames += 1
-        if path.creep_abort_frames >= STOP_HOLD_CREEP_ABORT_FRAMES:
-          path.departing_from_stop = False
-          path.creep_abort_frames = 0
-      else:
-        path.creep_abort_frames = 0
+    if path.accel_limit is None:
+      path.accel_limit = positive_accel_max
+    else:
+      path.accel_limit = min(stock_accel_max, self._move(path.accel_limit, positive_accel_max, ACCEL_LIMIT_TRANSITION_JERK, self.dt))
+    if (path.active_frames >= self.lead_loss_hold_frames and math.isfinite(filtered_cap)
+        and has_lead and planner_accel <= BRAKING_ACCEL_LIMIT_THRESHOLD):
+      path.braking_limited = True
+    elif not has_lead and path.lead_loss_frames >= self.lead_loss_hold_frames:
+      path.braking_limited = False
 
-    stop_hold = (v_ego < STOP_HOLD_EGO_SPEED and not path.departing_from_stop
-                 and (previous_should_stop or (envelope.lead_status and not has_lead)
-                      or (has_lead and (envelope.has_nearly_stopped_lead or envelope.cap < 0.50))))
+    if path.pace is None:
+      path.pace = min(base_speed, v_ego) if has_lead else base_speed
+      path.state = AccelControllerState.free
+      if v_ego < STOP_HOLD_EGO_SPEED and not stop_evidence:
+        path.pace = min(base_speed, v_ego + LAUNCH_TARGET_HEADROOM)
+        path.state = AccelControllerState.release
+        path.launching = True
+        path.departure_launch = False
+
+    path.pace = min(path.pace, base_speed)
+    if (v_ego < STOP_HOLD_EGO_SPEED and stop_evidence and not confirmed_creep_departure
+        and path.state != AccelControllerState.stopHold):
+      self._enter_stop_hold(path, envelope)
+      return path.pace
 
     if path.state == AccelControllerState.stopHold:
-      self._clear_bound_relief(path)
       for lead_index in range(len(path.departure_references)):
         separation = path.robust_departure_separation(lead_index)
         if math.isfinite(separation) and path.departure_references[lead_index] is None:
           path.departure_references[lead_index] = separation
-      departed = (not envelope.lead_status
-                  or (has_lead and envelope.departure_lead_speed > STOP_HOLD_EXIT_SPEED
-                      and envelope.departure_cap > STOP_HOLD_EXIT_SPEED)
-                  or self._creep_departure(path, envelope))
+      filtered_departure = filtered_cap > STOP_HOLD_EXIT_SPEED
+      raw_departure = ((has_lead and envelope.departure_lead_speed > STOP_HOLD_EXIT_SPEED
+                        and envelope.departure_cap > STOP_HOLD_EXIT_SPEED)
+                       or (not envelope.lead_status and path.lead_loss_frames >= self.lead_loss_hold_frames))
+      departed = self._creep_departure(path, envelope) or (filtered_departure and raw_departure)
       path.departure_frames = path.departure_frames + 1 if departed else 0
-      path.bound = 0.0
+      path.pace = 0.0
       if path.departure_frames < STOP_HOLD_EXIT_FRAMES:
-        return False
-      path.state = AccelControllerState.free
-      path.bound = positive_accel_max
+        return path.pace
+      path.pace = base_speed
+      path.state = AccelControllerState.release
       path.departure_frames = 0
-      path.departing_from_stop = True
-      return False
+      path.launching = True
+      path.departure_launch = has_lead
+      return path.pace
 
-    if stop_hold:
-      path.state = AccelControllerState.stopHold
-      path.bound = 0.0
-      path.relief_frames = 0
-      self._clear_bound_relief(path)
-      path.departure_frames = 0
-      path.urgent = False
-      path.urgent_severe = False
-      path.urgent_safe_frames = 0
-      path.departing_from_stop = False
-      self._reset_departure_tracking(path, envelope)
-      return False
+    if path.launching:
+      invalid_lead = envelope.lead_status and not has_lead
+      renewed_stop = (has_lead and not confirmed_creep_departure
+                      and (envelope.cap < STOP_HOLD_EXIT_SPEED
+                           or (envelope.has_nearly_stopped_lead and envelope.departure_cap < STOP_HOLD_EXIT_SPEED)))
+      guarded_departure_loss = path.departure_launch and not envelope.lead_status and path.lead_loss_frames < self.lead_loss_hold_frames
+      if invalid_lead:
+        path.launching = False
+        path.departure_launch = False
+        if v_ego < STOP_HOLD_EGO_SPEED:
+          self._enter_stop_hold(path, envelope)
+          return path.pace
+        path.state = AccelControllerState.hold
+        return path.pace
+      if guarded_departure_loss:
+        path.state = AccelControllerState.hold
+        return path.pace
+      if path.departure_launch and not has_lead:
+        path.departure_launch = False
+      if renewed_stop:
+        path.launching = False
+        path.departure_launch = False
+        if v_ego < STOP_HOLD_EGO_SPEED:
+          self._enter_stop_hold(path, envelope)
+          return path.pace
+      if path.departure_launch:
+        path.pace = base_speed
+      else:
+        launch_target = min(base_speed, v_ego + LAUNCH_TARGET_HEADROOM)
+        path.pace = min(base_speed, max(path.pace, launch_target) + LAUNCH_TARGET_SLEW * self.dt)
+      if v_ego >= LAUNCH_END_SPEED:
+        path.launching = False
+        path.departure_launch = False
 
-    urgent_closing = envelope.closing_speed > URGENT_TTC_MIN_CLOSING
-    raw_urgent = (has_lead and v_ego >= STOP_HOLD_EGO_SPEED
-                  and (envelope.closing_speed >= URGENT_CLOSING_SPEED
-                       or (urgent_closing and envelope.required_decel >= URGENT_REQUIRED_DECEL)
-                       or (urgent_closing and ttc <= URGENT_TTC)))
-    if raw_urgent:
-      path.urgent = True
-      path.urgent_severe |= envelope.closing_speed >= URGENT_CLOSING_SPEED or envelope.required_decel >= URGENT_REQUIRED_DECEL
-      path.urgent_safe_frames = 0
-      path.bound = None
+    comfort_decel = PROFILE_CONFIGS[profile].comfort_decel
+    if has_lead and not path.launching and path.state == AccelControllerState.restrict and envelope.closing_speed <= 0.0:
+      path.matched_lead = True
+    elif not has_lead and path.lead_loss_frames >= self.lead_loss_hold_frames:
+      path.matched_lead = False
+
+    if path.matched_lead:
+      if not has_lead:
+        if self._lead_source(previous_mpc_source) and planner_speed < path.pace:
+          path.pace = planner_speed
+        path.state = AccelControllerState.hold
+        return path.pace
+      if math.isfinite(path.filtered_lead_speed):
+        recovery_speed = min(base_speed, path.filtered_lead_speed + min(LEAD_MATCH_SPEED_HEADROOM, LEAD_MATCH_GAP_GAIN * envelope.usable_gap))
+        desired_accel_limit = min(path.accel_limit, LEAD_MATCH_ACCEL_GAIN * max(recovery_speed - v_ego, 0.0))
+      else:
+        desired_accel_limit = 0.0
+      if path.filtered_lead_accel < BRAKING_ACCEL_LIMIT_THRESHOLD:
+        desired_accel_limit = path.accel_limit
+      if path.matched_accel_limit is None:
+        path.matched_accel_limit = path.accel_limit
+      path.matched_accel_limit = min(path.accel_limit, self._move(path.matched_accel_limit, desired_accel_limit, LEAD_MATCH_ACCEL_SLEW, self.dt))
+      path.pace = min(base_speed, path.pace + path.accel_limit * self.dt)
+      path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.release
+      return path.pace
+    path.matched_accel_limit = None
+
+    ceiling = min(base_speed, filtered_cap)
+    if confirmed_lead and not path.launching:
+      path.pace = min(path.pace, planner_speed)
+
+    if self._lead_source(previous_mpc_source) and not has_lead and planner_speed < path.pace:
+      path.pace = min(path.pace, planner_speed)
       path.state = AccelControllerState.hold
-      path.relief_frames = 0
-      self._clear_bound_relief(path)
-      return True
+      return path.pace
 
-    if path.urgent:
-      matched = has_lead and envelope.closing_speed <= APPROACH_CLOSING_SPEED and robust_lead_decel <= 0.05
-      urgent_safe = (not has_lead or moving_away or matched) and (not path.urgent_severe or action_accel >= URGENT_RELEASE_ACCEL)
-      path.urgent_safe_frames = path.urgent_safe_frames + 1 if urgent_safe else 0
-      if path.urgent_safe_frames < RELIEF_CONFIRM_FRAMES:
-        path.bound = None
-        path.state = AccelControllerState.hold
-        self._clear_bound_relief(path)
-        return True
-      path.urgent = False
-      path.urgent_severe = False
-      path.urgent_safe_frames = 0
-      if not has_lead or moving_away:
-        path.state = AccelControllerState.free
-        path.bound = min(action_accel, 0.0)
-      else:
-        path.state = AccelControllerState.hold
-        path.bound = 0.0
+    if ceiling <= path.pace - PACE_RESTRICT_DEADBAND or (path.state == AccelControllerState.restrict and ceiling < path.pace):
+      path.pace = max(ceiling, path.pace - comfort_decel * self.dt)
+      path.state = AccelControllerState.restrict
+      return path.pace
 
-    if path.state == AccelControllerState.inactive and has_lead and not math.isfinite(filtered_cap):
-      path.bound = min(action_accel, 0.0)
-      self._clear_bound_relief(path)
-      return False
+    filter_warmup = has_lead and not math.isfinite(filtered_cap)
+    guarded_lead_loss = not has_lead and path.lead_loss_frames < self.lead_loss_hold_frames
+    if (filter_warmup or guarded_lead_loss) and path.pace < base_speed - PACE_RESTRICT_DEADBAND:
+      path.state = AccelControllerState.hold
+      return path.pace
 
-    dropout_guard = (not has_lead and math.isfinite(filtered_cap)
-                     and path.state in (AccelControllerState.restrict, AccelControllerState.hold) and path.bound is not None)
-    if dropout_guard:
-      path.bound = min(path.bound, action_accel + DROPOUT_ACTION_ACCEL_MARGIN)
-
-    profile_config = PROFILE_CONFIGS[profile]
-    lead_demand = (envelope.closing_speed > APPROACH_CLOSING_SPEED
-                   or (robust_lead_decel > APPROACH_LEAD_DECEL
-                       and envelope.selected_lead_speed < v_ego + APPROACH_LEAD_SPEED_MARGIN))
-    braking_zone = filtered_cap < v_ego + BRAKE_CAP_MARGIN
-    anticipation = filtered_cap < base_speed - profile_config.anticipation_margin
-    approach = (has_lead and (v_ego > APPROACH_MIN_SPEED or path.state == AccelControllerState.restrict)
-                and lead_demand and (braking_zone or anticipation))
-    retaining_lead = path.state in (AccelControllerState.restrict, AccelControllerState.hold) and has_lead and not moving_away
-    if approach or retaining_lead:
-      entering = path.state not in (AccelControllerState.restrict, AccelControllerState.hold)
-      if path.bound is None or entering:
-        path.bound = action_accel
-      matched = envelope.closing_speed <= APPROACH_CLOSING_SPEED and robust_lead_decel <= 0.05
-      coast_cap = envelope.selected_lead_speed + math.sqrt(2.0 * profile_config.comfort_decel * COAST_MATCH_USABLE_GAP)
-      coast_to_match = (robust_lead_decel <= 0.05 and envelope.closing_speed <= COAST_MATCH_CLOSING_SPEED
-                        and filtered_cap > coast_cap)
-      if matched or coast_to_match:
-        target_decel = 0.0
-      elif braking_zone:
-        target_decel = min(max(robust_required + REQUIRED_DECEL_MARGIN, robust_lead_decel), ROUTINE_DECEL_MAX)
-      else:
-        target_decel = profile_config.glide_decel
-      target = -target_decel
-      bound_relief = has_lead and path.bound < 0.0 and target > path.bound + 1e-9
-      if bound_relief and path.bound_relief_frames == 0:
-        path.bound_relief_required_frames = (self.shallow_brake_relief_frames
-                                             if path.bound >= SHALLOW_BRAKE_BOUND else RELIEF_CONFIRM_FRAMES)
-      path.bound_relief_frames = path.bound_relief_frames + 1 if bound_relief else 0
-      if not bound_relief:
-        self._clear_bound_relief(path)
-      if bound_relief and path.bound_relief_frames < path.bound_relief_required_frames:
-        target = path.bound
-      path.bound = self._move(path.bound, target, CAP_RELAX_JERK if target > path.bound else CAP_TIGHTEN_JERK, self.dt)
-      path.state = AccelControllerState.hold if matched or coast_to_match else AccelControllerState.restrict
-      path.relief_frames = 0
-      return False
-
-    if path.state in (AccelControllerState.restrict, AccelControllerState.hold):
-      self._clear_bound_relief(path)
-      relief = not has_lead or moving_away
-      path.relief_frames = path.relief_frames + 1 if relief else 0
-      path.bound = min(path.bound if path.bound is not None else action_accel, 0.0)
-      if path.relief_frames < RELIEF_CONFIRM_FRAMES:
-        path.state = AccelControllerState.hold
-        return False
-      path.state = AccelControllerState.free
-      path.relief_frames = 0
-      return False
-
-    if path.bound is None:
-      path.bound = positive_accel_max
+    confirmed_clear_road = not math.isfinite(filtered_cap) and not guarded_lead_loss
+    relief = not has_lead or envelope.closing_speed <= 0.0
+    if relief and (ceiling >= path.pace + PACE_RELIEF_DEADBAND or (confirmed_clear_road and ceiling > path.pace)):
+      path.pace = min(ceiling, path.pace + path.accel_limit * self.dt)
+      path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.release
     else:
-      path.bound = self._move(path.bound, positive_accel_max, PROFILE_TRANSITION_JERK, self.dt)
-    self._clear_bound_relief(path)
-    path.state = AccelControllerState.free
-    return False
+      path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.hold
+    return path.pace
 
   @staticmethod
-  def _build_accel_ceiling(bound: float, v_ego: float, planner_accel: float, action_time: float) -> tuple[float, ...] | None:
-    if bound >= ACCEL_MAX - 1e-9:
-      return None
-    a0 = float(np.clip(planner_accel, ACCEL_MIN, ACCEL_MAX))
-    if bound > 0.0:
-      ceiling = np.full(len(T_IDXS), min(bound + POSITIVE_MPC_HEADROOM, ACCEL_MAX))
-    elif bound == 0.0:
-      ceiling = np.maximum(0.0, a0 - HORIZON_DOWN_JERK * T_IDXS)
-    else:
-      descent = np.maximum(bound, a0 - HORIZON_DOWN_JERK * T_IDXS)
-      reach_time = max((a0 - bound) / HORIZON_DOWN_JERK, 0.0)
-      release_time = max(action_time + HORIZON_HOLD_TIME, reach_time + HORIZON_HOLD_TIME)
-      recovery = np.clip(bound + HORIZON_UP_JERK * np.maximum(T_IDXS - release_time, 0.0), bound, 0.0)
-      ceiling = np.where(T_IDXS <= release_time, descent, np.maximum(descent, recovery))
-      budget = HORIZON_SPEED_BUDGET * max(v_ego, 0.0)
-      negative_area = float(np.trapezoid(-np.minimum(ceiling, 0.0), T_IDXS))
-      if negative_area > budget and negative_area > 1e-9:
-        ceiling = np.where(ceiling < 0.0, ceiling * budget / negative_area, ceiling)
-    ceiling = np.clip(ceiling, ACCEL_MIN, ACCEL_MAX)
-    ceiling[0] = max(ceiling[0], a0)
-    return tuple(float(value) for value in ceiling)
-
-  @staticmethod
-  def _valid_context(base_speed: float, v_ego: float, a_ego: float, planner_accel: float, action_accel: float,
-                     positive_accel_max: float, delay: float, engaged: bool, cruise_initialized: bool, controller_fault: bool) -> bool:
-    values = (base_speed, v_ego, a_ego, planner_accel, action_accel, positive_accel_max, delay)
-    return (engaged and cruise_initialized and not controller_fault and base_speed >= 0.0 and v_ego >= -VEGO_NOISE_TOLERANCE
-            and delay >= 0.0 and all(math.isfinite(value) for value in values))
+  def _valid_context(base_speed: float, v_ego: float, a_ego: float, planner_speed: float, planner_accel: float, stock_accel_max: float,
+                     delay: float, engaged: bool, cruise_initialized: bool) -> bool:
+    values = (base_speed, v_ego, a_ego, planner_speed, planner_accel, stock_accel_max, delay)
+    return (engaged and cruise_initialized and base_speed >= 0.0 and v_ego >= -VEGO_NOISE_TOLERANCE
+            and planner_speed >= 0.0 and stock_accel_max >= 0.0 and delay >= 0.0 and all(math.isfinite(value) for value in values))
 
   def _update_freshness(self, path: _ControllerPath, radar_fresh: bool) -> bool:
     if radar_fresh:
       path.stale_frames = 0
       return True
     path.stale_frames += 1
-    if path.stale_frames < self.radar_stale_frames and (path.bound is not None or path.urgent):
-      return False
-    path.reset()
+    if path.stale_frames >= self.radar_stale_frames:
+      path.reset()
     return False
+
+  @staticmethod
+  def _build_accel_ceiling(limit: float, planner_accel: float) -> tuple[float, ...] | None:
+    if limit >= ACCEL_MAX - 1e-9:
+      return None
+    a0 = float(np.clip(planner_accel, ACCEL_MIN, ACCEL_MAX))
+    ceiling = np.maximum(limit, a0 - ACCEL_LIMIT_HORIZON_JERK * T_IDXS)
+    ceiling = np.clip(ceiling, 0.0, ACCEL_MAX)
+    ceiling[0] = max(ceiling[0], a0)
+    return tuple(float(value) for value in ceiling)
 
   def reset(self) -> None:
     self.live.reset()
     self.shadow.reset()
 
   def update(self, radar_state, *, base_speed: float, v_ego: float, a_ego: float, profile: int | AccelProfile, follow_personality,
-             enabled: bool, acc_selected: bool, engaged: bool, cruise_initialized: bool, planner_accel: float, action_accel: float,
-             stock_accel_max: float, previous_should_stop: bool, controller_fault: bool = False,
-             radar_fresh: bool = True) -> AccelControllerResult:
+             enabled: bool, acc_selected: bool, engaged: bool, cruise_initialized: bool, stock_accel_max: float,
+             previous_should_stop: bool, radar_fresh: bool = True,
+             previous_mpc_source=None, planner_speed: float | None = None, planner_accel: float = 0.0) -> AccelControllerResult:
     selected_profile = self._profile(profile)
     sanitized_v_ego = max(v_ego, 0.0) if math.isfinite(v_ego) and v_ego >= -VEGO_NOISE_TOLERANCE else v_ego
     profile_accel_max = self.get_profile_accel_max(selected_profile, sanitized_v_ego)
@@ -563,17 +528,18 @@ class AccelController:
       stock_accel_max = math.nan
     positive_accel_max = (max(0.0, min(profile_accel_max, stock_accel_max, ACCEL_MAX))
                           if math.isfinite(profile_accel_max) and math.isfinite(stock_accel_max) else math.nan)
-    valid_context = self._valid_context(base_speed, sanitized_v_ego, a_ego, planner_accel, action_accel, positive_accel_max,
-                                        self._delay(), engaged, cruise_initialized, controller_fault)
+    planner_speed = sanitized_v_ego if planner_speed is None else planner_speed
+    valid_context = self._valid_context(base_speed, sanitized_v_ego, a_ego, planner_speed, planner_accel, stock_accel_max, self._delay(),
+                                        engaged, cruise_initialized)
     envelope = (self.calculate_energy_envelope(radar_state, sanitized_v_ego, a_ego, selected_profile, follow_personality)
                 if valid_context and radar_fresh else EnergyEnvelope(lead_status=self._radar_has_lead(radar_state)))
 
     shadow_fresh = self._update_freshness(self.shadow, radar_fresh) if valid_context else False
     if valid_context and radar_fresh:
-      self._update_path(self.shadow, envelope, base_speed, sanitized_v_ego, action_accel, positive_accel_max,
-                        selected_profile, previous_should_stop)
+      self._update_path(self.shadow, envelope, base_speed, sanitized_v_ego, selected_profile, positive_accel_max, stock_accel_max, previous_should_stop,
+                        previous_mpc_source, planner_speed, planner_accel)
       shadow_active = True
-    elif valid_context and not shadow_fresh and (self.shadow.bound is not None or self.shadow.urgent):
+    elif valid_context and not shadow_fresh and self.shadow.pace is not None:
       shadow_active = True
     else:
       self.shadow.reset()
@@ -582,49 +548,46 @@ class AccelController:
     live_context = valid_context and bool(enabled) and bool(acc_selected)
     live_fresh = self._update_freshness(self.live, radar_fresh) if live_context else False
     if live_context and radar_fresh:
-      stock_mode = self._update_path(self.live, envelope, base_speed, sanitized_v_ego, action_accel,
-                                     positive_accel_max, selected_profile, previous_should_stop)
+      pace_target = self._update_path(self.live, envelope, base_speed, sanitized_v_ego, selected_profile, positive_accel_max, stock_accel_max,
+                                      previous_should_stop,
+                                      previous_mpc_source, planner_speed, planner_accel)
       live_active = True
-    elif live_context and not live_fresh and (self.live.bound is not None or self.live.urgent):
-      stock_mode = self.live.urgent
+    elif live_context and not live_fresh and self.live.pace is not None:
+      if self._lead_source(previous_mpc_source) and planner_speed < self.live.pace:
+        self.live.pace = planner_speed
+        self.live.state = AccelControllerState.hold
+      pace_target = self.live.pace
       live_active = True
     else:
       self.live.reset()
-      stock_mode = False
+      pace_target = base_speed
       live_active = False
 
-    if live_active and not stock_mode and self.live.bound is not None:
-      effective_accel_max = float(np.clip(self.live.bound, ACCEL_MIN, ACCEL_MAX))
-      if self.live.bound_relief_frames and self.live.lead_speed_relief:
-        effective_accel_max = min(effective_accel_max, action_accel + RELIEF_MPC_JERK * self.dt)
-      if effective_accel_max > 0.0:
-        if radar_fresh:
-          margin = POSITIVE_MPC_EXIT_MARGIN if self.live.positive_limit_active else POSITIVE_MPC_ENTER_MARGIN
-          self.live.positive_limit_active = (not self.live.positive_limit_initialized
-                                             or sanitized_v_ego <= POSITIVE_MPC_ALWAYS_ACTIVE_SPEED
-                                             or envelope.selected_lead >= 0
-                                             or math.isfinite(self.live.filtered_cap)
-                                             or max(planner_accel, action_accel) >= effective_accel_max - margin)
-          self.live.positive_limit_initialized = True
-      else:
-        self.live.positive_limit_active = False
-        self.live.positive_limit_initialized = False
-      mpc_accel_max = (self._build_accel_ceiling(effective_accel_max, sanitized_v_ego, planner_accel, self._delay())
-                       if effective_accel_max <= 0.0 or self.live.positive_limit_active else None)
+    stop_hold_active = live_active and self.live.state == AccelControllerState.stopHold
+    valid_lead_stop_hold = stop_hold_active and envelope.selected_lead >= 0
+    matched_limit_active = live_active and self.live.matched_lead and self.live.matched_accel_limit is not None
+    braking_limited = live_active and self.live.braking_limited
+    confirmed_clear_road = (live_active and not stop_hold_active and not envelope.lead_status
+                            and not math.isfinite(self.live.filtered_cap) and self.live.lead_loss_frames >= self.lead_loss_hold_frames)
+    if stop_hold_active:
+      effective_accel_max = min(STOP_HOLD_ACCEL_MAX, stock_accel_max) if valid_lead_stop_hold else 0.0
+    elif matched_limit_active:
+      effective_accel_max = min(self.live.matched_accel_limit, stock_accel_max)
     else:
-      self.live.positive_limit_active = False
-      self.live.positive_limit_initialized = False
-      effective_accel_max = math.inf
+      effective_accel_max = (min(self.live.accel_limit, stock_accel_max)
+                             if (braking_limited or confirmed_clear_road) and self.live.accel_limit is not None else math.inf)
+    if stop_hold_active or matched_limit_active or braking_limited or confirmed_clear_road:
+      mpc_accel_max = self._build_accel_ceiling(effective_accel_max, planner_accel)
+    else:
       mpc_accel_max = None
 
     return AccelControllerResult(
-      target_speed=0.0 if live_active and self.live.state == AccelControllerState.stopHold else base_speed,
-      enabled=bool(enabled), active=live_active, shadow_active=shadow_active,
-      launching=live_active and self.live.departing_from_stop, stock_mode=stock_mode, profile=selected_profile,
-      profile_accel_max=profile_accel_max if live_active else math.inf,
+      target_speed=0.0 if stop_hold_active else pace_target,
+      enabled=bool(enabled), active=live_active, shadow_active=shadow_active, launching=live_active and self.live.launching,
+      profile=selected_profile, profile_accel_max=profile_accel_max if live_active else math.inf,
       positive_accel_max=positive_accel_max if live_active else math.inf, effective_accel_max=effective_accel_max,
-      mpc_accel_max=mpc_accel_max,
-      state=self.live.state, shadow_state=self.shadow.state, base_speed=base_speed, raw_energy_cap=envelope.cap,
+      mpc_accel_max=mpc_accel_max, state=self.live.state,
+      shadow_state=self.shadow.state, base_speed=base_speed, raw_energy_cap=envelope.cap,
       live_filtered_cap=self.live.filtered_cap if live_active else math.inf,
       shadow_filtered_cap=self.shadow.filtered_cap if shadow_active else math.inf, selected_lead=envelope.selected_lead,
       selected_lead_speed=envelope.selected_lead_speed, usable_gap=envelope.usable_gap,

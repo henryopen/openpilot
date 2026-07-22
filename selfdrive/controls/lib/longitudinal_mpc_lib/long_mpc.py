@@ -314,8 +314,7 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard,
-             accel_max: float | tuple[float, ...] | np.ndarray | None = None):
+  def update(self, radarstate, v_cruise, personality=log.LongitudinalPersonality.standard, accel_max=None):
     t_follow = get_T_FOLLOW(personality)
     v_ego = self.x0[1]
     self.status = radarstate.leadOne.status or radarstate.leadTwo.status
@@ -350,13 +349,10 @@ class LongitudinalMpc:
     if accel_max is not None:
       try:
         accel_max_trajectory = np.asarray(accel_max, dtype=float)
-      except (TypeError, ValueError):
+      except (OverflowError, TypeError, ValueError):
         accel_max_trajectory = np.empty(0)
-      if accel_max_trajectory.ndim == 0 and np.isfinite(accel_max_trajectory) and accel_max_trajectory >= 0.0:
-        accel_max_trajectory = np.full(N + 1, float(accel_max_trajectory))
-      valid_accel_max = accel_max_trajectory.shape == (N + 1,) and np.all(np.isfinite(accel_max_trajectory))
-      if valid_accel_max:
-        self.params[:,1] = np.clip(accel_max_trajectory, ACCEL_MIN, ACCEL_MAX)
+      if accel_max_trajectory.shape == (N + 1,) and np.all(np.isfinite(accel_max_trajectory)):
+        self.params[:,1] = np.clip(accel_max_trajectory, 0.0, ACCEL_MAX)
         self.params[0,1] = max(self.params[0,1], float(np.clip(self.x0[2], ACCEL_MIN, ACCEL_MAX)))
     self.params[:,2] = np.min(x_obstacles, axis=1)
     self.params[:,3] = np.copy(self.a_prev)
