@@ -79,12 +79,23 @@ def _run(
   v_lead: float | Callable[[float], float] = 0.0,
   v_cruise: float = 30.0,
   dec_enabled: bool = False,
+  radar_fresh_fn: Callable[[int], bool] | None = None,
   **plant_kwargs,
 ) -> ClosedLoopTrace:
   gc.collect()
   plant = Plant(**plant_kwargs)
   _configure_plant(plant, enabled=controller_enabled, profile=profile, dec_enabled=dec_enabled)
   plant.v_lead_prev = float(v_lead) if isinstance(v_lead, (int, float)) else float(v_lead(0.0))
+  if radar_fresh_fn is not None:
+    radar_frame = 0
+
+    def patterned_radar_freshness(_sm):
+      nonlocal radar_frame
+      fresh = radar_fresh_fn(radar_frame)
+      radar_frame += 1
+      return fresh
+
+    plant.planner._update_radar_freshness = patterned_radar_freshness
 
   solver_failures = 0
   solver_failure_times = []
@@ -451,6 +462,56 @@ def test_stopped_lead_requires_four_departure_frames_and_launches_within_one_sec
   assert trace.solver_failures == 0
 
 
+def test_reused_radar_frames_do_not_pulse_stop_state_during_departure():
+  departure_time = 1.0
+  trace = _run(
+    duration=3.0, controller_enabled=True, lead_relevancy=True, speed=0.0, distance_lead=6.0,
+    v_lead=lambda current_time: 0.0 if current_time < departure_time else 2.0,
+    v_cruise=8.0, actuator_delay=0.15, actuator_lag=0.25, radar_fresh_fn=lambda frame: frame % 2 == 0,
+  )
+  after_departure = trace.time >= departure_time
+  should_stop = trace.should_stop[after_departure]
+  moving = np.flatnonzero(after_departure & (trace.speed > 0.05))
+
+  assert np.count_nonzero(np.diff(should_stop.astype(int))) <= 1
+  assert len(moving) and trace.time[moving[0]] <= departure_time + 0.8
+  assert not _has_propulsion_brake_cycle(trace.a_target[after_departure])
+  assert trace.solver_failures == 0
+
+
+@pytest.mark.parametrize("departure_frames", [1, 2, 3])
+def test_short_false_departure_does_not_launch_the_vehicle(departure_frames):
+  trace = _run(
+    duration=2.5, controller_enabled=True, lead_relevancy=True, speed=0.0, distance_lead=6.0,
+    v_lead=lambda current_time: 2.0 if 1.0 <= current_time < 1.0 + departure_frames * DT_MDL else 0.0,
+    v_cruise=8.0, actuator_delay=0.10, actuator_lag=0.20,
+  )
+
+  assert np.max(trace.speed) < 0.01
+  assert not trace.launching.any()
+  assert trace.state[-1] == int(AccelControllerState.stopHold)
+  assert trace.solver_failures == 0
+
+
+def test_matched_lead_recovery_preserves_profile_ordering():
+  traces = [
+    _run(
+      duration=32.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=20.0,
+      distance_lead=100.0, v_lead=10.0, v_cruise=30.0, actuator_delay=0.15, actuator_lag=0.25,
+    )
+    for profile in range(3)
+  ]
+  response = (traces[0].time >= 23.5) & (traces[0].time <= 29.0)
+  mean_accel = [float(np.mean(trace.a_target[response])) for trace in traces]
+  final_speed = [float(trace.speed[np.flatnonzero(response)[-1]]) for trace in traces]
+
+  assert mean_accel[0] + 0.06 < mean_accel[1]
+  assert mean_accel[1] + 0.025 < mean_accel[2]
+  assert max(final_speed) - min(final_speed) < 0.10
+  assert all(not _has_propulsion_brake_cycle(trace.a_target[response]) for trace in traces)
+  assert all(trace.solver_failures == 0 for trace in traces)
+
+
 def test_creeping_lead_departure_is_prompt_and_safe():
   departure_time = 1.0
 
@@ -574,7 +635,8 @@ def test_false_range_relief_matches_clean_controller_response():
   _assert_no_new_solver_failures(trace, baseline)
 
 
-def test_matched_lead_recovery_slews_through_slot_switch_noise():
+@pytest.mark.parametrize("profile", range(3), ids=("eco", "normal", "sport"))
+def test_profile_ceiling_and_pace_stay_smooth_through_slot_switch_noise(profile):
   glitch_start = 24.0
   glitch_end = 28.0
 
@@ -598,7 +660,7 @@ def test_matched_lead_recovery_slews_through_slot_switch_noise():
     }
 
   common = dict(
-    duration=32.0, controller_enabled=True, profile=1, lead_relevancy=True, speed=20.0,
+    duration=32.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=20.0,
     distance_lead=100.0, v_lead=10.0, v_cruise=30.0, actuator_delay=0.15, actuator_lag=0.25,
   )
   baseline = _run(**common)
@@ -623,7 +685,8 @@ def test_matched_lead_recovery_slews_through_slot_switch_noise():
   _assert_no_new_solver_failures(trace, baseline)
 
 
-def test_matched_lead_dropout_keeps_the_stored_acceleration_ceiling():
+@pytest.mark.parametrize("profile", range(3), ids=("eco", "normal", "sport"))
+def test_matched_lead_dropout_keeps_the_stored_acceleration_ceiling(profile):
   dropout_start = 25.0
   dropout_end = 25.15
 
@@ -633,7 +696,7 @@ def test_matched_lead_dropout_keeps_the_stored_acceleration_ceiling():
     return truth
 
   common = dict(
-    duration=28.0, controller_enabled=True, profile=1, lead_relevancy=True, speed=20.0,
+    duration=28.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=20.0,
     distance_lead=100.0, v_lead=10.0, v_cruise=30.0, actuator_delay=0.15, actuator_lag=0.25,
   )
   clean = _run(**common)

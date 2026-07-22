@@ -14,7 +14,7 @@ from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelC
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
   ACCEL_LIMIT_HORIZON_JERK, ACCEL_LIMIT_TRANSITION_JERK, ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V, CAP_FILTER_FRAMES,
   LAUNCH_END_SPEED, LAUNCH_TARGET_HEADROOM, LAUNCH_TARGET_SLEW, LEAD_MATCH_ACCEL_SLEW, PROFILE_CONFIGS, RADAR_STALE_TIMEOUT,
-  STOP_GAP_RESERVE, STOP_HOLD_ACCEL_MAX, STOP_HOLD_EXIT_FRAMES,
+  STOP_GAP_RESERVE, STOP_HOLD_ACCEL_MAX, STOP_HOLD_DEPARTURE_ACCEL_MAX, STOP_HOLD_EXIT_FRAMES,
 )
 
 
@@ -108,6 +108,19 @@ class TestProfiles:
     settled = [update(controller, v_ego=10.0, profile=AccelProfile.eco, stock_accel_max=1.20) for _ in range(30)][-1]
     assert settled.effective_accel_max == pytest.approx(0.72)
 
+  def test_matched_lead_waits_until_ego_catches_the_lead(self):
+    radar = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0))
+    slow_controller, caught_controller = make_controller(), make_controller()
+    for controller in (slow_controller, caught_controller):
+      for _ in range(CAP_FILTER_FRAMES + 10):
+        update(controller, radar, v_ego=10.0, planner_accel=-0.2)
+
+    update(slow_controller, radar, v_ego=3.0, planner_accel=-0.2)
+    update(caught_controller, radar, v_ego=8.0, planner_accel=-0.2)
+
+    assert not slow_controller.live.matched_lead
+    assert caught_controller.live.matched_lead
+
   def test_stock_limit_reduction_applies_immediately(self):
     controller = make_controller()
     for _ in range(controller.lead_loss_hold_frames):
@@ -121,11 +134,11 @@ class TestProfiles:
   @pytest.mark.parametrize("radar_fresh", (True, False), ids=("dropout", "stale"))
   def test_matched_lead_ceiling_obeys_current_stock_limit(self, radar_fresh):
     controller = make_controller()
-    radar = restrictive_radar()
+    radar = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0))
     for _ in range(CAP_FILTER_FRAMES + 10):
       update(controller, radar, v_ego=10.0, planner_accel=-0.2)
     for _ in range(20):
-      update(controller, radar, v_ego=7.0, planner_accel=-0.2)
+      update(controller, radar, v_ego=8.0, planner_accel=-0.2)
     assert controller.live.matched_lead
 
     limited = update(controller, stock_accel_max=0.0, radar_fresh=radar_fresh)
@@ -181,12 +194,12 @@ class TestMpcCeiling:
 
   def test_matched_lead_ceiling_has_no_planner_accel_handoff(self):
     controller = make_controller()
-    radar = restrictive_radar()
+    radar = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0))
     for _ in range(CAP_FILTER_FRAMES + 5):
       update(controller, radar, v_ego=10.0, planner_accel=-0.2)
 
-    braking = update(controller, radar, v_ego=7.0, planner_accel=-0.2)
-    accelerating = update(controller, radar, v_ego=7.0, planner_accel=0.2)
+    braking = update(controller, radar, v_ego=8.0, planner_accel=-0.2)
+    accelerating = update(controller, radar, v_ego=8.0, planner_accel=0.2)
 
     assert controller.live.matched_lead
     assert braking.mpc_accel_max is not None and accelerating.mpc_accel_max is not None
@@ -195,17 +208,17 @@ class TestMpcCeiling:
 
   def test_matched_lead_ignores_two_frame_speed_jump(self):
     clean_controller, noisy_controller = make_controller(), make_controller()
-    radar = restrictive_radar()
+    radar = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0))
     for controller in (clean_controller, noisy_controller):
       for _ in range(CAP_FILTER_FRAMES + 10):
         update(controller, radar, v_ego=10.0, planner_accel=-0.2)
       for _ in range(20):
-        update(controller, radar, v_ego=7.0, planner_accel=-0.2)
+        update(controller, radar, v_ego=8.0, planner_accel=-0.2)
 
-    speed_jump = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=16.0, a_lead_k=-0.5))
+    speed_jump = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=16.0))
     for _ in range(2):
-      clean = update(clean_controller, radar, v_ego=7.0)
-      noisy = update(noisy_controller, speed_jump, v_ego=7.0)
+      clean = update(clean_controller, radar, v_ego=8.0)
+      noisy = update(noisy_controller, speed_jump, v_ego=8.0)
       assert noisy.effective_accel_max == pytest.approx(clean.effective_accel_max)
       assert noisy.target_speed == pytest.approx(clean.target_speed)
 
@@ -216,12 +229,12 @@ class TestMpcCeiling:
       for _ in range(CAP_FILTER_FRAMES + 10):
         update(controller, steady, v_ego=10.0, planner_accel=-0.2)
       for _ in range(20):
-        update(controller, steady, v_ego=7.0, planner_accel=-0.2)
+        update(controller, steady, v_ego=8.0, planner_accel=-0.2)
 
     braking_jump = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0, a_lead_k=-1.0))
     for _ in range(2):
-      clean = update(clean_controller, steady, v_ego=7.0)
-      noisy = update(noisy_controller, braking_jump, v_ego=7.0)
+      clean = update(clean_controller, steady, v_ego=8.0)
+      noisy = update(noisy_controller, braking_jump, v_ego=8.0)
       assert noisy.effective_accel_max == pytest.approx(clean.effective_accel_max)
       assert noisy.target_speed == pytest.approx(clean.target_speed)
 
@@ -324,11 +337,11 @@ class TestPaceAndLifecycle:
 
   def test_matched_lead_dropout_synchronizes_down_to_planner(self):
     controller = make_controller()
-    radar = restrictive_radar()
+    radar = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0))
     for _ in range(CAP_FILTER_FRAMES + 10):
       update(controller, radar, v_ego=10.0, planner_accel=-0.2)
     for _ in range(20):
-      matched = update(controller, radar, v_ego=7.0, planner_accel=-0.2)
+      matched = update(controller, radar, v_ego=8.0, planner_accel=-0.2)
     assert controller.live.matched_lead
 
     planner_speed = matched.target_speed - 2.0
@@ -336,18 +349,22 @@ class TestPaceAndLifecycle:
     assert synchronized.target_speed == pytest.approx(planner_speed)
     assert synchronized.state == AccelControllerState.hold
 
-  def test_stale_matched_lead_synchronizes_down_to_planner(self):
+  def test_reused_radar_holds_matched_lead_until_a_fresh_dropout(self):
     controller = make_controller()
-    radar = restrictive_radar()
+    radar = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0))
     for _ in range(CAP_FILTER_FRAMES + 10):
       update(controller, radar, v_ego=10.0, planner_accel=-0.2)
     for _ in range(20):
-      matched = update(controller, radar, v_ego=7.0, planner_accel=-0.2)
+      matched = update(controller, radar, v_ego=8.0, planner_accel=-0.2)
     assert controller.live.matched_lead
 
     planner_speed = matched.target_speed - 2.0
-    synchronized = update(controller, previous_mpc_source=LongitudinalPlanSource.lead0,
-                          planner_speed=planner_speed, radar_fresh=False)
+    held = update(controller, radar, previous_mpc_source=LongitudinalPlanSource.lead0,
+                  planner_speed=planner_speed, radar_fresh=False)
+    synchronized = update(controller, previous_mpc_source=LongitudinalPlanSource.lead0, planner_speed=planner_speed)
+
+    assert held.target_speed == pytest.approx(matched.target_speed)
+    assert held.state == matched.state
     assert synchronized.target_speed == pytest.approx(planner_speed)
     assert synchronized.state == AccelControllerState.hold
 
@@ -414,6 +431,61 @@ class TestPaceAndLifecycle:
     assert launch_index == STOP_HOLD_EXIT_FRAMES - 1
     assert results[launch_index].target_speed >= 0.1 + LAUNCH_TARGET_HEADROOM
 
+  def test_reused_radar_does_not_pulse_stop_hold_or_departure_target(self):
+    controller = make_controller()
+    enter_stop_hold(controller)
+    departing = make_radar(make_lead(status=True, d_rel=8.0, v_lead_k=2.0))
+
+    for frame in range(STOP_HOLD_EXIT_FRAMES):
+      fresh = update(controller, departing, base_speed=8.0, v_ego=0.1)
+      held = update(controller, departing, base_speed=8.0, v_ego=0.1, radar_fresh=False,
+                    previous_mpc_source=LongitudinalPlanSource.lead0, planner_speed=0.01)
+      assert held.target_speed == pytest.approx(fresh.target_speed)
+      assert held.state == fresh.state
+      assert held.selected_lead == fresh.selected_lead == 0
+      assert held.effective_accel_max == pytest.approx(fresh.effective_accel_max)
+      if frame < STOP_HOLD_EXIT_FRAMES - 1:
+        assert fresh.state == AccelControllerState.stopHold
+        expected_limit = STOP_HOLD_ACCEL_MAX if frame == 0 else STOP_HOLD_DEPARTURE_ACCEL_MAX
+        assert fresh.effective_accel_max == expected_limit
+
+    assert fresh.launching and held.launching
+    assert fresh.target_speed == held.target_speed == 8.0
+
+  def test_single_frame_departure_stays_at_the_stationary_hold_limit(self):
+    controller = make_controller()
+    enter_stop_hold(controller)
+    departing = make_radar(make_lead(status=True, d_rel=8.0, v_lead_k=2.0))
+    stopped = make_radar(make_lead(status=True, d_rel=8.0, v_lead_k=0.0))
+
+    warm = update(controller, departing, base_speed=8.0, v_ego=0.0)
+    held = update(controller, stopped, base_speed=8.0, v_ego=0.0)
+
+    assert warm.state == held.state == AccelControllerState.stopHold
+    assert not warm.launching and not held.launching
+    assert warm.effective_accel_max == STOP_HOLD_ACCEL_MAX
+    assert held.effective_accel_max == STOP_HOLD_ACCEL_MAX
+    assert held.target_speed == 0.0
+
+  def test_previous_stop_without_a_lead_does_not_latch_stop_hold(self):
+    result = update(
+      make_controller(), base_speed=8.0, v_ego=0.0, previous_should_stop=True,
+      previous_mpc_source=LongitudinalPlanSource.cruise,
+    )
+
+    assert result.state != AccelControllerState.stopHold
+    assert result.target_speed >= LAUNCH_TARGET_HEADROOM
+
+  def test_previous_lead_stop_survives_a_fresh_full_field_dropout(self):
+    result = update(
+      make_controller(), base_speed=8.0, v_ego=0.0, previous_should_stop=True,
+      previous_mpc_source=LongitudinalPlanSource.lead0,
+    )
+
+    assert result.state == AccelControllerState.stopHold
+    assert result.target_speed == 0.0
+    assert result.effective_accel_max == 0.0
+
   def test_stop_hold_without_usable_lead_stays_pinned_to_zero(self):
     controller = make_controller()
     enter_stop_hold(controller)
@@ -475,6 +547,7 @@ class TestPaceAndLifecycle:
     assert not timed_out.active and not timed_out.shadow_active
     assert timed_out.target_speed == timed_out.base_speed
     assert timed_out.mpc_accel_max is None
+    assert timed_out.selected_lead == -1 and math.isinf(timed_out.raw_energy_cap)
     assert controller.live.pace is None and controller.shadow.pace is None
 
   @pytest.mark.parametrize("override", [{"enabled": False}, {"acc_selected": False}, {"engaged": False}, {"cruise_initialized": False}, {"a_ego": math.inf}])
@@ -506,6 +579,7 @@ class TestPaceAndLifecycle:
       update(controller, restrictive_radar())
     controller.reset()
 
+    assert controller._held_envelope is None
     for path in (controller.live, controller.shadow):
       assert path.pace is None and path.accel_limit is None and path.matched_accel_limit is None
       assert path.state == AccelControllerState.inactive
