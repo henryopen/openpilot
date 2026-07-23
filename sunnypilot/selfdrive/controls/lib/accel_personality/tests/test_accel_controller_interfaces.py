@@ -120,24 +120,41 @@ def test_active_acc_uses_target_and_ceiling_in_exactly_one_solve():
   assert calls == [({}, 15.0, True, ceiling)]
 
 
-def test_valid_lead_stop_hold_keeps_raw_mpc_target_with_bounded_ceiling():
-  ceiling = tuple(np.linspace(0.1, 0.1, N + 1))
+def test_valid_lead_stop_hold_preplans_from_raw_target_without_an_accel_ceiling():
   planner, _ = planner_for_mpc_test(
-    target_speed=0.0, mpc_accel_max=ceiling, state=AccelControllerState.stopHold, selected_lead=0,
+    target_speed=0.0, mpc_accel_max=None, state=AccelControllerState.stopHold, selected_lead=0,
   )
   _, calls = run_controller_mpc(planner)
 
-  assert calls == [({}, 20.0, True, ceiling)]
+  assert calls == [({}, 20.0, True, None)]
 
 
-def test_missing_lead_stop_hold_keeps_zero_mpc_target_and_ceiling():
-  ceiling = tuple(np.zeros(N + 1))
+def test_missing_lead_stop_hold_keeps_zero_mpc_target_without_an_accel_ceiling():
   planner, _ = planner_for_mpc_test(
-    target_speed=0.0, mpc_accel_max=ceiling, state=AccelControllerState.stopHold, selected_lead=-1,
+    target_speed=0.0, mpc_accel_max=None, state=AccelControllerState.stopHold, selected_lead=-1,
   )
   _, calls = run_controller_mpc(planner)
 
-  assert calls == [({}, 0.0, True, ceiling)]
+  assert calls == [({}, 0.0, True, None)]
+
+
+@pytest.mark.parametrize(
+  ("active", "departure_launching", "is_e2e", "expected"),
+  [
+    (True, True, False, False),
+    (True, False, False, True),
+    (False, True, False, True),
+    (True, True, True, True),
+  ],
+)
+def test_only_confirmed_live_acc_departure_clears_should_stop(active, departure_launching, is_e2e, expected):
+  planner = LongitudinalPlannerSP.__new__(LongitudinalPlannerSP)
+  planner.accel_controller_result = SimpleNamespace(
+    active=active, departure_launching=departure_launching, state=AccelControllerState.stopHold,
+  )
+  assert planner.accel_controller_should_stop(True, is_e2e) is expected
+  expected_hold = active and not departure_launching and not is_e2e
+  assert planner.accel_controller_should_stop(False, is_e2e) is expected_hold
 
 
 @pytest.mark.parametrize(("active", "is_e2e"), [(False, False), (True, True)])

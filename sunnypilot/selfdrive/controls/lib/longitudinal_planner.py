@@ -143,12 +143,20 @@ class LongitudinalPlannerSP:
     result = self.accel_controller_result
     actuating = result.active and not is_e2e and not force_decel and not previous_mpc_failed
     valid_lead_stop_hold = (actuating and result.state == AccelControllerState.stopHold
-                            and getattr(result, 'selected_lead', -1) >= 0)
+                            and result.selected_lead >= 0)
     controller_v_cruise = mpc_v_cruise if valid_lead_stop_hold else min(mpc_v_cruise, result.target_speed) if actuating else mpc_v_cruise
     accel_max = result.mpc_accel_max if actuating else None
     self._run_mpc(sm, controller_v_cruise, prev_accel_constraint, accel_max)
 
     return is_e2e
+
+  def accel_controller_should_stop(self, should_stop: bool, is_e2e: bool) -> bool:
+    result = self.accel_controller_result
+    if result is None or not result.active or is_e2e:
+      return should_stop
+    if result.departure_launching:
+      return False
+    return should_stop or result.state == AccelControllerState.stopHold
 
   def update(self, sm: messaging.SubMaster) -> None:
     self._radar_fresh_this_cycle = self._update_radar_freshness(sm)
