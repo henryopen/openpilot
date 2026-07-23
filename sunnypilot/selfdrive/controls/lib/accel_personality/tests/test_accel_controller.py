@@ -13,13 +13,14 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelController, AccelControllerState, AccelProfile
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
   ACCEL_LIMIT_HORIZON_JERK, ACCEL_LIMIT_TRANSITION_JERK, ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V, CAP_FILTER_FRAMES,
-  LAUNCH_END_SPEED, LAUNCH_TARGET_HEADROOM, LAUNCH_TARGET_SLEW, LEAD_MATCH_ACCEL_SLEW, PROFILE_CONFIGS, RADAR_STALE_TIMEOUT,
-  STOP_GAP_RESERVE, STOP_HOLD_ACCEL_MAX, STOP_HOLD_DEPARTURE_ACCEL_MAX, STOP_HOLD_EXIT_FRAMES,
+  LAUNCH_END_SPEED, LAUNCH_TARGET_HEADROOM, LAUNCH_TARGET_SLEW, LEAD_MATCH_ACCEL_SLEW, MATCHED_PACE_DECEL_RATE, PROFILE_CONFIGS,
+  RADAR_STALE_TIMEOUT, STOP_GAP_RESERVE, STOP_HOLD_ACCEL_MAX, STOP_HOLD_DEPARTURE_ACCEL_MAX, STOP_HOLD_EXIT_FRAMES,
 )
 
 
-def make_lead(*, status=False, d_rel=0.0, v_lead_k=0.0, a_lead_k=0.0, a_lead_tau=1.5):
-  return SimpleNamespace(status=status, dRel=d_rel, vLeadK=v_lead_k, aLeadK=a_lead_k, aLeadTau=a_lead_tau)
+def make_lead(*, status=False, d_rel=0.0, v_lead_k=0.0, a_lead_k=0.0, a_lead_tau=1.5, radar_track_id=-1):
+  return SimpleNamespace(status=status, dRel=d_rel, vLeadK=v_lead_k, aLeadK=a_lead_k, aLeadTau=a_lead_tau,
+                         radarTrackId=radar_track_id)
 
 
 def make_radar(lead_one=None, lead_two=None):
@@ -131,6 +132,19 @@ class TestProfiles:
     assert reduced.mpc_accel_max is not None
     assert max(reduced.mpc_accel_max) <= 0.30 + 1e-9
 
+  def test_one_frame_stock_zero_does_not_poison_profile_recovery(self):
+    clean_controller, glitch_controller = make_controller(), make_controller()
+    for _ in range(clean_controller.lead_loss_hold_frames + 10):
+      clean = update(clean_controller, v_ego=10.0, stock_accel_max=1.5)
+      recovered = update(glitch_controller, v_ego=10.0, stock_accel_max=1.5)
+
+    limited = update(glitch_controller, v_ego=10.0, stock_accel_max=0.0)
+    clean = update(clean_controller, v_ego=10.0, stock_accel_max=1.5)
+    recovered = update(glitch_controller, v_ego=10.0, stock_accel_max=1.5)
+
+    assert limited.effective_accel_max == 0.0
+    assert recovered.effective_accel_max == pytest.approx(clean.effective_accel_max)
+
   @pytest.mark.parametrize("radar_fresh", (True, False), ids=("dropout", "stale"))
   def test_matched_lead_ceiling_obeys_current_stock_limit(self, radar_fresh):
     controller = make_controller()
@@ -204,7 +218,9 @@ class TestMpcCeiling:
     assert controller.live.matched_lead
     assert braking.mpc_accel_max is not None and accelerating.mpc_accel_max is not None
     assert abs(accelerating.effective_accel_max - braking.effective_accel_max) <= LEAD_MATCH_ACCEL_SLEW * DT_MDL + 1e-9
-    assert accelerating.target_speed >= braking.target_speed
+    target_drop = braking.target_speed - accelerating.target_speed
+    assert 0.0 <= target_drop <= MATCHED_PACE_DECEL_RATE * DT_MDL + 1e-9
+    assert accelerating.state == AccelControllerState.restrict
 
   def test_matched_lead_ignores_two_frame_speed_jump(self):
     clean_controller, noisy_controller = make_controller(), make_controller()
@@ -274,7 +290,9 @@ class TestEnergyEnvelope:
     radar = make_radar(make_lead(status=True, d_rel=70.0, v_lead_k=12.0), make_lead(status=True, d_rel=25.0, v_lead_k=8.0))
     assert make_controller().calculate_energy_envelope(radar, 10.0, 0.0, AccelProfile.normal).selected_lead == 1
 
-  @pytest.mark.parametrize("field,value", [("aLeadK", math.nan), ("aLeadK", math.inf), ("aLeadTau", math.nan), ("aLeadTau", -1.0)])
+  @pytest.mark.parametrize("field,value", [
+    ("aLeadK", math.nan), ("aLeadK", math.inf), ("aLeadTau", math.nan), ("aLeadTau", -1.0), ("radarTrackId", math.nan),
+  ])
   def test_nonessential_invalid_lead_fields_are_sanitized(self, field, value):
     lead = make_lead(status=True, d_rel=30.0, v_lead_k=8.0)
     setattr(lead, field, value)
@@ -314,6 +332,66 @@ class TestPaceAndLifecycle:
     assert np.max(-np.diff(targets)) <= max_step + 1e-9
     assert results[-1].state == AccelControllerState.restrict
     assert results[-1].target_speed < results[0].target_speed
+
+  @pytest.mark.parametrize("clear_frames", (1, 2, CAP_FILTER_FRAMES + 1))
+  def test_lead_acquired_after_clear_road_cannot_step_pace_to_planner(self, clear_frames):
+    controller = make_controller()
+    for _ in range(clear_frames):
+      update(controller, base_speed=25.0, v_ego=20.0, planner_speed=25.0)
+
+    results = [update(controller, restrictive_radar(), base_speed=25.0, v_ego=20.0, planner_speed=20.0)
+               for _ in range(CAP_FILTER_FRAMES)]
+    targets = np.asarray([25.0, *(result.target_speed for result in results)])
+    max_step = PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * DT_MDL
+
+    assert np.max(-np.diff(targets)) <= max_step + 1e-9
+
+  def test_lead_slot_is_forgotten_before_reacquisition(self):
+    controller = make_controller()
+    lead_one = restrictive_radar()
+    for _ in range(CAP_FILTER_FRAMES + 10):
+      update(controller, lead_one, base_speed=25.0, v_ego=20.0, planner_speed=20.0, planner_accel=-0.2)
+
+    for _ in range(controller.lead_loss_hold_frames):
+      before = update(controller, base_speed=25.0, v_ego=20.0, planner_speed=20.0, planner_accel=-0.2)
+    assert controller.live.selected_lead == -1
+
+    lead_two = make_radar(lead_two=make_lead(status=True, d_rel=20.0, v_lead_k=8.0, a_lead_k=-0.5))
+    results = [update(controller, lead_two, base_speed=25.0, v_ego=20.0, planner_speed=5.0, planner_accel=-0.2)
+               for _ in range(CAP_FILTER_FRAMES)]
+    targets = np.asarray([before.target_speed, *(result.target_speed for result in results)])
+    max_step = PROFILE_CONFIGS[AccelProfile.normal].comfort_decel * DT_MDL
+
+    assert np.max(-np.diff(targets)) <= max_step + 1e-9
+
+  @pytest.mark.parametrize("replacement_track_id", (200, -1), ids=("radar-track", "vision-track"))
+  def test_false_relief_track_replacement_freezes_bounded_pace_release(self, replacement_track_id):
+    controller = make_controller()
+    original = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0, radar_track_id=100))
+    for _ in range(CAP_FILTER_FRAMES + 10):
+      update(controller, original, base_speed=25.0, v_ego=10.0, planner_speed=10.0, planner_accel=-0.2)
+    for _ in range(20):
+      before = update(controller, original, base_speed=25.0, v_ego=8.0, planner_speed=8.0, planner_accel=-0.2)
+    assert controller.live.matched_lead
+
+    replacement = make_radar(make_lead(status=True, d_rel=40.0, v_lead_k=12.0, radar_track_id=replacement_track_id))
+    switched = update(controller, replacement, base_speed=25.0, v_ego=8.0, planner_speed=5.0, planner_accel=-0.2)
+
+    target_drop = before.target_speed - switched.target_speed
+    assert 0.0 <= target_drop <= MATCHED_PACE_DECEL_RATE * DT_MDL + 1e-9
+    assert switched.target_speed < switched.base_speed
+    assert controller.live.lead_switch_guard_frames == controller.lead_loss_hold_frames
+
+  def test_track_id_churn_without_false_relief_does_not_arm_guard(self):
+    controller = make_controller()
+    original = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0, radar_track_id=100))
+    for _ in range(CAP_FILTER_FRAMES + 10):
+      update(controller, original, base_speed=25.0, v_ego=10.0, planner_speed=10.0, planner_accel=-0.2)
+
+    replacement = make_radar(make_lead(status=True, d_rel=20.0, v_lead_k=8.0, radar_track_id=200))
+    update(controller, replacement, base_speed=25.0, v_ego=10.0, planner_speed=10.0, planner_accel=-0.2)
+
+    assert controller.live.lead_switch_guard_frames == 0
 
   def test_short_dropout_holds_then_releases_at_profile_rate(self):
     controller = make_controller()

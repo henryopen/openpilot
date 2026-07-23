@@ -16,7 +16,7 @@ from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
   ACCEL_LIMIT_HORIZON_JERK, ACCEL_LIMIT_TRANSITION_JERK, ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V, BRAKING_ACCEL_LIMIT_THRESHOLD,
   CAP_FILTER_FRAMES, LAUNCH_END_SPEED, LAUNCH_TARGET_HEADROOM, LAUNCH_TARGET_SLEW, LEAD_LOSS_HOLD_TIME, LEAD_MATCH_ACCEL_GAIN,
-  LEAD_MATCH_ACCEL_SLEW, LEAD_MATCH_GAP_GAIN, LEAD_MATCH_SPEED_HEADROOM, MAX_LEAD_ACCEL_TAU, MIN_LEAD_SPEED,
+  LEAD_MATCH_ACCEL_SLEW, LEAD_MATCH_GAP_GAIN, LEAD_MATCH_SPEED_HEADROOM, MATCHED_PACE_DECEL_RATE, MAX_LEAD_ACCEL_TAU, MIN_LEAD_SPEED,
   PACE_RELIEF_DEADBAND, PACE_RESTRICT_DEADBAND, PROFILE_CONFIGS, RADAR_STALE_TIMEOUT, STOP_GAP_RESERVE, STOP_GAP_RESERVE_DECEL_BP,
   STOP_GAP_RESERVE_LEAD_SPEED,
   STOP_HOLD_CREEP_DISTANCE, STOP_HOLD_CREEP_SPEED, STOP_HOLD_EGO_SPEED, STOP_HOLD_EXIT_FRAMES, STOP_HOLD_EXIT_SPEED,
@@ -38,6 +38,7 @@ class AccelControllerState(IntEnum):
 class EnergyEnvelope:
   cap: float = math.inf
   selected_lead: int = -1
+  selected_lead_track_id: int = -1
   selected_lead_speed: float = math.inf
   selected_lead_accel: float = 0.0
   departure_lead_index: int = -1
@@ -90,6 +91,9 @@ class _ControllerPath:
   departure_frames: int = 0
   active_frames: int = 0
   lead_loss_frames: int = 0
+  lead_switch_guard_frames: int = 0
+  selected_lead: int = -1
+  selected_lead_track_id: int = -1
   stale_frames: int = 0
   launching: bool = False
   departure_launch: bool = False
@@ -125,6 +129,9 @@ class _ControllerPath:
     self.departure_frames = 0
     self.active_frames = 0
     self.lead_loss_frames = 0
+    self.lead_switch_guard_frames = 0
+    self.selected_lead = -1
+    self.selected_lead_track_id = -1
     self.stale_frames = 0
     self.launching = False
     self.departure_launch = False
@@ -202,6 +209,13 @@ class AccelController:
       a_lead_tau = _LEAD_ACCEL_TAU
     return d_rel, max(v_lead, 0.0), float(np.clip(a_lead, -10.0, 5.0)), a_lead_tau
 
+  @staticmethod
+  def _lead_track_id(lead) -> int:
+    try:
+      return max(int(lead.radarTrackId), -1)
+    except (AttributeError, OverflowError, TypeError, ValueError):
+      return -1
+
   def calculate_energy_envelope(self, radar_state, v_ego: float, a_ego: float, profile: int | AccelProfile,
                                 follow_personality=log.LongitudinalPersonality.standard) -> EnergyEnvelope:
     delay = self._delay()
@@ -258,7 +272,8 @@ class AccelController:
         continue
 
       candidates.append(EnergyEnvelope(
-        cap=cap, selected_lead=lead_index, selected_lead_speed=v_lead_delay, selected_lead_accel=a_lead,
+        cap=cap, selected_lead=lead_index, selected_lead_track_id=self._lead_track_id(lead),
+        selected_lead_speed=v_lead_delay, selected_lead_accel=a_lead,
         usable_gap=usable_gap, closing_speed=closing_speed, required_decel=required_decel, lead_status=lead_status,
       ))
       departure_candidates.append((departure_distance, lead_index))
@@ -273,7 +288,8 @@ class AccelController:
     departure_lead_index = min(departure_candidates, key=lambda candidate: candidate[0])[1]
     departure_lead_speed = departure_speeds[departure_lead_index]
     return EnergyEnvelope(
-      cap=selected.cap, selected_lead=selected.selected_lead, selected_lead_speed=selected.selected_lead_speed,
+      cap=selected.cap, selected_lead=selected.selected_lead, selected_lead_track_id=selected.selected_lead_track_id,
+      selected_lead_speed=selected.selected_lead_speed,
       selected_lead_accel=selected.selected_lead_accel,
       departure_lead_index=departure_lead_index, departure_lead_speed=departure_lead_speed,
       departure_cap=departure_caps[departure_lead_index], departure_lead_separations=tuple(departure_separations),
@@ -333,12 +349,29 @@ class AccelController:
     path.matched_accel_limit = None
 
   def _update_path(self, path: _ControllerPath, envelope: EnergyEnvelope, base_speed: float, v_ego: float,
-                   profile: AccelProfile, positive_accel_max: float, stock_accel_max: float, previous_should_stop: bool,
+                   profile: AccelProfile, profile_accel_max: float, previous_should_stop: bool,
                    previous_mpc_source, planner_speed: float, planner_accel: float) -> float:
     confirmed_lead = self._update_samples(path, envelope)
     path.active_frames += 1
     has_lead = envelope.selected_lead >= 0
     filtered_cap = path.filtered_cap
+    slot_changed = has_lead and path.selected_lead >= 0 and envelope.selected_lead != path.selected_lead
+    track_changed = (has_lead and path.selected_lead >= 0 and envelope.selected_lead == path.selected_lead
+                     and envelope.selected_lead_track_id != path.selected_lead_track_id
+                     and (path.selected_lead_track_id >= 0 or envelope.selected_lead_track_id >= 0))
+    false_relief = (has_lead and math.isfinite(filtered_cap)
+                    and envelope.cap >= filtered_cap + PACE_RELIEF_DEADBAND)
+    if (slot_changed or track_changed) and false_relief and path.lead_switch_guard_frames == 0 and planner_accel <= BRAKING_ACCEL_LIMIT_THRESHOLD:
+      path.lead_switch_guard_frames = self.lead_loss_hold_frames
+    elif path.lead_switch_guard_frames > 0:
+      path.lead_switch_guard_frames -= 1
+    if has_lead:
+      path.selected_lead = envelope.selected_lead
+      path.selected_lead_track_id = envelope.selected_lead_track_id
+    elif path.lead_loss_frames >= self.lead_loss_hold_frames:
+      path.lead_switch_guard_frames = 0
+      path.selected_lead = -1
+      path.selected_lead_track_id = -1
     departure_separation = (envelope.departure_lead_separations[envelope.departure_lead_index]
                             if envelope.departure_lead_index >= 0 else math.inf)
     stopped_lead_hold = (has_lead and envelope.has_nearly_stopped_lead
@@ -353,9 +386,9 @@ class AccelController:
     confirmed_creep_departure = path.launching and path.departure_launch and self._creep_departure(path, envelope)
 
     if path.accel_limit is None:
-      path.accel_limit = positive_accel_max
+      path.accel_limit = profile_accel_max
     else:
-      path.accel_limit = min(stock_accel_max, self._move(path.accel_limit, positive_accel_max, ACCEL_LIMIT_TRANSITION_JERK, self.dt))
+      path.accel_limit = self._move(path.accel_limit, profile_accel_max, ACCEL_LIMIT_TRANSITION_JERK, self.dt)
     if (path.active_frames >= self.lead_loss_hold_frames and math.isfinite(filtered_cap)
         and has_lead and planner_accel <= BRAKING_ACCEL_LIMIT_THRESHOLD):
       path.braking_limited = True
@@ -454,14 +487,22 @@ class AccelController:
       if path.matched_accel_limit is None:
         path.matched_accel_limit = path.accel_limit
       path.matched_accel_limit = min(path.accel_limit, self._move(path.matched_accel_limit, desired_accel_limit, LEAD_MATCH_ACCEL_SLEW, self.dt))
-      path.pace = min(base_speed, path.pace + path.accel_limit * self.dt)
-      path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.release
+      matched_ceiling = min(base_speed, filtered_cap)
+      if matched_ceiling <= path.pace - PACE_RESTRICT_DEADBAND:
+        path.pace = max(matched_ceiling, path.pace - MATCHED_PACE_DECEL_RATE * self.dt)
+        path.state = AccelControllerState.restrict
+      elif path.lead_switch_guard_frames == 0 and matched_ceiling >= path.pace + PACE_RELIEF_DEADBAND:
+        path.pace = min(matched_ceiling, path.pace + path.accel_limit * self.dt)
+        path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.release
+      else:
+        path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.hold
       return path.pace
     path.matched_accel_limit = None
 
     ceiling = min(base_speed, filtered_cap)
-    if confirmed_lead and not path.launching:
-      path.pace = min(path.pace, planner_speed)
+    if (confirmed_lead and path.active_frames == CAP_FILTER_FRAMES // 2 + 1 and not path.launching
+        and planner_speed < path.pace):
+      path.pace = max(planner_speed, path.pace - comfort_decel * self.dt)
 
     if self._lead_source(previous_mpc_source) and not has_lead and planner_speed < path.pace:
       path.pace = min(path.pace, planner_speed)
@@ -482,7 +523,8 @@ class AccelController:
     confirmed_clear_road = not math.isfinite(filtered_cap) and not guarded_lead_loss
     relief = not has_lead or envelope.closing_speed <= 0.0
     if relief and (ceiling >= path.pace + PACE_RELIEF_DEADBAND or (confirmed_clear_road and ceiling > path.pace)):
-      path.pace = min(ceiling, path.pace + path.accel_limit * self.dt)
+      if path.lead_switch_guard_frames == 0:
+        path.pace = min(ceiling, path.pace + path.accel_limit * self.dt)
       path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.release
     else:
       path.state = AccelControllerState.free if path.pace >= base_speed - PACE_RESTRICT_DEADBAND else AccelControllerState.hold
@@ -547,7 +589,7 @@ class AccelController:
 
     shadow_fresh = self._update_freshness(self.shadow, radar_fresh) if valid_context else False
     if valid_context and radar_fresh:
-      self._update_path(self.shadow, envelope, base_speed, sanitized_v_ego, selected_profile, positive_accel_max, stock_accel_max, previous_should_stop,
+      self._update_path(self.shadow, envelope, base_speed, sanitized_v_ego, selected_profile, profile_accel_max, previous_should_stop,
                         previous_mpc_source, planner_speed, planner_accel)
       shadow_active = True
     elif valid_context and not shadow_fresh and self.shadow.pace is not None:
@@ -559,7 +601,7 @@ class AccelController:
     live_context = valid_context and bool(enabled) and bool(acc_selected)
     live_fresh = self._update_freshness(self.live, radar_fresh) if live_context else False
     if live_context and radar_fresh:
-      pace_target = self._update_path(self.live, envelope, base_speed, sanitized_v_ego, selected_profile, positive_accel_max, stock_accel_max,
+      pace_target = self._update_path(self.live, envelope, base_speed, sanitized_v_ego, selected_profile, profile_accel_max,
                                       previous_should_stop,
                                       previous_mpc_source, planner_speed, planner_accel)
       live_active = True

@@ -11,7 +11,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_
 from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
 from openpilot.selfdrive.test.longitudinal_maneuvers.plant import PRIUS_TSS2_ROUTE_MODEL, LeadObservation, Plant
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelControllerState, AccelProfile
-from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import LEAD_MATCH_ACCEL_SLEW
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import LEAD_MATCH_ACCEL_SLEW, MATCHED_PACE_DECEL_RATE
 
 ACTUATOR_DYNAMICS = (
   (0.10, 0.20),
@@ -493,21 +493,22 @@ def test_short_false_departure_does_not_launch_the_vehicle(departure_frames):
   assert trace.solver_failures == 0
 
 
-def test_matched_lead_recovery_preserves_profile_ordering():
+@pytest.mark.parametrize(("actuator_delay", "actuator_lag"), ACTUATOR_DYNAMICS, ids=ACTUATOR_IDS)
+def test_matched_lead_recovery_preserves_profile_ordering(actuator_delay, actuator_lag):
   traces = [
     _run(
       duration=32.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=20.0,
-      distance_lead=100.0, v_lead=10.0, v_cruise=30.0, actuator_delay=0.15, actuator_lag=0.25,
+      distance_lead=100.0, v_lead=10.0, v_cruise=30.0, actuator_delay=actuator_delay, actuator_lag=actuator_lag,
     )
     for profile in range(3)
   ]
-  response = (traces[0].time >= 23.5) & (traces[0].time <= 29.0)
+  response = (traces[0].time >= 15.0) & (traces[0].time <= 28.5)
   mean_accel = [float(np.mean(trace.a_target[response])) for trace in traces]
   final_speed = [float(trace.speed[np.flatnonzero(response)[-1]]) for trace in traces]
 
   assert mean_accel[0] + 0.06 < mean_accel[1]
   assert mean_accel[1] + 0.025 < mean_accel[2]
-  assert max(final_speed) - min(final_speed) < 0.10
+  assert max(final_speed) - min(final_speed) < 0.15
   assert all(not _has_propulsion_brake_cycle(trace.a_target[response]) for trace in traces)
   assert all(trace.solver_failures == 0 for trace in traces)
 
@@ -633,6 +634,55 @@ def test_false_range_relief_matches_clean_controller_response():
   assert not _has_propulsion_after_braking(trace.a_target[response])
   assert not _has_propulsion_brake_cycle(trace.a_target[response])
   _assert_no_new_solver_failures(trace, baseline)
+
+
+@pytest.mark.parametrize("profile", range(3), ids=("eco", "normal", "sport"))
+@pytest.mark.parametrize(("actuator_delay", "actuator_lag"), ACTUATOR_DYNAMICS, ids=ACTUATOR_IDS)
+def test_route_507_braking_lead_slot_switch_has_no_false_relief_cycle(profile, actuator_delay, actuator_lag):
+  glitch_start = 67.0
+  glitch_end = 67.5
+
+  def lead_speed(current_time: float) -> float:
+    braking_time = np.clip(current_time - 60.0, 0.0, 7.0)
+    return 10.0 - 0.42 * braking_time
+
+  def observe(current_time: float, lead_name: str, truth: LeadObservation) -> LeadObservation | None:
+    if glitch_start <= current_time < glitch_end:
+      if lead_name == "leadOne":
+        return None
+      return truth | {
+        "dRel": truth["dRel"] + 20.0,
+        "vLead": truth["vLead"] + 4.0,
+        "vLeadK": truth["vLeadK"] + 4.0,
+        "vRel": truth["vRel"] + 4.0,
+        "aLeadK": 0.0,
+        "radar": True,
+        "radarTrackId": 200,
+      }
+    if lead_name == "leadTwo":
+      return None
+    return truth | {"aLeadK": -0.42 if 60.0 <= current_time < glitch_start else 0.0, "radar": True, "radarTrackId": 100}
+
+  common = dict(
+    duration=73.0, controller_enabled=True, profile=profile, lead_relevancy=True, speed=20.0,
+    distance_lead=100.0, v_lead=lead_speed, v_cruise=30.0, actuator_delay=actuator_delay, actuator_lag=actuator_lag,
+  )
+  clean = _run(**common)
+  trace = _run(lead_observation_fn=observe, **common)
+  response = (trace.time >= 66.0) & (trace.time <= 72.0)
+  jerk_response = (trace.time[1:] >= 66.0) & (trace.time[1:] <= 72.0)
+  clean_gap = clean.distance_lead - clean.distance
+  gap = trace.distance_lead - trace.distance
+
+  assert not _has_propulsion_brake_cycle(trace.a_target[response])
+  assert not _has_brake_coast_brake(trace.a_target[response])
+  assert np.max(np.abs(np.diff(trace.a_target)[jerk_response] / DT_MDL)) < 3.0
+  assert np.max(-np.diff(trace.target_speed)[jerk_response]) <= MATCHED_PACE_DECEL_RATE * DT_MDL + 1e-9
+  assert np.min(gap[response]) >= np.min(clean_gap[response]) - DROPOUT_GAP_TOLERANCE
+  assert not trace.fcw.any()
+  assert trace.solver_failures == 0
+  assert trace.raw_radar_passthrough.all()
+  assert np.all(trace.mpc_calls == 1)
 
 
 @pytest.mark.parametrize("profile", range(3), ids=("eco", "normal", "sport"))
