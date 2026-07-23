@@ -11,8 +11,12 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalPlanSource as MpcLongitudinalPlanSource
 from openpilot.sunnypilot import get_sanitize_int_param
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelController, AccelControllerState, AccelProfile
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
+  MPC_DECEL_JERK_COST_MULTIPLIER, MPC_DECEL_JERK_MAX_REQUIRED_DECEL, MPC_DECEL_JERK_MAX_TARGET_REDUCTION,
+)
 from openpilot.sunnypilot.selfdrive.controls.lib.dec.dec import DynamicExperimentalController
 from openpilot.sunnypilot.selfdrive.controls.lib.e2e_alerts_helper import E2EAlertsHelper
 from openpilot.sunnypilot.selfdrive.controls.lib.smart_cruise_control.smart_cruise_control import SmartCruiseControl
@@ -39,6 +43,7 @@ class LongitudinalPlannerSP:
     self.e2e_alerts_helper = E2EAlertsHelper()
     self.accel_controller = AccelController(CP, dt=dt)
     self.accel_controller_result = None
+    self._accel_jerk_smoothing_blocked = False
     self._radar_log_mono_time = None
     self._radar_fresh_this_cycle = True
 
@@ -123,8 +128,11 @@ class LongitudinalPlannerSP:
     )
     return self.accel_controller_result.target_speed
 
-  def _run_mpc(self, sm: messaging.SubMaster, v_cruise: float, prev_accel_constraint: bool, accel_max=None) -> None:
-    self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
+  def _run_mpc(self, sm: messaging.SubMaster, v_cruise: float, prev_accel_constraint: bool, accel_max=None,
+               *, jerk_cost_multiplier: float = 1.0) -> None:
+    self.mpc.set_weights(
+      prev_accel_constraint, personality=sm['selfdriveState'].personality, jerk_cost_multiplier=jerk_cost_multiplier,
+    )
     self.mpc.set_cur_state(self.v_desired_filter.x, self.a_desired)
     self.mpc.update(sm['radarState'], v_cruise, personality=sm['selfdriveState'].personality, accel_max=accel_max)
 
@@ -146,7 +154,23 @@ class LongitudinalPlannerSP:
                             and result.selected_lead >= 0)
     controller_v_cruise = mpc_v_cruise if valid_lead_stop_hold else min(mpc_v_cruise, result.target_speed) if actuating else mpc_v_cruise
     accel_max = result.mpc_accel_max if actuating else None
-    self._run_mpc(sm, controller_v_cruise, prev_accel_constraint, accel_max)
+    target_reduction = mpc_v_cruise - controller_v_cruise
+    lead_restriction = (
+      actuating and prev_accel_constraint and result.state == AccelControllerState.restrict and result.selected_lead >= 0
+      and not result.launching and target_reduction > 1e-6
+    )
+    smoothing_eligible = (lead_restriction and target_reduction < MPC_DECEL_JERK_MAX_TARGET_REDUCTION
+                          and 0.0 < result.required_decel < MPC_DECEL_JERK_MAX_REQUIRED_DECEL)
+    smoothing_blocked = getattr(self, '_accel_jerk_smoothing_blocked', False)
+    if previous_mpc_failed:
+      smoothing_blocked = True
+    elif not lead_restriction:
+      smoothing_blocked = False
+    elif not smoothing_blocked and (getattr(self.mpc, 'source', None) != MpcLongitudinalPlanSource.cruise or not smoothing_eligible):
+      smoothing_blocked = True
+    self._accel_jerk_smoothing_blocked = smoothing_blocked
+    jerk_cost_multiplier = MPC_DECEL_JERK_COST_MULTIPLIER if smoothing_eligible and not smoothing_blocked else 1.0
+    self._run_mpc(sm, controller_v_cruise, prev_accel_constraint, accel_max, jerk_cost_multiplier=jerk_cost_multiplier)
 
     return is_e2e
 

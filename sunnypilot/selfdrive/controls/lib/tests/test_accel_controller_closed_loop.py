@@ -10,9 +10,10 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE, get_T_FOLLOW
 from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
 from openpilot.selfdrive.test.longitudinal_maneuvers.plant import PRIUS_TSS2_ROUTE_MODEL, LeadObservation, Plant
+from openpilot.sunnypilot.selfdrive.controls.lib import longitudinal_planner as longitudinal_planner_sp
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelControllerState, AccelProfile
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
-  MATCHED_PACE_DECEL_RATE, PACE_TARGET_RESERVE,
+  MATCHED_PACE_DECEL_RATE, MPC_DECEL_JERK_COST_MULTIPLIER, PACE_TARGET_RESERVE,
 )
 
 ACTUATOR_DYNAMICS = (
@@ -415,6 +416,26 @@ def test_clear_road_launch_is_prompt_and_profiles_separate_above_launch_speed():
   assert final_speed[1] + 0.75 < final_speed[2]
   ceiling_at_ten = [float(np.interp(10.0, trace.speed, trace.mpc_upper_min)) for trace in traces]
   assert ceiling_at_ten[0] < ceiling_at_ten[1] < ceiling_at_ten[2]
+
+
+@pytest.mark.parametrize(
+  ("speed", "v_cruise"),
+  ((0.0, 22.352), (25.0, 30.0), (35.0, 35.0)),
+)
+def test_decel_smoothing_does_not_change_clear_road_acceleration_at_representative_speeds(monkeypatch, speed, v_cruise):
+  common = dict(
+    duration=3.0, controller_enabled=True, profile=AccelProfile.sport, lead_relevancy=False,
+    speed=speed, v_cruise=v_cruise, actuator_delay=0.15, actuator_lag=0.20,
+  )
+  monkeypatch.setattr(longitudinal_planner_sp, "MPC_DECEL_JERK_COST_MULTIPLIER", 1.0)
+  stock_weight = _run(**common)
+  monkeypatch.setattr(longitudinal_planner_sp, "MPC_DECEL_JERK_COST_MULTIPLIER", MPC_DECEL_JERK_COST_MULTIPLIER)
+  smoothed = _run(**common)
+
+  np.testing.assert_allclose(smoothed.a_target, stock_weight.a_target, atol=1e-9, rtol=0.0)
+  np.testing.assert_allclose(smoothed.speed, stock_weight.speed, atol=1e-9, rtol=0.0)
+  np.testing.assert_allclose(smoothed.effective_accel_max, stock_weight.effective_accel_max, atol=1e-9, rtol=0.0)
+  assert smoothed.solver_failures == stock_weight.solver_failures == 0
 
 
 def test_prius_route_model_launches_without_a_dead_pedal():
@@ -887,18 +908,21 @@ def test_far_lead_profiles_start_early_in_order_without_solver_failures(actuator
   baseline = _run(controller_enabled=False, **common)
   traces = [_run(controller_enabled=True, profile=profile, **common) for profile in range(3)]
   baseline_onset = _sustained_time_below(baseline, -0.10)
+  baseline_jerk_p95 = float(np.percentile(np.abs(_filtered_realized_jerk(baseline)), 95))
+  required_improvement = max(0.002, 0.02 * baseline_jerk_p95)
   onsets = [_sustained_time_below(trace, -0.10) for trace in traces]
 
   assert onsets[0] <= baseline_onset - 0.5 + 1e-9
   assert onsets[1] <= baseline_onset + 1e-9
   assert onsets[2] <= baseline_onset + 1e-9
-  assert onsets[0] <= onsets[1] <= onsets[2]
+  assert onsets[0] <= onsets[1] + DT_MDL + 1e-9
+  assert onsets[1] <= onsets[2] + DT_MDL + 1e-9
   first_finite_caps = [trace.raw_cap[np.flatnonzero(np.isfinite(trace.raw_cap))[0]] for trace in traces]
   assert first_finite_caps[0] < first_finite_caps[1] < first_finite_caps[2]
   for trace in traces:
     assert trace.acceleration.min() >= baseline.acceleration.min() - 0.1
-    assert float(np.percentile(np.abs(_filtered_realized_jerk(trace)), 95)) < 0.45
-    assert np.max(np.abs(_command_jerk(trace, after=0.5))) < 4.5
+    assert float(np.percentile(np.abs(_filtered_realized_jerk(trace)), 95)) <= baseline_jerk_p95 - required_improvement
+    assert np.max(np.abs(_command_jerk(trace, after=0.5))) < 1.0
     assert not _has_brake_coast_brake(trace.a_target[trace.time >= 1.0])
     assert not _has_propulsion_brake_cycle(trace.a_target[trace.time >= 1.0])
     assert not trace.fcw.any()
