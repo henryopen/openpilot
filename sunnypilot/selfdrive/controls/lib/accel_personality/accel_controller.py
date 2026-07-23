@@ -474,18 +474,21 @@ class AccelController:
     if path.matched_lead:
       if not has_lead:
         if self._lead_source(previous_mpc_source) and planner_speed < path.pace:
-          path.pace = planner_speed
+          path.pace = max(planner_speed, path.pace - MATCHED_PACE_DECEL_RATE * self.dt)
         path.state = AccelControllerState.hold
         return path.pace
       if math.isfinite(path.filtered_lead_speed):
         recovery_speed = min(base_speed, path.filtered_lead_speed + min(LEAD_MATCH_SPEED_HEADROOM, LEAD_MATCH_GAP_GAIN * envelope.usable_gap))
-        desired_accel_limit = min(path.accel_limit, LEAD_MATCH_ACCEL_GAIN * max(recovery_speed - v_ego, 0.0))
+        recovery_error = max(recovery_speed - v_ego, 0.0)
+        desired_accel_limit = min(path.accel_limit, LEAD_MATCH_ACCEL_GAIN[profile] * recovery_error)
       else:
         desired_accel_limit = 0.0
       if path.filtered_lead_accel < BRAKING_ACCEL_LIMIT_THRESHOLD:
         desired_accel_limit = path.accel_limit
       if path.matched_accel_limit is None:
         path.matched_accel_limit = path.accel_limit
+      if path.lead_switch_guard_frames > 0:
+        desired_accel_limit = min(desired_accel_limit, path.matched_accel_limit)
       path.matched_accel_limit = min(path.accel_limit, self._move(path.matched_accel_limit, desired_accel_limit, LEAD_MATCH_ACCEL_SLEW, self.dt))
       matched_ceiling = min(base_speed, filtered_cap)
       if matched_ceiling <= path.pace - PACE_RESTRICT_DEADBAND:
@@ -505,7 +508,7 @@ class AccelController:
       path.pace = max(planner_speed, path.pace - comfort_decel * self.dt)
 
     if self._lead_source(previous_mpc_source) and not has_lead and planner_speed < path.pace:
-      path.pace = min(path.pace, planner_speed)
+      path.pace = max(planner_speed, path.pace - MATCHED_PACE_DECEL_RATE * self.dt)
       path.state = AccelControllerState.hold
       return path.pace
 

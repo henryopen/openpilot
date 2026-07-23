@@ -11,7 +11,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_
 from openpilot.selfdrive.controls.lib.longitudinal_planner import get_max_accel
 from openpilot.selfdrive.test.longitudinal_maneuvers.plant import PRIUS_TSS2_ROUTE_MODEL, LeadObservation, Plant
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelControllerState, AccelProfile
-from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import LEAD_MATCH_ACCEL_SLEW, MATCHED_PACE_DECEL_RATE
+from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
+  LEAD_MATCH_ACCEL_SLEW, LEAD_MATCH_SPEED_HEADROOM, MATCHED_PACE_DECEL_RATE,
+)
 
 ACTUATOR_DYNAMICS = (
   (0.10, 0.20),
@@ -508,7 +510,8 @@ def test_matched_lead_recovery_preserves_profile_ordering(actuator_delay, actuat
 
   assert mean_accel[0] + 0.06 < mean_accel[1]
   assert mean_accel[1] + 0.025 < mean_accel[2]
-  assert max(final_speed) - min(final_speed) < 0.15
+  assert final_speed[0] < final_speed[1] < final_speed[2]
+  assert max(final_speed) < 10.0 + LEAD_MATCH_SPEED_HEADROOM
   assert all(not _has_propulsion_brake_cycle(trace.a_target[response]) for trace in traces)
   assert all(trace.solver_failures == 0 for trace in traces)
 

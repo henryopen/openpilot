@@ -15,8 +15,8 @@ class ProfileConfig:
 
 PROFILE_CONFIGS = {
   AccelProfile.eco: ProfileConfig(comfort_decel=0.25),
-  AccelProfile.normal: ProfileConfig(comfort_decel=0.35),
-  AccelProfile.sport: ProfileConfig(comfort_decel=0.50),
+  AccelProfile.normal: ProfileConfig(comfort_decel=0.30),
+  AccelProfile.sport: ProfileConfig(comfort_decel=0.35),
 }
 
 ACCEL_PROFILE_MAX_BP = [0.0, 3.0, 10.0, 25.0, 40.0]
@@ -37,7 +37,11 @@ ACCEL_LIMIT_TRANSITION_JERK = 0.50
 ACCEL_LIMIT_HORIZON_JERK = 1.0
 LEAD_MATCH_GAP_GAIN = 0.04
 LEAD_MATCH_SPEED_HEADROOM = 2.50
-LEAD_MATCH_ACCEL_GAIN = 0.20
+LEAD_MATCH_ACCEL_GAIN = {
+  AccelProfile.eco: 0.20,
+  AccelProfile.normal: 0.24,
+  AccelProfile.sport: 0.26,
+}
 LEAD_MATCH_ACCEL_SLEW = 0.25
 MATCHED_PACE_DECEL_RATE = 0.50
 BRAKING_ACCEL_LIMIT_THRESHOLD = -0.11

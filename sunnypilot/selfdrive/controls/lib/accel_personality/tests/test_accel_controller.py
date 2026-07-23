@@ -13,8 +13,9 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality import AccelController, AccelControllerState, AccelProfile
 from openpilot.sunnypilot.selfdrive.controls.lib.accel_personality.constants import (
   ACCEL_LIMIT_HORIZON_JERK, ACCEL_LIMIT_TRANSITION_JERK, ACCEL_PROFILE_MAX_BP, ACCEL_PROFILE_MAX_V, CAP_FILTER_FRAMES,
-  LAUNCH_END_SPEED, LAUNCH_TARGET_HEADROOM, LAUNCH_TARGET_SLEW, LEAD_MATCH_ACCEL_SLEW, MATCHED_PACE_DECEL_RATE, PROFILE_CONFIGS,
-  RADAR_STALE_TIMEOUT, STOP_GAP_RESERVE, STOP_HOLD_ACCEL_MAX, STOP_HOLD_DEPARTURE_ACCEL_MAX, STOP_HOLD_EXIT_FRAMES,
+  LAUNCH_END_SPEED, LAUNCH_TARGET_HEADROOM, LAUNCH_TARGET_SLEW, LEAD_MATCH_ACCEL_GAIN, LEAD_MATCH_ACCEL_SLEW,
+  MATCHED_PACE_DECEL_RATE, PROFILE_CONFIGS, RADAR_STALE_TIMEOUT, STOP_GAP_RESERVE, STOP_HOLD_ACCEL_MAX,
+  STOP_HOLD_DEPARTURE_ACCEL_MAX, STOP_HOLD_EXIT_FRAMES,
 )
 
 
@@ -65,6 +66,11 @@ class TestProfiles:
       AccelProfile.eco: [1.55, 1.25, 0.72, 0.32, 0.16],
       AccelProfile.normal: [1.70, 1.40, 0.97, 0.48, 0.30],
       AccelProfile.sport: [2.00, 1.90, 1.15, 0.68, 0.42],
+    }
+    assert LEAD_MATCH_ACCEL_GAIN == {
+      AccelProfile.eco: 0.20,
+      AccelProfile.normal: 0.24,
+      AccelProfile.sport: 0.26,
     }
 
   @pytest.mark.parametrize("profile", list(AccelProfile))
@@ -379,6 +385,7 @@ class TestPaceAndLifecycle:
 
     target_drop = before.target_speed - switched.target_speed
     assert 0.0 <= target_drop <= MATCHED_PACE_DECEL_RATE * DT_MDL + 1e-9
+    assert switched.effective_accel_max <= before.effective_accel_max + 1e-9
     assert switched.target_speed < switched.base_speed
     assert controller.live.lead_switch_guard_frames == controller.lead_loss_hold_frames
 
@@ -409,8 +416,9 @@ class TestPaceAndLifecycle:
     controller = make_controller()
     for _ in range(CAP_FILTER_FRAMES + 10):
       restricted = update(controller, restrictive_radar())
-    synchronized = update(controller, previous_mpc_source=LongitudinalPlanSource.lead0, planner_speed=restricted.target_speed - 2.0)
-    assert synchronized.target_speed == pytest.approx(restricted.target_speed - 2.0)
+    planner_speed = restricted.target_speed - 2.0
+    synchronized = update(controller, previous_mpc_source=LongitudinalPlanSource.lead0, planner_speed=planner_speed)
+    assert restricted.target_speed - synchronized.target_speed == pytest.approx(MATCHED_PACE_DECEL_RATE * DT_MDL)
     assert synchronized.state == AccelControllerState.hold
 
   def test_matched_lead_dropout_synchronizes_down_to_planner(self):
@@ -424,7 +432,7 @@ class TestPaceAndLifecycle:
 
     planner_speed = matched.target_speed - 2.0
     synchronized = update(controller, previous_mpc_source=LongitudinalPlanSource.lead0, planner_speed=planner_speed)
-    assert synchronized.target_speed == pytest.approx(planner_speed)
+    assert matched.target_speed - synchronized.target_speed == pytest.approx(MATCHED_PACE_DECEL_RATE * DT_MDL)
     assert synchronized.state == AccelControllerState.hold
 
   def test_reused_radar_holds_matched_lead_until_a_fresh_dropout(self):
@@ -443,7 +451,7 @@ class TestPaceAndLifecycle:
 
     assert held.target_speed == pytest.approx(matched.target_speed)
     assert held.state == matched.state
-    assert synchronized.target_speed == pytest.approx(planner_speed)
+    assert held.target_speed - synchronized.target_speed == pytest.approx(MATCHED_PACE_DECEL_RATE * DT_MDL)
     assert synchronized.state == AccelControllerState.hold
 
   def test_clear_road_launch_has_immediate_headroom_and_bounded_target_slew(self):
