@@ -9,6 +9,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AccessToken", {CLEAR_ON_MANAGER_START | DONT_LOG, STRING}},
     {"AdbEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"AlwaysOnDM", {PERSISTENT | BACKUP, BOOL}},
+    {"DisableDriverMonitoring", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"ApiCache_Device", {PERSISTENT, STRING}},
     {"ApiCache_FirehoseStats", {PERSISTENT, JSON}},
     {"AssistNowToken", {PERSISTENT, STRING}},
@@ -254,9 +255,9 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"OsmDownloadedDate", {PERSISTENT, STRING, "0.0"}},
     {"OSMDownloadLocations", {PERSISTENT, JSON}},
     {"OSMDownloadProgress", {CLEAR_ON_MANAGER_START, JSON}},
-    {"OsmLocal", {PERSISTENT, BOOL}},
-    {"OsmLocationName", {PERSISTENT, STRING}},
-    {"OsmLocationTitle", {PERSISTENT, STRING}},
+    {"OsmLocal", {PERSISTENT, BOOL, "1"}},
+    {"OsmLocationName", {PERSISTENT, STRING, "TW"}},
+    {"OsmLocationTitle", {PERSISTENT, STRING, "Taiwan"}},
     {"OsmLocationUrl", {PERSISTENT, STRING}},
     {"OsmStateName", {PERSISTENT, STRING, "All"}},
     {"OsmStateTitle", {PERSISTENT, STRING}},
@@ -265,10 +266,10 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"RoadNameToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     // Speed Limit
-    {"SpeedLimitMode", {PERSISTENT | BACKUP, INT, "1"}},
-    {"SpeedLimitOffsetType", {PERSISTENT | BACKUP, INT, "0"}},
+    {"SpeedLimitMode", {PERSISTENT | BACKUP, INT, "3"}},
+    {"SpeedLimitOffsetType", {PERSISTENT | BACKUP, INT, "1"}},
     {"SpeedLimitPolicy", {PERSISTENT | BACKUP, INT, "3"}},
-    {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "0"}},
+    {"SpeedLimitValueOffset", {PERSISTENT | BACKUP, INT, "10"}},
 
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},

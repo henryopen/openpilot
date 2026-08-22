@@ -1,8 +1,23 @@
 #!/usr/bin/env python3
 import openpilot.cereal.messaging as messaging
+from openpilot.cereal import log
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
 from openpilot.selfdrive.monitoring.policy import DriverMonitoring
+
+
+def neutralize_dm(dat) -> None:
+  # sunnypilot fork: report the driver as always attentive so DM never forces
+  # decel, locks out, or raises alerts. dmonitoringd/dmonitoringmodeld keep
+  # running (so controlsd/selfdrived still get a live driverMonitoringState),
+  # only the safety-relevant fields are cleared.
+  dm = dat.driverMonitoringState
+  dm.lockout = False
+  dm.alwaysOnLockout = False
+  dm.noResponseForceDecel = False
+  dm.alertLevel = log.DriverMonitoringState.AlertLevel.none
+  dm.alert3Count = 0
+  dm.noResponseCount = 0
 
 
 def dmonitoringd_thread():
@@ -15,6 +30,7 @@ def dmonitoringd_thread():
 
   DM = DriverMonitoring(rhd_saved=params.get_bool("IsRhdDetected"), always_on=params.get_bool("AlwaysOnDM"))
   demo_mode=False
+  disable_dm = params.get_bool("DisableDriverMonitoring")
 
   # 20Hz <- dmonitoringmodeld
   while True:
@@ -31,12 +47,15 @@ def dmonitoringd_thread():
 
     # publish
     dat = DM.get_state_packet(valid=valid)
+    if disable_dm:
+      neutralize_dm(dat)
     pm.send('driverMonitoringState', dat)
 
     # load live always-on toggle
     if sm['driverStateV2'].frameId % 40 == 1:
       DM.always_on = params.get_bool("AlwaysOnDM")
       demo_mode = params.get_bool("IsDriverViewEnabled")
+      disable_dm = params.get_bool("DisableDriverMonitoring")
 
     # save rhd virtual toggle every 5 mins
     if (sm['driverStateV2'].frameId % 6000 == 0 and not demo_mode and

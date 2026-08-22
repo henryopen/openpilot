@@ -37,6 +37,86 @@ OSM_KEYS = {"OsmLocal", "OsmLocationName", "OsmLocationTitle", "OsmStateName",
             "OsmStateTitle", "OsmDbUpdatesCheck", "OsmDownloadedDate"}
 EXTRA_KEYS = {"IsMetric", "DisableUpdates"}  # writable besides settings_ui items
 
+# Traditional Chinese labels for the settings_ui.json strings (Taiwan usage).
+# Anything not listed falls back to the original English.
+TRANSLATIONS = {
+  # panels
+  "Steering": "轉向", "Cruise": "定速", "Display": "顯示", "Visuals": "畫面",
+  "Toggles": "開關", "Device": "裝置", "Software": "軟體", "Developer": "開發者", "Models": "模型",
+  # section / sub-panel titles
+  "Modular Assistive Driving System (MADS)": "模組化輔助駕駛系統 (MADS)", "MADS Settings": "MADS 設定",
+  "Lane Change": "變換車道", "Blinker Control": "方向燈控制", "Lateral Control": "橫向控制",
+  "Neural Network Lateral Control (NNLC)": "神經網路橫向控制 (NNLC)", "Torque Settings": "扭力設定",
+  "Speed Limits": "速限", "Speed Limit Settings": "速限設定", "Smart Cruise Control": "智慧定速",
+  "Custom ACC Speed Intervals": "自訂定速增量", "Custom ACC Speed Intervals Settings": "自訂定速增量設定",
+  "Model Behavior": "模型行為", "Self-Tune": "自動校調", "Advanced Settings": "進階設定",
+  "HUD Elements": "抬頭顯示元素", "Alerts & Extras": "提醒與附加", "General": "一般",
+  "Brightness & Timeout": "亮度與逾時", "Connectivity": "連線", "Recording": "錄影",
+  "Updates": "更新", "Developer UI": "開發者介面", "Camera": "鏡頭", "Test Maneuvers": "測試動作",
+  "Speed Limit Source": "速限來源",
+  # item titles
+  "Enable Modular Assistive Driving System (MADS)": "啟用模組化輔助駕駛系統 (MADS)",
+  "Toggle with Main Cruise": "用主定速鍵切換", "Unified Engagement Mode (UEM)": "統一啟用模式 (UEM)",
+  "Steering Mode on Brake Pedal": "踩煞車時的轉向模式",
+  "Auto Lane Change by Blinker": "打燈自動變換車道", "Auto Lane Change: Delay with Blind Spot": "自動變換車道：盲點時延遲",
+  "Pause Lateral Control with Blinker": "打燈時暫停橫向控制", "Wake Up Behavior": "喚醒行為",
+  "Enforce Torque Lateral Control": "強制扭力橫向控制", "Neural Network Lateral Control (NNLC)": "神經網路橫向控制 (NNLC)",
+  "Manual Real-Time Tuning": "手動即時校調", "Enable Custom Tuning": "啟用自訂校調",
+  "Torque Control": "扭力控制", "Torque Control Tune Version": "扭力控制校調版本",
+  "Lateral Acceleration Factor": "橫向加速度係數", "Friction": "摩擦係數",
+  "Less Restrict Settings for Self-Tune (Beta)": "自動校調較寬鬆設定 (Beta)",
+  "Intelligent Cruise Button Management (ICBM) (Alpha)": "智慧定速按鈕管理 (ICBM) (Alpha)",
+  "sunnypilot Longitudinal Control (Alpha)": "sunnypilot 縱向控制 (Alpha)",
+  "Dynamic Experimental Control": "動態實驗控制", "Smart Cruise Control": "智慧定速",
+  "Vision": "視覺", "Map": "圖資",
+  "Enable Custom ACC Speed Intervals": "啟用自訂定速增量", "Short Press Increment": "短按增量",
+  "Long Press Increment": "長按增量", "Speed Limit Assist Mode": "速限輔助模式",
+  "Speed Limit Offset Type": "速限偏移方式", "Speed Limit Offset Value": "速限偏移量",
+  "Speed Limit Source": "速限來源", "Driving Personality": "駕駛風格",
+  "Adjust Camera Offset": "調整鏡頭偏移", "Adjust Lane Turn Speed": "調整路口轉彎速度",
+  "Use Lane Turn Desires": "使用路口轉彎意圖", "Adjust Software Delay": "調整軟體延遲",
+  "Live Learning Steer Delay": "即時學習轉向延遲",
+  "Display Metrics Below Chevron": "在跟車箭頭下顯示數據", "Display Road Name": "顯示道路名稱",
+  "Display Turn Signals": "顯示方向燈", "Show Blind Spot Warnings": "顯示盲點警告",
+  "Steering Arc": "轉向弧線", "Real-time Acceleration Bar": "即時加速條",
+  "Speedometer: Always Display True Speed": "時速表：一律顯示真實車速",
+  "Speedometer: Hide from Onroad Screen": "時速表：行車畫面隱藏",
+  "Standstill Timer": "停等計時", "Green Traffic Light Alert (Beta)": "綠燈提醒 (Beta)",
+  "Lead Departure Alert (Beta)": "前車起步提醒 (Beta)", "Tesla Rainbow Mode": "Tesla 彩虹模式",
+  "Quiet Mode": "安靜模式", "Show Advanced Controls": "顯示進階控制",
+  "Always-On Driver Monitoring": "常時駕駛監控", "Use Metric System": "使用公制單位",
+  "Language": "語言", "Enable sunnypilot": "啟用 sunnypilot", "Enable SSH": "啟用 SSH",
+  "Enable ADB": "啟用 ADB", "Enable Lane Departure Warnings": "啟用車道偏離警示",
+  "Disengage Cruise on Accelerator Pedal": "踩油門取消定速",
+  "Record and Upload Driver Camera": "錄製並上傳駕駛鏡頭",
+  "Record and Upload Microphone Audio": "錄製並上傳麥克風", "Onroad Uploads": "行車中上傳",
+  "Brightness & Timeout": "亮度與逾時", "Onroad Brightness": "行車亮度",
+  "Onroad Brightness Delay": "行車亮度延遲", "Interactivity Timeout": "互動逾時",
+  "Max Time Offroad": "熄火後最長待機", "Quickboot Mode": "快速開機模式",
+  "Force Offroad Mode": "強制熄火模式", "Disable Updates": "停用更新",
+  "GitHub Runner Service": "GitHub Runner 服務", "copyparty Service": "copyparty 服務",
+  "Experimental Mode": "實驗模式", "Joystick Debug Mode": "搖桿除錯模式",
+  "UI Debug Mode": "介面除錯模式", "Developer UI Info": "開發者介面資訊",
+  "[TEST] Lateral Maneuver Mode": "[測試] 橫向動作模式",
+  "[TEST] Longitudinal Maneuver Mode": "[測試] 縱向動作模式",
+  # option labels
+  "Aggressive": "積極", "Standard": "標準", "Relaxed": "輕鬆",
+  "Off": "關閉", "Information": "資訊", "Warning": "警告", "Assist": "輔助",
+  "Car State Only": "僅車輛狀態", "Map Data Only": "僅圖資", "Car State Priority": "車輛優先",
+  "Map Data Priority": "圖資優先", "Combined": "綜合", "Fixed": "固定值", "Percentage": "百分比",
+  "Nudge": "輕推", "Nudgeless": "免輕推", "Disengage": "取消", "Pause": "暫停",
+  "Remain Active": "保持啟用", "Default": "預設", "All": "全部", "Always On": "常開",
+  "Always Offroad": "常駐熄火", "Auto (Dark)": "自動 (深色)", "Auto (Default)": "自動 (預設)",
+  "Bottom": "底部", "Right": "右側", "Right & Bottom": "右側及底部", "Screen Off": "螢幕關閉",
+  "Distance": "距離", "Speed": "速度", "Time": "時間",
+}
+
+
+def tr(s):
+  if s is None:
+    return s
+  return TRANSLATIONS.get(s, s)
+
 
 # ---------- params ----------
 
@@ -165,11 +245,11 @@ def build_model():
           key = it.get("key")
           out.append({
             "key": key,
-            "title": it.get("title", key),
+            "title": tr(it.get("title", key)),
             "description": it.get("description", ""),
             "widget": it.get("widget", "toggle"),
             "options": [
-              {"label": o.get("label"), "value": o.get("value"),
+              {"label": tr(o.get("label")), "value": o.get("value"),
                "enabled": eval_conds(o.get("enablement"), onroad)}
               for o in it.get("options", [])
             ],
@@ -184,18 +264,18 @@ def build_model():
       sub_panels = []
       for sp in s.get("sub_panels", []):
         sub_panels.append({
-          "label": sp.get("label", ""),
+          "label": tr(sp.get("label", "")),
           "visible": eval_conds([sp.get("trigger_condition")] if sp.get("trigger_condition") else [], onroad),
           "items": conv(sp.get("items", [])),
         })
       sections.append({
-        "title": s.get("title", ""),
+        "title": tr(s.get("title", "")),
         "description": s.get("description", ""),
         "visible": eval_conds(s.get("enablement"), onroad),
         "items": conv(s.get("items", [])),
         "sub_panels": sub_panels,
       })
-    panels.append({"id": p.get("id"), "label": p.get("label"), "sections": sections})
+    panels.append({"id": p.get("id"), "label": tr(p.get("label")), "sections": sections})
 
   progress = None
   try:
@@ -323,7 +403,7 @@ PAGE = r"""<!doctype html>
 <html lang="zh-Hant"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>C4 settings</title>
+<title>C4 設定</title>
 <style>
 :root{--bg:#101418;--card:#1a2027;--fg:#e8edf2;--dim:#8b98a5;--acc:#33b864;--warn:#e0a030;--line:#2a323c}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,"Noto Sans TC",sans-serif}
@@ -353,7 +433,7 @@ select{background:#232b34;color:var(--fg);border:1px solid var(--line);border-ra
 .btn:disabled{opacity:.4}
 .bar{height:8px;background:#232b34;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc);width:0}
 </style></head><body>
-<header><h1>C4 settings</h1><div id="status">連線中…</div></header>
+<header><h1>C4 設定</h1><div id="status">連線中…</div></header>
 <nav id="tabs"></nav>
 <main id="main"></main>
 <div id="toast"></div>
@@ -425,7 +505,7 @@ function render(){
   if(panel.id==='cruise')html+=osmSection();
   $('#main').innerHTML=html;
   const st=MODEL.status;
-  $('#status').textContent=`${st.branch||''} ${st.version||''} · ${st.onroad?'⚠️ 行車中（多數設定鎖定）':'✅ Offroad 可設定'}`;
+  $('#status').textContent=`${st.branch||''} ${st.version||''} · ${st.onroad?'⚠️ 行車中（多數設定鎖定）':'✅ 熄火中 可設定'}`;
   if(panel.id==='cruise')loadNations();
 }
 async function refresh(first=true){
