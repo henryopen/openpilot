@@ -109,13 +109,130 @@ TRANSLATIONS = {
   "Always Offroad": "常駐熄火", "Auto (Dark)": "自動 (深色)", "Auto (Default)": "自動 (預設)",
   "Bottom": "底部", "Right": "右側", "Right & Bottom": "右側及底部", "Screen Off": "螢幕關閉",
   "Distance": "距離", "Speed": "速度", "Time": "時間",
+  # descriptions (section + item)
+  "Automatic lane change timing and behavior": "自動變換車道的時機與行為",
+  "Lateral pause behavior during turn signals": "打方向燈時的橫向暫停行為",
+  "Steering torque tuning and lateral control method": "轉向扭力校調與橫向控制方式",
+  "Speed limit detection and offset behavior": "速限偵測與偏移行為",
+  "Lane desire and lead-vehicle awareness tuning": "路口轉彎意圖與前車感知校調",
+  "Model Behavior": "模型行為", "Overlays shown on the driving screen": "行車畫面上的疊加顯示",
+  "Traffic light alerts and visual flair": "號誌提醒與視覺效果",
+  "Speedometer and debug display options": "時速表與除錯顯示選項",
+  "Camera position and calibration": "鏡頭位置與校正",
+  "Power, boot, and unit preferences": "電源、開機與單位偏好",
+  "Screen dimming and sleep behavior while driving": "行車時螢幕變暗與休眠行為",
+  "Camera and audio recording during drives": "行車時的影像與聲音錄製",
+  "Remote access and debugging interfaces": "遠端存取與除錯介面",
+  "Control software updates": "控制軟體更新",
+  "Enable MADS. Disable toggle to revert back to stock sunnypilot engagement/disengagement.":
+    "啟用 MADS。關閉後回到 sunnypilot 原本的啟用/取消方式。",
+  "Note: For vehicles without LFA/LKAS button, disabling this will prevent lateral control engagement.":
+    "注意：沒有 LFA/LKAS 按鈕的車，關閉此項會導致無法啟用橫向控制。",
+  "Engage lateral and longitudinal control with cruise control engagement. Note: Once lateral control is engaged via UEM, it will remain engaged until it is manually disabled via the MADS button or car shut off.":
+    "隨定速一併啟用橫向與縱向控制。注意：透過 UEM 啟用橫向控制後會保持啟用，直到用 MADS 按鈕手動關閉或熄火。",
+  "Choose how Automatic Lane Centering (ALC) behaves after the brake pedal is manually pressed in sunnypilot.":
+    "選擇手動踩煞車後，自動車道置中 (ALC) 的行為。",
+  "Set a timer to delay the auto lane change operation when the blinker is used. No nudge on the steering wheel is required to auto lane change if a timer is set. Default is Nudge.":
+    "設定打燈後自動變換車道的延遲計時。設了計時後不需推方向盤即可自動變換車道。預設為輕推。",
+  "Toggle to enable a delay timer for lane changes when blind spot monitoring (BSM) detects a vehicle in your blind spot.":
+    "當盲點偵測 (BSM) 偵測到盲點有車時，啟用變換車道的延遲計時。",
+  "Pause lateral control with blinker when traveling below the desired speed selected.":
+    "低於所選速度時，打方向燈會暫停橫向控制。",
+  "Enable this to enforce sunnypilot to steer with Torque lateral control.":
+    "啟用後強制 sunnypilot 使用扭力橫向控制轉向。",
+  "Use a neural network for lateral control instead of the default torque controller.":
+    "使用神經網路做橫向控制，取代預設的扭力控制器。",
+  "Enables custom tuning for Torque lateral control. Modifying Lateral Acceleration Factor and Friction below will override the offline values indicated in the YAML files within \"opendbc/car/torque_data\". The values will also be used live when \"Manual Real-Time Tuning\" toggle is enabled.":
+    "啟用扭力橫向控制的自訂校調。修改下方的橫向加速度係數與摩擦係數會覆蓋 \"opendbc/car/torque_data\" YAML 檔的離線值。啟用「手動即時校調」時這些值也會即時套用。",
+  "Enforces the torque lateral controller to use the fixed values instead of the learned values from Self-Tune. Enabling this toggle overrides Self-Tune values.":
+    "強制扭力橫向控制器使用固定值，而非自動校調學到的值。啟用此項會覆蓋自動校調的值。",
+  "Enables self-tune for Torque lateral control for platforms that do not use Torque lateral control by default.":
+    "為預設不使用扭力橫向控制的車型啟用自動校調。",
+  "Less strict settings when using Self-Tune. This allows torqued to be more forgiving when learning values.":
+    "自動校調時採較寬鬆的設定，讓 torqued 學習數值時更有彈性。",
+  "Select the version of Torque Control Tune to use.": "選擇要使用的扭力控制校調版本。",
+  "Intelligent Cruise Button Management (ICBM) (Alpha)": "智慧定速按鈕管理 (ICBM) (Alpha)",
+  "Let the model decide when to use sunnypilot ACC or sunnypilot End to End Longitudinal.":
+    "讓模型自行決定何時使用 sunnypilot ACC 或端到端縱向控制。",
+  "Use vision path predictions to estimate the appropriate speed to drive through turns ahead.":
+    "用視覺路徑預測估算前方彎道的合適速度。",
+  "Use map data to estimate the appropriate speed to drive through turns ahead.":
+    "用圖資估算前方彎道的合適速度。",
+  "Standard is recommended. In aggressive mode, sunnypilot will follow lead cars closer and be more aggressive with the gas and brake. In relaxed mode sunnypilot will stay further away from lead cars. On supported cars, you can cycle through these personalities with your steering wheel distance button.":
+    "建議用標準。積極模式會跟車更近、油門煞車更積極；輕鬆模式會與前車保持更遠距離。支援的車可用方向盤距離鍵切換這些風格。",
+  "Virtually shift camera's perspective to move model's center to Left(+ values) or Right (- values)":
+    "虛擬平移鏡頭視角，把模型中心往左(正值)或往右(負值)移。",
+  "Set the maximum speed for lane turn desires.": "設定路口轉彎意圖的最高速度。",
+  "If you are driving at 20 mph (32 km/h) or below and have your blinker on, the car will plan a turn in that direction at the nearest drivable path. This prevents situations (like at red lights) where the car might plan the wrong turn direction.":
+    "時速 20 mph (32 km/h) 以下且打方向燈時，車會在最近的可行路徑規劃該方向的轉彎，避免（如紅燈時）規劃錯方向。",
+  "Allow device to learn and adapt car's steering response time": "讓裝置學習並適應車輛的轉向反應時間",
+  "Adjust the software delay when Live Learning Steer Delay is toggled off. The default software delay value is 0.2":
+    "關閉「即時學習轉向延遲」時調整軟體延遲。預設值為 0.2。",
+  "Speed limit detection and offset behavior.": "速限偵測與偏移行為。",
+  "Displays the name of the road the car is traveling on. The OpenStreetMap database of the location must be downloaded to fetch the road name.":
+    "顯示行駛道路的名稱。需先下載該地區的 OpenStreetMap 圖資才能取得道路名稱。",
+  "Display steering arc on the driving screen when lateral control is enabled.":
+    "啟用橫向控制時，在行車畫面顯示轉向弧線。",
+  "Show an indicator on the left side of the screen to display real-time vehicle acceleration and deceleration. This displays what the car is currently doing, not what the planner is requesting.":
+    "在畫面左側顯示即時加減速指示。顯示車輛當下的實際動作，而非規劃器的請求。",
+  "Display real-time parameters and metrics from various sources.": "顯示來自各來源的即時參數與數據。",
+  "For applicable vehicles, always display the true vehicle current speed from wheel speed sensors.":
+    "適用車型一律顯示輪速感測器的真實車速。",
+  "When enabled, the speedometer on the onroad screen is not displayed.": "啟用後，行車畫面不顯示時速表。",
+  "Show a timer on the HUD when the car is at a standstill.": "車輛靜止時在抬頭顯示上顯示計時。",
+  "Enabling this will display warnings when a vehicle is detected in your blind spot as long as your car has BSM supported.":
+    "啟用後，只要車輛支援 BSM，偵測到盲點有車時會顯示警告。",
+  "When enabled, visual turn indicators are drawn on the HUD.": "啟用後，在抬頭顯示上繪製方向燈指示。",
+  "Display a rainbow effect on the path the model wants to take. It does not affect driving in any way.":
+    "在模型預測路徑上顯示彩虹效果，完全不影響駕駛。",
+  "A chime and on-screen alert will play when the traffic light you are waiting for turns green and you have no vehicle in front of you. On-screen visual alert is only available on comma 3X. Note: This chime is only designed as a notification. It is the driver's responsibility to observe their environment and make decisions accordingly.":
+    "等待的號誌轉綠且前方無車時，會發出提示音與畫面提醒（畫面提醒僅 comma 3X 支援）。注意：此提示僅為通知，觀察環境與判斷仍是駕駛的責任。",
+  "A chime and on-screen alert will play when you are stopped, and the vehicle in front of you start moving. On-screen visual alert is only available on comma 3X. Note: This chime is only designed as a notification. It is the driver's responsibility to observe their environment and make decisions accordingly.":
+    "停車時前車起步，會發出提示音與畫面提醒（畫面提醒僅 comma 3X 支援）。注意：此提示僅為通知，觀察環境與判斷仍是駕駛的責任。",
+  "Toggle visibility of advanced sunnypilot controls. This only changes the visibility of the toggles; it does not change the actual enabled/disabled state.":
+    "切換進階 sunnypilot 控制項的顯示。只改變顯示與否，不改變實際啟用狀態。",
+  "Display speed in km/h instead of mph.": "以 km/h 顯示速度，而非 mph。",
+  "Enable driver monitoring even when sunnypilot is not engaged.": "即使未啟用 sunnypilot 也啟用駕駛監控。",
+  "Use the sunnypilot system for adaptive cruise control and lane keep driver assistance. Your attention is required at all times to use this feature.":
+    "使用 sunnypilot 進行主動定速與車道保持輔助。使用時須全程保持注意力。",
+  "ADB (Android Debug Bridge) allows connecting to your device over USB or over the network. See https://docs.comma.ai/how-to/connect-to-comma for more info.":
+    "ADB (Android Debug Bridge) 可透過 USB 或網路連線到裝置。詳見 https://docs.comma.ai/how-to/connect-to-comma。",
+  "Enable Lane Departure Warnings": "啟用車道偏離警示",
+  "Receive alerts to steer back into the lane when your vehicle drifts over a detected lane line without a turn signal activated while driving over 31 mph (50 km/h).":
+    "時速 31 mph (50 km/h) 以上，未打方向燈卻偏離偵測到的車道線時，提醒你轉回車道。",
+  "When enabled, pressing the accelerator pedal will disengage longitudinal control.":
+    "啟用後，踩油門會取消縱向控制。",
+  "Upload data from the driver facing camera and help improve the driver monitoring algorithm.":
+    "上傳駕駛鏡頭資料，協助改善駕駛監控演算法。",
+  "Record and store microphone audio while driving. The audio will be included in the dashcam video in comma connect.":
+    "行車時錄製並儲存麥克風聲音。聲音會併入 comma connect 的行車影像。",
+  "Screen dimming and sleep behavior while driving.": "行車時螢幕變暗與休眠行為。",
+  "Apply a custom timeout for settings UI. This is the time after which settings UI closes automatically if user is not interacting with the screen.":
+    "設定介面的自訂逾時。使用者未操作畫面達此時間後，設定介面會自動關閉。",
+  "Device will automatically shutdown after set time once the engine is turned off. 30h is the default.":
+    "熄火後經過設定時間會自動關機，預設 30 小時。",
+  "Controls state of the device after boot/sleep. Default: Device will boot/wake-up normally and will be ready to engage. Offroad: Device will be in Always Offroad mode after boot/wake-up.":
+    "控制開機/喚醒後的裝置狀態。預設：正常開機並可啟用。熄火模式：開機/喚醒後進入常駐熄火模式。",
+  "When enabled, software updates will be off. This requires a reboot to take effect.":
+    "啟用後停用軟體更新，需重開機生效。",
+  "Enables or disables the GitHub runner service.": "啟用或停用 GitHub runner 服務。",
+  "copyparty is a very capable file server, you can use it to download your routes, view your logs and even make some edits on some files from your browser. Requires you to connect to your comma locally via its IP address.":
+    "copyparty 是功能強大的檔案伺服器，可用瀏覽器下載行車紀錄、看 log、甚至編輯部分檔案。需透過區網 IP 連到你的 comma。",
+  "DANGER: enabling these maneuvers replaces normal driving behavior with deterministic test sequences. Each toggle requires explicit confirmation per write. Use only in a closed environment.":
+    "危險：啟用這些動作會用固定測試序列取代正常駕駛。每次寫入都需明確確認。僅限封閉環境使用。",
+  "Replaces normal lateral control with a deterministic test sequence. NOT for road use.":
+    "用固定測試序列取代正常橫向控制。不可上路使用。",
+  "Replaces normal longitudinal control with a deterministic test sequence. NOT for road use.":
+    "用固定測試序列取代正常縱向控制。不可上路使用。",
+  "WARNING: sunnypilot longitudinal control is in alpha for this car and will disable Automatic Emergency Braking (AEB). On this car, sunnypilot defaults to the car's built-in ACC instead of sunnypilot's longitudinal control. Enable this to switch to sunnypilot longitudinal control. Enabling Experimental mode is recommended when enabling sunnypilot longitudinal control alpha. Changing this setting will restart sunnypilot if the car is powered on.":
+    "警告：此車的 sunnypilot 縱向控制為 alpha，會停用自動緊急煞車 (AEB)。此車 sunnypilot 預設使用原廠 ACC 而非自家縱向控制。啟用此項可切換為 sunnypilot 縱向控制，建議同時開啟實驗模式。車輛開機時更改此設定會重啟 sunnypilot。",
 }
 
 
 def tr(s):
   if s is None:
     return s
-  return TRANSLATIONS.get(s, s)
+  return TRANSLATIONS.get(s) or TRANSLATIONS.get(s.strip() if isinstance(s, str) else s, s)
 
 
 # ---------- params ----------
@@ -246,7 +363,7 @@ def build_model():
           out.append({
             "key": key,
             "title": tr(it.get("title", key)),
-            "description": it.get("description", ""),
+            "description": tr(it.get("description", "")),
             "widget": it.get("widget", "toggle"),
             "options": [
               {"label": tr(o.get("label")), "value": o.get("value"),
