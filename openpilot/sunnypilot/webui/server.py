@@ -35,7 +35,7 @@ CAPABILITIES = {
 
 OSM_KEYS = {"OsmLocal", "OsmLocationName", "OsmLocationTitle", "OsmStateName",
             "OsmStateTitle", "OsmDbUpdatesCheck", "OsmDownloadedDate"}
-EXTRA_KEYS = {"IsMetric", "DisableUpdates"}  # writable besides settings_ui items
+EXTRA_KEYS = {"IsMetric", "DisableUpdates", "DisableDriverMonitoring"}  # writable besides settings_ui items
 
 # Traditional Chinese labels for the settings_ui.json strings (Taiwan usage).
 # Anything not listed falls back to the original English.
@@ -408,6 +408,7 @@ def build_model():
       "branch": read_param("GitBranch"),
       "version": read_param("Version"),
       "is_metric": as_bool(read_param("IsMetric")),
+      "disable_dm": as_bool(read_param("DisableDriverMonitoring")),
     },
     "osm": {
       "location_title": read_param("OsmLocationTitle"),
@@ -593,6 +594,12 @@ function osmSection(){
     <div class="item"><div class="grow"><select id="nation"><option>載入國家清單…</option></select></div>
     <button class="btn" onclick="osmGo()">下載</button></div>${dl}</div>`;
 }
+function dmSection(){
+  const on=MODEL.status.disable_dm;
+  return `<div class="sec">駕駛監控 (DM)</div><div class="card">
+    <div class="item"><div class="grow"><div class="t">關閉駕駛監控</div><div class="d">關閉後不再偵測分心、不會發出注意力警告或強制減速。駕駛須自行全程注意路況並負責。</div></div>
+    <div class="sw ${on?'on':''}" onclick="setParam('DisableDriverMonitoring',${on?'0':'1'})"><i></i></div></div></div>`;
+}
 async function osmGo(){
   const sel=$('#nation');const ref=sel.value;if(!ref||!NATIONS)return;
   const title=NATIONS[ref]?NATIONS[ref].full_name:ref;
@@ -620,6 +627,7 @@ function render(){
     html+=(s.title?`<div class="sec">${s.title}</div>`:'')+`<div class="card">${rows}</div>`;
   }
   if(panel.id==='cruise')html+=osmSection();
+  if(panel.id==='toggles')html+=dmSection();
   $('#main').innerHTML=html;
   const st=MODEL.status;
   $('#status').textContent=`${st.branch||''} ${st.version||''} · ${st.onroad?'⚠️ 行車中（多數設定鎖定）':'✅ 熄火中 可設定'}`;
