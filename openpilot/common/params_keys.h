@@ -66,7 +66,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"IsReleaseBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsTestedBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"JoystickDebugMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
-    {"LanguageSetting", {PERSISTENT | BACKUP, STRING, "en"}},
+    {"LanguageSetting", {PERSISTENT | BACKUP, STRING, "zh-CHT"}},
     {"LastAthenaPingTime", {CLEAR_ON_MANAGER_START, INT}},
     {"LastGPSPosition", {PERSISTENT, STRING}},
     {"LastManagerExitReason", {CLEAR_ON_MANAGER_START, STRING}},
@@ -114,7 +114,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SnoozeUpdate", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"SshEnabled", {PERSISTENT | BACKUP, BOOL}},
     {"TermsVersion", {PERSISTENT, STRING}},
-    {"TorqueBar", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"TorqueBar", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"TrainingVersion", {PERSISTENT, STRING}},
     {"UbloxAvailable", {PERSISTENT, BOOL}},
     {"UpdateAvailable", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
@@ -146,12 +146,12 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"CarParamsSP", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BYTES}},
     {"CarParamsSPCache", {CLEAR_ON_MANAGER_START, BYTES}},
     {"CarParamsSPPersistent", {PERSISTENT, BYTES}},
-    {"CarPlatformBundle", {PERSISTENT | BACKUP, JSON}},
+    {"CarPlatformBundle", {PERSISTENT | BACKUP, JSON, R"({"platform": "HYUNDAI_CUSTIN_1ST_GEN", "make": "Hyundai", "brand": "hyundai", "model": "Custin", "year": ["2023"], "package": "All", "name": "Hyundai Custin 2023"})"}},
     {"ChevronInfo", {PERSISTENT | BACKUP, INT, "4"}},
     {"CompletedSunnylinkConsentVersion", {PERSISTENT, STRING, "0"}},
-    {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "5"}},
-    {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
+    {"CustomAccIncrementsEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"CustomAccLongPressIncrement", {PERSISTENT | BACKUP, INT, "1"}},
+    {"CustomAccShortPressIncrement", {PERSISTENT | BACKUP, INT, "10"}},
     {"DeviceBootMode", {PERSISTENT | BACKUP, INT, "0"}},
     {"DevUIInfo", {PERSISTENT | BACKUP, INT, "0"}},
     {"EnableCopyparty", {PERSISTENT | BACKUP, BOOL}},
@@ -160,7 +160,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"GithubRunnerSufficientVoltage", {CLEAR_ON_MANAGER_START , BOOL}},
     {"HasAcceptedTermsSP", {PERSISTENT, STRING, "0"}},
     {"HideVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL}},
+    {"IntelligentCruiseButtonManagement", {PERSISTENT | BACKUP , BOOL, "1"}},
     {"InteractivityTimeout", {PERSISTENT | BACKUP, INT, "0"}},
     {"IsDevelopmentBranch", {CLEAR_ON_MANAGER_START, BOOL}},
     {"IsReleaseSpBranch", {CLEAR_ON_MANAGER_START, BOOL}},
@@ -183,7 +183,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ScreenSaverEnabled", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"ScreenSaverTimeout", {PERSISTENT | BACKUP, INT, "300"}},
     {"ShowAdvancedControls", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"ShowTurnSignals", {PERSISTENT | BACKUP, BOOL, "1"}},
     {"StandstillTimer", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"TrueVEgoUI", {PERSISTENT | BACKUP, BOOL, "0"}},
 
@@ -215,7 +215,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"SunnylinkCache_Users", {PERSISTENT, STRING}},
     {"SunnylinkDongleId", {PERSISTENT, STRING}},
     {"SunnylinkdPid", {PERSISTENT, INT}},
-    {"SunnylinkEnabled", {PERSISTENT, BOOL, "1"}},
+    {"SunnylinkEnabled", {PERSISTENT, BOOL, "0"}},
     {"SunnylinkTempFault", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL, "0"}},
 
     // Backup Manager params
@@ -232,11 +232,11 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"ToyotaStopAndGoHack", {PERSISTENT | BACKUP, BOOL, "0"}},
 
     {"DynamicExperimentalControl", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"BlindSpot", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"BlindSpot", {PERSISTENT | BACKUP, BOOL, "1"}},
 
     // sunnypilot model params
     {"CameraOffset", {PERSISTENT | BACKUP, FLOAT, "0.0"}},
-    {"LagdToggle", {PERSISTENT | BACKUP, BOOL, "1"}},
+    {"LagdToggle", {PERSISTENT | BACKUP, BOOL, "0"}},
     {"LagdToggleDelay", {PERSISTENT | BACKUP, FLOAT, "0.2"}},
     {"LagdValueCache", {PERSISTENT, FLOAT, "0.2"}},
     {"LaneTurnDesire", {PERSISTENT | BACKUP, BOOL, "0"}},
@@ -273,7 +273,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     // Smart Cruise Control
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"SmartCruiseControlMap", {PERSISTENT | BACKUP, BOOL, "0"}},
-    {"SmartCruiseControlVision", {PERSISTENT | BACKUP, BOOL, "0"}},
+    {"SmartCruiseControlVision", {PERSISTENT | BACKUP, BOOL, "1"}},
 
     // Torque lateral control custom params
     {"CustomTorqueParams", {PERSISTENT | BACKUP , BOOL}},
