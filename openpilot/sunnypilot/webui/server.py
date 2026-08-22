@@ -24,14 +24,22 @@ SETTINGS_UI_CANDIDATES = [
 NATIONS_URL = "https://raw.githubusercontent.com/pfeiferj/openpilot-mapd/main/nation_bounding_boxes.json"
 NATIONS_CACHE = os.path.join(CACHE_DIR, "nations_cache.json")
 
-# capability context for THIS device (Hyundai Custin, stock long, ICBM on)
+# capability context for THIS device (Hyundai Custin). Static parts here;
+# has_icbm / has_longitudinal_control are refreshed from live params in build_model
+# so the OP-long toggle appears once ICBM is turned off (they are mutually exclusive).
 CAPABILITIES = {
   "has_longitudinal_control": False,
   "has_icbm": True,
   "icbm_available": True,
+  "alpha_long_available": True,   # Custin: CarParams.alphaLongitudinalAvailable == True
   "brand": "hyundai",
   "is_sp_release": True,
 }
+
+
+def refresh_capabilities():
+  CAPABILITIES["has_icbm"] = as_bool(read_param("IntelligentCruiseButtonManagement"))
+  CAPABILITIES["has_longitudinal_control"] = as_bool(read_param("AlphaLongitudinalEnabled"))
 
 OSM_KEYS = {"OsmLocal", "OsmLocationName", "OsmLocationTitle", "OsmStateName",
             "OsmStateTitle", "OsmDbUpdatesCheck", "OsmDownloadedDate"}
@@ -352,6 +360,7 @@ def eval_conds(conds, onroad):
 def build_model():
   ui = load_settings_ui()
   onroad = as_bool(read_param("IsOnroad"))
+  refresh_capabilities()
   panels = []
   for p in ui.get("panels", []):
     sections = []
