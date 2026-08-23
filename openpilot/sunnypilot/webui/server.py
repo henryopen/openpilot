@@ -112,7 +112,8 @@ TRANSLATIONS = {
   "Off": "關閉", "Information": "資訊", "Warning": "警告", "Assist": "輔助",
   "Car State Only": "僅車輛狀態", "Map Data Only": "僅圖資", "Car State Priority": "車輛優先",
   "Map Data Priority": "圖資優先", "Combined": "綜合", "Fixed": "固定值", "Percentage": "百分比",
-  "Nudge": "輕推", "Nudgeless": "免輕推", "Disengage": "取消", "Pause": "暫停",
+  "Nudge": "輕推", "Nudgeless": "免輕推",
+  "0.5 second": "0.5 秒", "1 second": "1 秒", "2 seconds": "2 秒", "3 seconds": "3 秒", "Disengage": "取消", "Pause": "暫停",
   "Remain Active": "保持啟用", "Default": "預設", "All": "全部", "Always On": "常開",
   "Always Offroad": "常駐熄火", "Auto (Dark)": "自動 (深色)", "Auto (Default)": "自動 (預設)",
   "Bottom": "底部", "Right": "右側", "Right & Bottom": "右側及底部", "Screen Off": "螢幕關閉",
@@ -599,6 +600,15 @@ function itemRow(it){
   }else if(it.widget==='multiple_button'){
     ctrl='<div class="seg">'+it.options.map(o=>
       `<button ${o.enabled?'':'disabled'} class="${String(o.value)===String(it.value??'')?'on':''}" onclick="setParam('${it.key}','${o.value}')">${o.label}</button>`).join('')+'</div>';
+  }else if(it.widget==='option' && it.options && it.options.length){
+    // enum option: step through the labelled choices, never show the raw enum number
+    // (e.g. AutoLaneChangeTimer 2 means "0.5 second", not 2 seconds)
+    const idx=it.options.findIndex(o=>String(o.value)===String(it.value??''));
+    const lo=Math.max(0,idx-1), hi=Math.min(it.options.length-1,idx+1);
+    const lbl=idx>=0?it.options[idx].label:(it.value??'—');
+    ctrl=`<div class="num"><button ${idx<=0?'disabled':''} onclick="setParam('${it.key}','${it.options[lo].value}')">−</button>`
+       + `<span>${lbl}</span>`
+       + `<button ${idx<0||idx>=it.options.length-1?'disabled':''} onclick="setParam('${it.key}','${it.options[hi].value}')">+</button></div>`;
   }else if(it.widget==='option'){
     const v=parseFloat(it.value??it.min??0)||0;
     const unit=it.unit?(MODEL.status.is_metric?it.unit.metric:it.unit.imperial):'';
