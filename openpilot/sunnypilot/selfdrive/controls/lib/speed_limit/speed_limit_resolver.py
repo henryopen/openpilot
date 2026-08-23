@@ -21,9 +21,11 @@ SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 ALL_SOURCES = tuple(SpeedLimitSource.schema.enumerants.values())
 
 
-# Accepted map speed-limit range. Outside this the value is assumed to be bad data.
-SPEED_LIMIT_MIN = 50 * CV.KPH_TO_MS   # km/h
-SPEED_LIMIT_MAX = 110 * CV.KPH_TO_MS  # km/h
+# Accepted map speed-limit range, in km/h. Outside this the value is assumed to be
+# bad data. Compared as rounded km/h so a real 50 km/h limit cannot be lost to a
+# floating point ulp at the boundary.
+SPEED_LIMIT_MIN_KPH = 50
+SPEED_LIMIT_MAX_KPH = 110
 
 
 class SpeedLimitResolver:
@@ -194,7 +196,8 @@ class SpeedLimitResolver:
     # Taiwan OSM leaves maxspeed off most surface streets, so mapd reports 0 there.
     # Anything outside the plausible range is treated as "no data" instead of being
     # turned into a set speed.
-    if self.speed_limit > 0. and not (SPEED_LIMIT_MIN <= self.speed_limit <= SPEED_LIMIT_MAX):
+    limit_kph = round(self.speed_limit * CV.MS_TO_KPH)
+    if self.speed_limit > 0. and not (SPEED_LIMIT_MIN_KPH <= limit_kph <= SPEED_LIMIT_MAX_KPH):
       self.speed_limit = 0.
       self.distance = 0.
       self.source = SpeedLimitSource.none
