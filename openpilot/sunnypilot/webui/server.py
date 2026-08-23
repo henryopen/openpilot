@@ -8,7 +8,9 @@ LAN-only by trust: binds 0.0.0.0, no auth (user's decision, home/office LAN).
 import json
 import os
 import re
+import subprocess
 import threading
+import time
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -37,7 +39,36 @@ CAPABILITIES = {
 }
 
 
+VENV_PY = os.environ.get("SPWEB_VENV_PY", "/usr/local/venv/bin/python3")
+OPENPILOT_DIR = os.environ.get("SPWEB_OPENPILOT", "/data/openpilot")
+CAPS_TTL = 30.0
+_caps_cache = {"t": -1e9, "data": None}
+
+
+def load_device_capabilities():
+  """Ask sunnypilot's own capability generator, so every field settings_ui.json can
+  test (steer_control_type, torque_allowed, pcm_cruise, enable_bsm, device_type, ...)
+  is present. Hardcoding a subset silently hid whole sections such as NNLC."""
+  now = time.monotonic()
+  if _caps_cache["data"] is not None and now - _caps_cache["t"] < CAPS_TTL:
+    return _caps_cache["data"]
+  code = ("from openpilot.sunnypilot.sunnylink.capabilities import generate_capabilities_json;"
+          "print(generate_capabilities_json())")
+  try:
+    env = dict(os.environ, PYTHONPATH=OPENPILOT_DIR)
+    out = subprocess.run([VENV_PY, "-c", code], cwd=OPENPILOT_DIR, env=env,
+                         capture_output=True, text=True, timeout=20)
+    caps = json.loads(out.stdout.strip().splitlines()[-1])
+    _caps_cache.update(t=now, data=caps)
+    return caps
+  except Exception:
+    return _caps_cache["data"]
+
+
 def refresh_capabilities():
+  caps = load_device_capabilities()
+  if caps:
+    CAPABILITIES.update(caps)
   CAPABILITIES["has_icbm"] = as_bool(read_param("IntelligentCruiseButtonManagement"))
   CAPABILITIES["has_longitudinal_control"] = as_bool(read_param("AlphaLongitudinalEnabled"))
 
