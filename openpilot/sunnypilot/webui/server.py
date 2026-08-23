@@ -636,6 +636,9 @@ function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');cl
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
 async function setParam(key,value){const r=await api('/api/set',{key,value});if(!r.ok){toast('寫入失敗: '+(r.error||''));}else{toast(key+' = '+r.value)}await refresh(false)}
 function boolVal(v){return v==='1'}
+// option values arrive as numbers (0.0) while params read back as strings ("0.0"),
+// so compare numerically when both sides parse as numbers
+function sameVal(a,b){const x=parseFloat(a),y=parseFloat(b);return (!isNaN(x)&&!isNaN(y))?x===y:String(a)===String(b??'')}
 function itemRow(it){
   if(!it.visible)return '';
   const off=it.enabled?'':' off';
@@ -644,11 +647,11 @@ function itemRow(it){
     ctrl=`<div class="sw ${boolVal(it.value)?'on':''}" onclick="setParam('${it.key}',${boolVal(it.value)?'0':'1'})"><i></i></div>`;
   }else if(it.widget==='multiple_button'){
     ctrl='<div class="seg">'+it.options.map(o=>
-      `<button ${o.enabled?'':'disabled'} class="${String(o.value)===String(it.value??'')?'on':''}" onclick="setParam('${it.key}','${o.value}')">${o.label}</button>`).join('')+'</div>';
+      `<button ${o.enabled?'':'disabled'} class="${sameVal(o.value,it.value)?'on':''}" onclick="setParam('${it.key}','${o.value}')">${o.label}</button>`).join('')+'</div>';
   }else if(it.widget==='option' && it.options && it.options.length){
     // enum option: step through the labelled choices, never show the raw enum number
     // (e.g. AutoLaneChangeTimer 2 means "0.5 second", not 2 seconds)
-    const idx=it.options.findIndex(o=>String(o.value)===String(it.value??''));
+    const idx=it.options.findIndex(o=>sameVal(o.value,it.value));
     const lo=Math.max(0,idx-1), hi=Math.min(it.options.length-1,idx+1);
     const lbl=idx>=0?it.options[idx].label:(it.value??'—');
     ctrl=`<div class="num"><button ${idx<=0?'disabled':''} onclick="setParam('${it.key}','${it.options[lo].value}')">−</button>`
