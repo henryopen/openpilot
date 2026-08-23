@@ -46,9 +46,7 @@ OSM_KEYS = {"OsmLocal", "OsmLocationName", "OsmLocationTitle", "OsmStateName",
 EXTRA_KEYS = {"IsMetric", "DisableUpdates", "DisableDriverMonitoring"}  # writable besides settings_ui items
 
 # Traditional Chinese labels for the settings_ui.json strings (Taiwan usage).
-# Kept for reference only: the page is always English (set to True to use them),
-# independent of the device LanguageSetting.
-USE_TRANSLATIONS = False
+# Anything not listed falls back to the original English.
 TRANSLATIONS = {
   # panels
   "Steering": "轉向", "Cruise": "定速", "Display": "顯示", "Visuals": "畫面",
@@ -244,7 +242,7 @@ DMONITORINGD_PATH = "/data/openpilot/openpilot/selfdrive/monitoring/dmonitoringd
 
 def dm_patch_unconditional():
   # the device patch neutralizes driverMonitoringState on every publish, with no param
-  # toggle, because release-mici's Params deletes unknown keys such as DisableDriverMonitoring
+  # toggle, because release-mici's Params deletes unknown keys like DisableDriverMonitoring
   try:
     with open(DMONITORINGD_PATH, encoding="utf-8") as f:
       src = f.read()
@@ -258,7 +256,7 @@ def dm_disabled():
 
 
 def tr(s):
-  if s is None or not USE_TRANSLATIONS:
+  if s is None:
     return s
   return TRANSLATIONS.get(s) or TRANSLATIONS.get(s.strip() if isinstance(s, str) else s, s)
 
@@ -551,7 +549,7 @@ PAGE = r"""<!doctype html>
 <html lang="zh-Hant"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>C4 Settings</title>
+<title>C4 設定</title>
 <style>
 :root{--bg:#101418;--card:#1a2027;--fg:#e8edf2;--dim:#8b98a5;--acc:#33b864;--warn:#e0a030;--line:#2a323c}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,"Noto Sans TC",sans-serif}
@@ -581,7 +579,7 @@ select{background:#232b34;color:var(--fg);border:1px solid var(--line);border-ra
 .btn:disabled{opacity:.4}
 .bar{height:8px;background:#232b34;border-radius:4px;overflow:hidden}.bar i{display:block;height:100%;background:var(--acc);width:0}
 </style></head><body>
-<header><h1>C4 Settings</h1><div id="status">Connecting…</div></header>
+<header><h1>C4 設定</h1><div id="status">連線中…</div></header>
 <nav id="tabs"></nav>
 <main id="main"></main>
 <div id="toast"></div>
@@ -590,7 +588,7 @@ let MODEL=null,TAB=localStorage.getItem('tab')||'',NATIONS=null;
 const $=s=>document.querySelector(s);
 function toast(m){const t=$('#toast');t.textContent=m;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(()=>t.classList.remove('show'),2200)}
 async function api(p,body){const r=await fetch(p,body?{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}:{});return r.json()}
-async function setParam(key,value){const r=await api('/api/set',{key,value});if(!r.ok){toast('Write failed: '+(r.error||''));}else{toast(key+' = '+r.value)}await refresh(false)}
+async function setParam(key,value){const r=await api('/api/set',{key,value});if(!r.ok){toast('寫入失敗: '+(r.error||''));}else{toast(key+' = '+r.value)}await refresh(false)}
 function boolVal(v){return v==='1'}
 function itemRow(it){
   if(!it.visible)return '';
@@ -616,30 +614,30 @@ function osmSection(){
   if(o.downloading||o.pending){
     const p=o.progress||{},tot=p.total_files||0,done=p.downloaded_files||0;
     const pct=tot?Math.round(done/tot*100):0;
-    dl=`<div class="item"><div class="grow"><div class="t">Downloading… ${done}/${tot} (${pct}%)</div><div class="bar" style="margin-top:6px"><i style="width:${pct}%"></i></div></div></div>`;
+    dl=`<div class="item"><div class="grow"><div class="t">下載中… ${done}/${tot} (${pct}%)</div><div class="bar" style="margin-top:6px"><i style="width:${pct}%"></i></div></div></div>`;
   }
-  const cur=o.location_title?`Current map: ${o.location_title}${o.downloaded_date?' ('+new Date(parseFloat(o.downloaded_date)*1000).toLocaleDateString()+')':''}`:'No map data downloaded yet';
-  return `<div class="sec">OSM Map Data (needed by Speed Limit / SCC-Map)</div><div class="card">
+  const cur=o.location_title?`目前圖資：${o.location_title}${o.downloaded_date?'（'+new Date(parseFloat(o.downloaded_date)*1000).toLocaleDateString()+'）':''}`:'尚未下載任何圖資';
+  return `<div class="sec">OSM 圖資（Speed Limit / SCC-Map 需要）</div><div class="card">
     <div class="item"><div class="grow"><div class="t">${cur}</div><div class="d">mapd ${o.mapd_version||''}</div></div></div>
-    <div class="item"><div class="grow"><select id="nation"><option>Loading countries…</option></select></div>
-    <button class="btn" onclick="osmGo()">Download</button></div>${dl}</div>`;
+    <div class="item"><div class="grow"><select id="nation"><option>載入國家清單…</option></select></div>
+    <button class="btn" onclick="osmGo()">下載</button></div>${dl}</div>`;
 }
 function dmSection(){
   const on=MODEL.status.disable_dm, fixed=MODEL.status.dm_unconditional;
-  const d=fixed?'Disabled by the on-device dmonitoringd patch (unconditional, no param). Edit the file on the device to change it.'
-               :'No distraction detection, no attention alerts and no forced slowdown. You are fully responsible for watching the road.';
-  const sw=fixed?`<div class="sw on off" title="patched on device"><i></i></div>`
+  const d=fixed?'已由裝置端 dmonitoringd patch 無條件關閉（不吃參數，release-mici 會刪掉自訂 param）。要改回請改裝置上的檔案。'
+               :'關閉後不再偵測分心、不會發出注意力警告或強制減速。駕駛須自行全程注意路況並負責。';
+  const sw=fixed?`<div class="sw on off"><i></i></div>`
                 :`<div class="sw ${on?'on':''}" onclick="setParam('DisableDriverMonitoring',${on?'0':'1'})"><i></i></div>`;
-  return `<div class="sec">Driver Monitoring (DM)</div><div class="card">
-    <div class="item${fixed?' off':''}"><div class="grow"><div class="t">Disable Driver Monitoring</div><div class="d">${d}</div></div>
+  return `<div class="sec">駕駛監控 (DM)</div><div class="card">
+    <div class="item${fixed?' off':''}"><div class="grow"><div class="t">關閉駕駛監控</div><div class="d">${d}</div></div>
     ${sw}</div></div>`;
 }
 async function osmGo(){
   const sel=$('#nation');const ref=sel.value;if(!ref||!NATIONS)return;
   const title=NATIONS[ref]?NATIONS[ref].full_name:ref;
-  if(!confirm(`Download ${title} map data? (WiFi required, several hundred MB)`))return;
+  if(!confirm(`下載 ${title} 圖資？（需要 WiFi，數百 MB）`))return;
   const r=await api('/api/osm/download',{ref,title});
-  toast(r.ok?'Download started':'Failed: '+(r.error||''));refresh(false);
+  toast(r.ok?'已開始下載':'失敗: '+(r.error||''));refresh(false);
 }
 async function loadNations(){
   if(NATIONS)return;NATIONS=await api('/api/osm/nations');
@@ -664,12 +662,12 @@ function render(){
   if(panel.id==='toggles')html+=dmSection();
   $('#main').innerHTML=html;
   const st=MODEL.status;
-  $('#status').textContent=`${st.branch||''} ${st.version||''} · ${st.onroad?'⚠️ Onroad (most settings locked)':'✅ Offroad — editable'}`;
+  $('#status').textContent=`${st.branch||''} ${st.version||''} · ${st.onroad?'⚠️ 行車中（多數設定鎖定）':'✅ 熄火中 可設定'}`;
   if(panel.id==='cruise')loadNations();
 }
 async function refresh(first=true){
   try{MODEL=await api('/api/model');if(!TAB)TAB=MODEL.panels[0]?.id;render()}
-  catch(e){$('#status').textContent='Device unreachable…'}
+  catch(e){$('#status').textContent='連不上裝置…'}
 }
 refresh();setInterval(()=>refresh(false),4000);
 </script></body></html>
