@@ -38,17 +38,16 @@ CAPABILITIES = {
 
 
 def refresh_capabilities():
-  global USE_TRANSLATIONS
   CAPABILITIES["has_icbm"] = as_bool(read_param("IntelligentCruiseButtonManagement"))
   CAPABILITIES["has_longitudinal_control"] = as_bool(read_param("AlphaLongitudinalEnabled"))
-  USE_TRANSLATIONS = (read_param("LanguageSetting") or "").strip().startswith("zh")
 
 OSM_KEYS = {"OsmLocal", "OsmLocationName", "OsmLocationTitle", "OsmStateName",
             "OsmStateTitle", "OsmDbUpdatesCheck", "OsmDownloadedDate"}
 EXTRA_KEYS = {"IsMetric", "DisableUpdates", "DisableDriverMonitoring"}  # writable besides settings_ui items
 
 # Traditional Chinese labels for the settings_ui.json strings (Taiwan usage).
-# Only applied when the device LanguageSetting is a zh* locale; English otherwise.
+# Kept for reference only: the page is always English (set to True to use them),
+# independent of the device LanguageSetting.
 USE_TRANSLATIONS = False
 TRANSLATIONS = {
   # panels
@@ -240,6 +239,24 @@ TRANSLATIONS = {
 }
 
 
+DMONITORINGD_PATH = "/data/openpilot/openpilot/selfdrive/monitoring/dmonitoringd.py"
+
+
+def dm_patch_unconditional():
+  # the device patch neutralizes driverMonitoringState on every publish, with no param
+  # toggle, because release-mici's Params deletes unknown keys such as DisableDriverMonitoring
+  try:
+    with open(DMONITORINGD_PATH, encoding="utf-8") as f:
+      src = f.read()
+    return "def neutralize_dm(" in src and "\n    neutralize_dm(dat)" in src
+  except OSError:
+    return False
+
+
+def dm_disabled():
+  return dm_patch_unconditional() or as_bool(read_param("DisableDriverMonitoring"))
+
+
 def tr(s):
   if s is None or not USE_TRANSLATIONS:
     return s
@@ -420,7 +437,8 @@ def build_model():
       "branch": read_param("GitBranch"),
       "version": read_param("Version"),
       "is_metric": as_bool(read_param("IsMetric")),
-      "disable_dm": as_bool(read_param("DisableDriverMonitoring")),
+      "disable_dm": dm_disabled(),
+      "dm_unconditional": dm_patch_unconditional(),
     },
     "osm": {
       "location_title": read_param("OsmLocationTitle"),
@@ -607,10 +625,14 @@ function osmSection(){
     <button class="btn" onclick="osmGo()">Download</button></div>${dl}</div>`;
 }
 function dmSection(){
-  const on=MODEL.status.disable_dm;
+  const on=MODEL.status.disable_dm, fixed=MODEL.status.dm_unconditional;
+  const d=fixed?'Disabled by the on-device dmonitoringd patch (unconditional, no param). Edit the file on the device to change it.'
+               :'No distraction detection, no attention alerts and no forced slowdown. You are fully responsible for watching the road.';
+  const sw=fixed?`<div class="sw on off" title="patched on device"><i></i></div>`
+                :`<div class="sw ${on?'on':''}" onclick="setParam('DisableDriverMonitoring',${on?'0':'1'})"><i></i></div>`;
   return `<div class="sec">Driver Monitoring (DM)</div><div class="card">
-    <div class="item"><div class="grow"><div class="t">Disable Driver Monitoring</div><div class="d">No distraction detection, no attention alerts and no forced slowdown. You are fully responsible for watching the road.</div></div>
-    <div class="sw ${on?'on':''}" onclick="setParam('DisableDriverMonitoring',${on?'0':'1'})"><i></i></div></div></div>`;
+    <div class="item${fixed?' off':''}"><div class="grow"><div class="t">Disable Driver Monitoring</div><div class="d">${d}</div></div>
+    ${sw}</div></div>`;
 }
 async function osmGo(){
   const sel=$('#nation');const ref=sel.value;if(!ref||!NATIONS)return;
