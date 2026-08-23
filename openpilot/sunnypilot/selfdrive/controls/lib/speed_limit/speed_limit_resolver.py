@@ -21,6 +21,11 @@ SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 ALL_SOURCES = tuple(SpeedLimitSource.schema.enumerants.values())
 
 
+# Accepted map speed-limit range. Outside this the value is assumed to be bad data.
+SPEED_LIMIT_MIN = 50 * CV.KPH_TO_MS   # km/h
+SPEED_LIMIT_MAX = 110 * CV.KPH_TO_MS  # km/h
+
+
 class SpeedLimitResolver:
   limit_solutions: dict[custom.LongitudinalPlanSP.SpeedLimit.Source, float]
   distance_solutions: dict[custom.LongitudinalPlanSP.SpeedLimit.Source, float]
@@ -75,7 +80,9 @@ class SpeedLimitResolver:
     self.speed_limit_offset = 0.
 
   def update_speed_limit_states(self) -> None:
-    self.speed_limit_final = self.speed_limit + self.speed_limit_offset
+    # no valid limit -> no target at all. Without this the offset alone became the
+    # "speed limit" (offset 10 -> a bogus 10 km/h target on every unmapped road).
+    self.speed_limit_final = (self.speed_limit + self.speed_limit_offset) if self.speed_limit > 0. else 0.
 
     if self.speed_limit > 0.:
       self.speed_limit_last = self.speed_limit
@@ -183,6 +190,15 @@ class SpeedLimitResolver:
     self.update_params()
 
     self.speed_limit, self.distance, self.source = self._resolve_limit_sources(sm)
+
+    # Taiwan OSM leaves maxspeed off most surface streets, so mapd reports 0 there.
+    # Anything outside the plausible range is treated as "no data" instead of being
+    # turned into a set speed.
+    if self.speed_limit > 0. and not (SPEED_LIMIT_MIN <= self.speed_limit <= SPEED_LIMIT_MAX):
+      self.speed_limit = 0.
+      self.distance = 0.
+      self.source = SpeedLimitSource.none
+
     self.speed_limit_offset = self._get_speed_limit_offset()
 
     self.update_speed_limit_states()

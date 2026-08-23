@@ -27,6 +27,11 @@ SpeedLimitSource = custom.LongitudinalPlanSP.SpeedLimit.Source
 ACTIVE_STATES = (SpeedLimitAssistState.active, SpeedLimitAssistState.adapting)
 ENABLED_STATES = (SpeedLimitAssistState.preActive, SpeedLimitAssistState.pending, *ACTIVE_STATES)
 
+# A new limit this far below the current set speed is never adopted automatically:
+# dropping that much on a highway is dangerous. The driver can still confirm it
+# manually with the +/- buttons.
+MAX_AUTO_DROP = 30 * CV.KPH_TO_MS  # km/h
+
 DISABLED_GUARD_PERIOD = 0.5  # secs.
 # secs. Time to wait after activation before considering temp deactivation signal.
 PRE_ACTIVE_GUARD_PERIOD = {
@@ -191,6 +196,12 @@ class SpeedLimitAssist:
     self.target_set_speed_conv = pcm_long_required_max_set_speed_conv if self.pcm_op_long else self.speed_limit_final_last_conv
 
   @property
+  def auto_drop_too_large(self) -> bool:
+    if not self._has_speed_limit or self.v_cruise_cluster <= 0. or self._speed_limit_final_last <= 0.:
+      return False
+    return bool(self.v_cruise_cluster - self._speed_limit_final_last > MAX_AUTO_DROP)
+
+  @property
   def apply_confirm_speed_threshold(self) -> bool:
     # below CST: always require user confirmation
     if self.v_cruise_cluster_below_confirm_speed_threshold:
@@ -330,8 +341,10 @@ class SpeedLimitAssist:
           elif self.pre_active_timer <= 0:
             # the alert still sounds for the whole guard period, but when it expires the new
             # limit is adopted instead of the session being dropped, so the driver never has
-            # to press '-' to confirm. No limit -> nothing to adopt.
-            self.state = SpeedLimitAssistState.active if self._has_speed_limit else SpeedLimitAssistState.inactive
+            # to press '-' to confirm. No limit, or a drop too big to take automatically ->
+            # stay off and leave it to the driver.
+            adopt = self._has_speed_limit and not self.auto_drop_too_large
+            self.state = SpeedLimitAssistState.active if adopt else SpeedLimitAssistState.inactive
 
         # INACTIVE
         elif self.state == SpeedLimitAssistState.inactive:
