@@ -3,7 +3,7 @@ import numpy as np
 
 from opendbc.car.structs import car
 from openpilot.common.constants import CV
-from openpilot.sunnypilot.selfdrive.car.cruise_ext import VCruiseHelperSP
+from openpilot.sunnypilot.selfdrive.car.cruise_ext import VCruiseHelperSP, MIN_SET_SPEED
 
 
 # WARNING: this value was determined based on the model's training distribution,
@@ -145,6 +145,10 @@ class VCruiseHelper(VCruiseHelperSP):
 
     initial_experimental_mode = experimental_mode and not dynamic_experimental_control
     initial = V_CRUISE_INITIAL_EXPERIMENTAL_MODE if initial_experimental_mode else V_CRUISE_INITIAL
+    # pressing SET should take the current speed, the way the stock ACC does. Upstream
+    # floors it at V_CRUISE_INITIAL (40, or 105 in experimental mode), which made a SET
+    # below 40 km/h jump up to 40.
+    initial = MIN_SET_SPEED
 
     if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_initialized:
       self.v_cruise_kph = self.v_cruise_kph_last
