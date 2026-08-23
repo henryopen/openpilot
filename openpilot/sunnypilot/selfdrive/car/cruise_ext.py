@@ -39,6 +39,10 @@ def update_manual_button_timers(CS: car.CarState, button_timers: dict[car.CarSta
       button_timers[b.type.raw] = 1 if b.pressed else 0
 
 
+# Lower bound for the set speed. Stock uses V_CRUISE_MIN (8 km/h) / ICBM's 30 km/h.
+MIN_SET_SPEED = 0
+
+
 class VCruiseHelperSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP) -> None:
     self.CP = CP
@@ -86,6 +90,11 @@ class VCruiseHelperSP:
     return round_to_nearest, v_cruise_delta
 
   def get_minimum_set_speed(self, is_metric: bool) -> None:
+    # allow the set speed all the way down to 0 instead of the stock lower bounds
+    # (V_CRUISE_MIN = 8 km/h with pcm set speed, 30 km/h via ICBM)
+    self.v_cruise_min = MIN_SET_SPEED
+    return
+
     if self.CP_SP.pcmCruiseSpeed:
       self.v_cruise_min = V_CRUISE_MIN
       return
@@ -131,8 +140,9 @@ class VCruiseHelperSP:
     return False
 
   def update_speed_limit_assist_v_cruise_non_pcm(self) -> None:
-    if self.sla_state in SLA_ACTIVE_STATES and (self.prev_sla_state not in SLA_ACTIVE_STATES or
-                                                self.update_speed_limit_final_last_changed):
+    # only follow the speed limit when the limit itself changed. Re-entering the active
+    # state (e.g. cancel then resume) must not overwrite a set speed the driver picked.
+    if self.sla_state in SLA_ACTIVE_STATES and self.update_speed_limit_final_last_changed:
       self.v_cruise_kph = np.clip(round(self.speed_limit_final_last_kph, 1), self.v_cruise_min, V_CRUISE_MAX)
 
     self.prev_sla_state = self.sla_state
