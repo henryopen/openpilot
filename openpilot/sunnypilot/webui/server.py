@@ -283,6 +283,17 @@ def dm_patch_unconditional():
     return False
 
 
+def lat_mode():
+  """Which lateral setup is active. NNLC and the manual torque override are mutually
+  exclusive in settings_ui.json (NNLC requires EnforceTorqueControl == false), so the
+  page offers a one-tap switch instead of leaving one of them greyed out."""
+  if as_bool(read_param("NeuralNetworkLateralControl")):
+    return "nnlc"
+  if as_bool(read_param("EnforceTorqueControl")) and as_bool(read_param("CustomTorqueParams")):
+    return "custom"
+  return "stock"
+
+
 def dm_disabled():
   return dm_patch_unconditional() or as_bool(read_param("DisableDriverMonitoring"))
 
@@ -469,6 +480,9 @@ def build_model():
       "is_metric": as_bool(read_param("IsMetric")),
       "disable_dm": dm_disabled(),
       "dm_unconditional": dm_patch_unconditional(),
+      "lat_mode": lat_mode(),
+      "lat_accel_factor": read_param("TorqueParamsOverrideLatAccelFactor"),
+      "lat_friction": read_param("TorqueParamsOverrideFriction"),
     },
     "osm": {
       "location_title": read_param("OsmLocationTitle"),
@@ -663,6 +677,26 @@ function osmSection(){
     <div class="item"><div class="grow"><select id="nation"><option>載入國家清單…</option></select></div>
     <button class="btn" onclick="osmGo()">下載</button></div>${dl}</div>`;
 }
+async function setLatMode(mode){
+  const sets = mode==='nnlc'
+    ? [['NeuralNetworkLateralControl','1'],['EnforceTorqueControl','0'],['CustomTorqueParams','0'],['TorqueParamsOverrideEnabled','0']]
+    : mode==='custom'
+    ? [['NeuralNetworkLateralControl','0'],['EnforceTorqueControl','1'],['CustomTorqueParams','1'],['TorqueParamsOverrideEnabled','1']]
+    : [['NeuralNetworkLateralControl','0'],['EnforceTorqueControl','0'],['CustomTorqueParams','0'],['TorqueParamsOverrideEnabled','0']];
+  for(const [k,v] of sets){ await api('/api/set',{key:k,value:v}); }
+  toast('已切換，熄火再紅火一次才生效');
+  await refresh(false);
+}
+function latSection(){
+  const m=MODEL.status.lat_mode, st=MODEL.status;
+  const btn=(id,label,desc)=>`<button class="${m===id?'on':''}" onclick="setLatMode('${id}')">${label}</button>`;
+  return `<div class="sec">橫向控制模式（改完要熄火再紅火）</div><div class="card">
+    <div class="item"><div class="grow"><div class="t">目前：${m==='nnlc'?'神經網路 NNLC':(m==='custom'?'手動調校':'原廠預設')}</div>
+    <div class="d">手動調校 = 用你車學到的值（latAccelFactor ${st.lat_accel_factor||'—'} / friction ${st.lat_friction||'—'}）。NNLC = 用 HYUNDAI_TUCSON_4TH_GEN 的神經網路模型（Custin 無專屬模型，模糊比對）。兩者互斥。</div></div></div>
+    <div class="item"><div class="grow"><div class="seg">
+      ${btn('custom','手動調校')}${btn('nnlc','神經網路 NNLC')}${btn('stock','原廠預設')}
+    </div></div></div></div>`;
+}
 function dmSection(){
   const on=MODEL.status.disable_dm, fixed=MODEL.status.dm_unconditional;
   const d=fixed?'已由裝置端 dmonitoringd patch 無條件關閉（不吃參數，release-mici 會刪掉自訂 param）。要改回請改裝置上的檔案。'
@@ -701,6 +735,7 @@ function render(){
   }
   if(panel.id==='cruise')html+=osmSection();
   if(panel.id==='toggles')html+=dmSection();
+  if(panel.id==='steering')html+=latSection();
   $('#main').innerHTML=html;
   const st=MODEL.status;
   $('#status').textContent=`${st.branch||''} ${st.version||''} · ${st.onroad?'⚠️ 行車中（多數設定鎖定）':'✅ 熄火中 可設定'}`;
