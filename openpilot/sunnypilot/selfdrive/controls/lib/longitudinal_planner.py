@@ -20,6 +20,23 @@ from openpilot.sunnypilot.models.helpers import get_active_bundle
 DecState = custom.LongitudinalPlanSP.DynamicExperimentalControl.DynamicExperimentalControlState
 LongitudinalPlanSource = custom.LongitudinalPlanSP.LongitudinalPlanSource
 
+# Custin: the driver sets MAX by what the DASH shows, but openpilot controls on true
+# wheel speed, so the car ran ~7% faster than the number set. Regression over 81753
+# samples of route 00000004--422ccab765 (vEgo vs vEgoCluster): dash = 1.071*true + 2.07 km/h.
+# Cruise and speed-limit targets are treated as dash speeds and converted back to true
+# speed here; SCC curve braking is left alone since it is a physical limit.
+# Re-run the regression if the tyres/wheel size change.
+DASH_GAIN = 1.071
+DASH_OFFSET_KPH = 2.07
+DASH_MAX_KPH = 200.  # above this the value is a sentinel (V_CRUISE_UNSET = 255), pass through
+
+
+def dash_to_true(v_target: float) -> float:
+  v_kph = v_target * CV.MS_TO_KPH
+  if v_kph <= 0. or v_kph > DASH_MAX_KPH:
+    return v_target
+  return max((v_kph - DASH_OFFSET_KPH) / DASH_GAIN, 0.) * CV.KPH_TO_MS
+
 
 class LongitudinalPlannerSP:
   def __init__(self, CP: structs.CarParams, CP_SP: structs.CarParamsSP, mpc):
@@ -63,10 +80,10 @@ class LongitudinalPlannerSP:
                     self.resolver.speed_limit_final_last, has_speed_limit, self.resolver.distance, self.events_sp)
 
     targets = {
-      LongitudinalPlanSource.cruise: (v_cruise, a_ego),
+      LongitudinalPlanSource.cruise: (dash_to_true(v_cruise), a_ego),
       LongitudinalPlanSource.sccVision: (self.scc.vision.output_v_target, self.scc.vision.output_a_target),
       LongitudinalPlanSource.sccMap: (self.scc.map.output_v_target, self.scc.map.output_a_target),
-      LongitudinalPlanSource.speedLimitAssist: (self.sla.output_v_target, self.sla.output_a_target),
+      LongitudinalPlanSource.speedLimitAssist: (dash_to_true(self.sla.output_v_target), self.sla.output_a_target),
     }
 
     self.source = min(targets, key=lambda k: targets[k][0])

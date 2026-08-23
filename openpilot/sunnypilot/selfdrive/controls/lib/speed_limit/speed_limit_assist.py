@@ -328,8 +328,10 @@ class SpeedLimitAssist:
           if self._update_non_pcm_long_confirmed_state():
             self.state = SpeedLimitAssistState.active
           elif self.pre_active_timer <= 0:
-            # Timeout - session ended
-            self.state = SpeedLimitAssistState.inactive
+            # the alert still sounds for the whole guard period, but when it expires the new
+            # limit is adopted instead of the session being dropped, so the driver never has
+            # to press '-' to confirm. No limit -> nothing to adopt.
+            self.state = SpeedLimitAssistState.active if self._has_speed_limit else SpeedLimitAssistState.inactive
 
         # INACTIVE
         elif self.state == SpeedLimitAssistState.inactive:
