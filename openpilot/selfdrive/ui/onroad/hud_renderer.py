@@ -137,7 +137,10 @@ class HudRenderer(Widget):
     max_color = COLORS.GREY
     set_speed_color = COLORS.DARK_GREY
     if self.is_cruise_set:
-      set_speed_color = COLORS.WHITE
+      # keep the number grey while disengaged: the set speed survives a disengagement,
+      # so a white number reads as "still controlling" when it is not
+      if ui_state.status != UIStatus.DISENGAGED:
+        set_speed_color = COLORS.WHITE
       if ui_state.status == UIStatus.ENGAGED:
         max_color = COLORS.ENGAGED
       elif ui_state.status == UIStatus.DISENGAGED:
