@@ -8,7 +8,7 @@ from openpilot.common.parameterized import parameterized
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.desire_helper import DesireHelper, LaneChangeState, LaneChangeDirection
 from openpilot.sunnypilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeController, AutoLaneChangeMode, \
-  AUTO_LANE_CHANGE_TIMER, BSM_CLEAR_DELAY
+  AUTO_LANE_CHANGE_TIMER
 from openpilot.common.test import OpenpilotTestCase
 
 AUTO_LANE_CHANGE_TIMER_COMBOS = [
@@ -161,7 +161,7 @@ class TestAutoLaneChangeController(OpenpilotTestCase):
     assert not self.alc.auto_lane_change_allowed
 
     # Now update with blindspot cleared - should start incrementing timer from negative value
-    num_updates = int((timer_delay + abs(BSM_CLEAR_DELAY)) / DT_MDL) + 1
+    num_updates = int(timer_delay / DT_MDL) + 1
     for _ in range(num_updates):
       self.alc.update_lane_change(blindspot_detected=False, brake_pressed=False)
 

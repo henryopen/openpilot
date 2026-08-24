@@ -30,9 +30,9 @@ AUTO_LANE_CHANGE_TIMER = {
   AutoLaneChangeMode.THREE_SECONDS: 3.0,  # 3-second delay
 }
 
-# secs (negative = extra wait). How long after the blind spot clears before the auto
-# lane change may start. Upstream default was -1; raised to -2 for a safer buffer.
-BSM_CLEAR_DELAY = -2
+# Holding the wait timer here while the blind spot is occupied means clearing it
+# restarts the full configured delay (AutoLaneChangeTimer), instead of upstream's
+# fixed one second buffer. Change the delay in settings and this follows it.
 
 
 class AutoLaneChangeController:
@@ -77,10 +77,7 @@ class AutoLaneChangeController:
     self.lane_change_wait_timer += DT_MDL
 
     if self.lane_change_bsm_delay and blindspot_detected and self.lane_change_delay > 0:
-      if self.lane_change_delay == AUTO_LANE_CHANGE_TIMER[AutoLaneChangeMode.NUDGELESS]:
-        self.lane_change_wait_timer = BSM_CLEAR_DELAY
-      else:
-        self.lane_change_wait_timer = self.lane_change_delay + BSM_CLEAR_DELAY
+      self.lane_change_wait_timer = 0.0
 
   def update_allowed(self) -> bool:
     # Auto lane change allowed if:
