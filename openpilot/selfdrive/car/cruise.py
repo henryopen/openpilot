@@ -143,12 +143,11 @@ class VCruiseHelper(VCruiseHelperSP):
     if self.CP.pcmCruise:
       return
 
-    initial_experimental_mode = experimental_mode and not dynamic_experimental_control
-    initial = V_CRUISE_INITIAL_EXPERIMENTAL_MODE if initial_experimental_mode else V_CRUISE_INITIAL
-    # pressing SET should take the current speed, the way the stock ACC does. Upstream
-    # floors it at V_CRUISE_INITIAL (40, or 105 in experimental mode), which made a SET
-    # below 40 km/h jump up to 40.
-    initial = MIN_SET_SPEED
+    # The first SET or RES of a drive has no speed to take: standing still the cluster reads 0
+    # and the set speed would come out 0, which engages with nothing commanded. Start from
+    # V_CRUISE_INITIAL instead. Upstream would use V_CRUISE_INITIAL_EXPERIMENTAL_MODE (105) when
+    # experimental mode is on without DEC; that is far too fast to pull away from a stop with.
+    initial = V_CRUISE_INITIAL
 
     if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_initialized:
       self.v_cruise_kph = self.v_cruise_kph_last
@@ -156,6 +155,7 @@ class VCruiseHelper(VCruiseHelperSP):
       # SET takes the speed off the cluster and rounds it to the nearest 10, the way the
       # stock ACC does. vEgo is the true speed; this car's cluster reads higher than it.
       v_dash_kph = (CS.vEgoCluster if CS.vEgoCluster > 0 else CS.vEgo) * CV.MS_TO_KPH
-      self.v_cruise_kph = int(np.clip(round(v_dash_kph / 10.0) * 10, initial, V_CRUISE_MAX))
+      rounded_kph = round(v_dash_kph / 10.0) * 10
+      self.v_cruise_kph = int(np.clip(rounded_kph if rounded_kph > 0 else initial, MIN_SET_SPEED, V_CRUISE_MAX))
 
     self.v_cruise_cluster_kph = self.v_cruise_kph
