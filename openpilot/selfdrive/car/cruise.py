@@ -153,6 +153,9 @@ class VCruiseHelper(VCruiseHelperSP):
     if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_initialized:
       self.v_cruise_kph = self.v_cruise_kph_last
     else:
-      self.v_cruise_kph = int(round(np.clip(CS.vEgo * CV.MS_TO_KPH, initial, V_CRUISE_MAX)))
+      # SET takes the speed off the cluster and rounds it to the nearest 10, the way the
+      # stock ACC does. vEgo is the true speed; this car's cluster reads higher than it.
+      v_dash_kph = (CS.vEgoCluster if CS.vEgoCluster > 0 else CS.vEgo) * CV.MS_TO_KPH
+      self.v_cruise_kph = int(np.clip(round(v_dash_kph / 10.0) * 10, initial, V_CRUISE_MAX))
 
     self.v_cruise_cluster_kph = self.v_cruise_kph
