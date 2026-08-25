@@ -242,10 +242,9 @@ class SelfdriveD(CruiseHelper):
     if self.CP.passive:
       return
 
-    # Block resume if cruise never previously enabled
-    resume_pressed = any(be.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for be in CS.buttonEvents)
-    if not self.CP.pcmCruise and CS.vCruise > 250 and resume_pressed:
-      self.events.add(EventName.resumeBlocked)
+    # Upstream blocks RES until a set speed exists (vCruise 255 > 250), which is why a drive
+    # could only be started with SET. initialize_v_cruise starts RES at V_CRUISE_INITIAL
+    # instead, so the block is not needed and the stock button layout works from the first press.
 
     # Handle DM
     if not self.CP.notCar:

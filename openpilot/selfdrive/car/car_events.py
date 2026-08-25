@@ -159,10 +159,7 @@ class CarEvents:
     for b in CS.buttonEvents:
       # Disable on rising and falling edge of cancel for both stock and OP long
       # TODO: only check the cancel button with openpilot longitudinal on all brands to match panda safety
-      # With OP long the middle button is a pause/resume button on this platform, handled by
-      # sunnypilot/selfdrive/car/long_pause.py, so it must not disengage openpilot here.
-      if b.type == ButtonType.cancel and (allow_button_cancel or not self.CP.pcmCruise) and \
-         not self.CP.openpilotLongitudinalControl:
+      if b.type == ButtonType.cancel and (allow_button_cancel or not self.CP.pcmCruise):
         events.add(EventName.buttonCancel)
 
     # Handle permanent and temporary steering faults
