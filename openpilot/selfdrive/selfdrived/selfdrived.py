@@ -28,7 +28,7 @@ from openpilot.common.hardware import HARDWARE
 
 from openpilot.sunnypilot.mads.mads import ModularAssistiveDrivingSystem
 from openpilot.sunnypilot import get_sanitize_int_param
-from openpilot.sunnypilot.selfdrive.car.brake_override import brake_is_override
+from openpilot.sunnypilot.selfdrive.car.brake_override import brake_is_override, BRAKE_OVERRIDE_MIN_SPEED
 from openpilot.sunnypilot.selfdrive.car.car_specific import CarSpecificEventsSP
 from openpilot.sunnypilot.selfdrive.car.cruise_helpers import CruiseHelper
 from openpilot.sunnypilot.selfdrive.car.intelligent_cruise_button_management.controller import IntelligentCruiseButtonManagement
@@ -285,6 +285,13 @@ class SelfdriveD(CruiseHelper):
         if self.sm.frame > int(2. / DT_CTRL) and self.initialized:
           # body always wants to enable
           self.events.add(EventName.pcmEnable)
+
+      # A blip of the accelerator from a stop engages, the way the stock ACC resumes from
+      # standstill. The set speed comes from initialize_v_cruise, so it starts at
+      # V_CRUISE_INITIAL. The panda gives the authorisation on the same press.
+      if CS.gasPressed and not self.CS_prev.gasPressed and CS.vEgo <= BRAKE_OVERRIDE_MIN_SPEED and \
+         CS.cruiseState.available and not self.enabled and self.CP.openpilotLongitudinalControl:
+        self.events.add(EventName.buttonEnable)
 
       # Disable on rising edge of accelerator or brake. Also disable on brake when speed > 0.
       # Above the brake-override speed the pedal is an override instead, matching the panda

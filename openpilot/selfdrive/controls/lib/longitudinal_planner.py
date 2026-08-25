@@ -49,8 +49,15 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
       max_accel = min(max_accel, coast_limit)
 
   target_accel = np.clip(v_cruise - v_ego, A_CRUISE_MIN, max_accel)
-  j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
-  target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
+  # The jerk limit is only for the ACC path. Upstream 3d09a47a47 applied it to e2e as well,
+  # which lets the acceleration e2e built up leak back through: DEC hands over to ACC with
+  # a_cruise_prev still at an e2e-sized value, and the jerk limit then keeps it there for
+  # ~0.8s instead of the ACC ceiling taking effect at once. With DEC switching every ~5s
+  # (route 00000008) that never finishes, so ACC was commanding 1.95 where its own ceiling
+  # was 1.07.
+  if not e2e:
+    j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
+    target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
   return target_accel
 
