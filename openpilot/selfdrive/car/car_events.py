@@ -160,7 +160,14 @@ class CarEvents:
       # Disable on rising and falling edge of cancel for both stock and OP long
       # TODO: only check the cancel button with openpilot longitudinal on all brands to match panda safety
       if b.type == ButtonType.cancel and (allow_button_cancel or not self.CP.pcmCruise):
-        events.add(EventName.buttonCancel)
+        # The middle button is a pause/resume button on this platform, so a press while
+        # disengaged brings openpilot back instead of raising buttonCancel - that event
+        # carries a NO_ENTRY which would block the very press meant to re-engage.
+        if self.CP.openpilotLongitudinalControl and not CC.enabled:
+          if b.pressed:
+            events.add(EventName.buttonEnable)
+        else:
+          events.add(EventName.buttonCancel)
 
     # Handle permanent and temporary steering faults
     self.steering_unpressed = 0 if CS.steeringPressed else self.steering_unpressed + 1
