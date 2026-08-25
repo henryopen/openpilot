@@ -149,11 +149,14 @@ class VCruiseHelper(VCruiseHelperSP):
     # experimental mode is on without DEC; that is far too fast to pull away from a stop with.
     initial = V_CRUISE_INITIAL
 
-    if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_initialized:
-      self.v_cruise_kph = self.v_cruise_kph_last
+    if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents):
+      # RES returns to the previous set speed. The first RES of a drive has none - upstream
+      # falls through to the current speed here, so it could not start a drive on its own.
+      self.v_cruise_kph = self.v_cruise_kph_last if self.v_cruise_initialized else initial
     else:
       # SET takes the speed off the cluster and rounds it to the nearest 10, the way the
       # stock ACC does. vEgo is the true speed; this car's cluster reads higher than it.
+      # Standing still there is nothing to take, so it starts from the initial set speed too.
       v_dash_kph = (CS.vEgoCluster if CS.vEgoCluster > 0 else CS.vEgo) * CV.MS_TO_KPH
       rounded_kph = round(v_dash_kph / 10.0) * 10
       self.v_cruise_kph = int(np.clip(rounded_kph if rounded_kph > 0 else initial, MIN_SET_SPEED, V_CRUISE_MAX))
