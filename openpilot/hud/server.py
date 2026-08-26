@@ -169,14 +169,31 @@ def _radar_state(rs):
           "leads": [one, two]}
 
 
+def _next_speed_limit(mem_params):
+  """mapd writes the limit coming up as JSON: speedlimit in m/s, distance in metres."""
+  try:
+    j = json.loads(mem_params.get("NextMapSpeedLimit") or "{}")
+    return float(j.get("speedlimit") or 0.), float(j.get("distance") or 0.)
+  except Exception:
+    return 0., 0.
+
+
 def _sp_shapes(params, mem_params, cs, cc, ss):
   """Rebuild what sunnypilot used to publish, so the page does not have to change."""
   speed_limit = float(mem_params.get("MapSpeedLimit") or 0.)
   offset = params.get("SpeedLimitValueOffset", return_default=True) * KPH_TO_MS
   assisting = params.get("SpeedLimitMode", return_default=True) == 3 and speed_limit > 0.
+  ahead, ahead_dist = _next_speed_limit(mem_params)
 
   return {
-    "liveMapDataSP": {"roadName": mem_params.get("RoadName") or ""},
+    "liveMapDataSP": {
+      "roadName": mem_params.get("RoadName") or "",
+      "speedLimitValid": speed_limit > 0.,
+      "speedLimit": speed_limit,
+      "speedLimitAheadValid": ahead > 0. and ahead_dist > 0.,
+      "speedLimitAhead": ahead,
+      "speedLimitAheadDistance": ahead_dist,
+    },
     "longitudinalPlanSP": {
       "dec": {"state": "blended" if ss.experimentalMode else "acc"},
       "speedLimit": {
@@ -188,6 +205,13 @@ def _sp_shapes(params, mem_params, cs, cc, ss):
       },
     },
     "selfdriveStateSP": {
+      "speedLimit": {
+        "resolver": {
+          "speedLimitValid": speed_limit > 0.,
+          "speedLimit": speed_limit,
+          "speedLimitOffset": offset,
+        },
+      },
       "mads": {
         "available": params.get_bool("AlwaysOnLateral"),
         "active": bool(cc.latActive),
