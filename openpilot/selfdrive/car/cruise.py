@@ -99,8 +99,10 @@ class VCruiseHelper:
     if not self.button_change_states[button_type]["enabled"]:
       return
 
-    v_cruise_delta = v_cruise_delta * (5 if long_press else 1)
-    if long_press and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
+    # a short press jumps by 10 and lands on a round number, a long press trims by 1
+    v_cruise_delta_interval = 1 if long_press else 10
+    v_cruise_delta = v_cruise_delta * v_cruise_delta_interval
+    if v_cruise_delta_interval == 10 and self.v_cruise_kph % v_cruise_delta != 0:  # partial interval
       self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / v_cruise_delta) * v_cruise_delta
     else:
       self.v_cruise_kph += v_cruise_delta * CRUISE_INTERVAL_SIGN[button_type]
