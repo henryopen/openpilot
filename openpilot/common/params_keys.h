@@ -43,6 +43,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"AlwaysOnLateral", {PERSISTENT, BOOL, "0"}},
     {"AutoLaneChangeBsmDelay", {PERSISTENT, BOOL, "1"}},
     {"AutoLaneChangeTimer", {PERSISTENT, INT, "3"}},
+    {"RoadEdgeLaneChangeEnabled", {PERSISTENT, BOOL, "1"}},
     {"ExperimentalMode", {PERSISTENT, BOOL, "0"}},
     {"ExperimentalModeConfirmed", {PERSISTENT, BOOL}},
     {"FirmwareQueryDone", {CLEAR_ON_MANAGER_START | CLEAR_ON_ONROAD_TRANSITION, BOOL}},
