@@ -15,7 +15,7 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
-MIN_V = 20 * CV.KPH_TO_MS   # do not operate under 20 km/h
+MIN_V = 15 * CV.KPH_TO_MS   # do not operate under 15 km/h
 PARAMS_UPDATE_PERIOD = 3.   # seconds
 
 _ENTERING_PRED_LAT_ACC_TH = 1.3        # predicted lat acc that starts the entering state

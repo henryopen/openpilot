@@ -6,7 +6,7 @@ from openpilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeCont
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
-LANE_CHANGE_SPEED_MIN = 20 * CV.MPH_TO_MS
+LANE_CHANGE_SPEED_MIN = 30 * CV.KPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 LANE_CHANGE_START_TIME = 0.5
 
