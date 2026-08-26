@@ -36,6 +36,8 @@ class Controls:
     self.CP = messaging.log_from_bytes(self.params.get("CarParams", block=True), car.CarParams)
     cloudlog.info("controlsd got CarParams")
 
+    self.always_on_lateral = self.params.get_bool("AlwaysOnLateral")
+
     self.CI = interfaces[self.CP.carFingerprint](self.CP)
 
     self.sm = messaging.SubMaster(['lateralDelay', 'vehicleParameters', 'lateralTorqueParameters', 'modelV2', 'selfdriveState',
@@ -97,7 +99,11 @@ class Controls:
 
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
-    CC.latActive = self.sm['selfdriveState'].active and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
+    # with always on lateral, steering stays available while openpilot is not engaged, as
+    # long as nothing is blocking engagement - main off, door, gear, calibration and pedals
+    # all land in engageable, so this does not need to check them again
+    lateral_allowed = self.sm['selfdriveState'].active or (self.always_on_lateral and self.sm['selfdriveState'].engageable)
+    CC.latActive = lateral_allowed and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
                    (not standstill or self.CP.steerAtStandstill)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 

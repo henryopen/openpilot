@@ -21,6 +21,10 @@ from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
 
+# keep in sync with ALT_EXP_ALWAYS_ON_LATERAL in opendbc/safety/declarations.h
+ALT_EXP_ALWAYS_ON_LATERAL = 32
+
+
 REPLAY = "REPLAY" in os.environ
 
 EventName = log.OnroadEvent.EventName
@@ -109,6 +113,8 @@ class Car:
       self.RI = RI
 
     self.CP.alternativeExperience = 0
+    if self.params.get_bool("AlwaysOnLateral"):
+      self.CP.alternativeExperience |= ALT_EXP_ALWAYS_ON_LATERAL
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
     self.CP.passive = not controller_available or self.CP.dashcamOnly
