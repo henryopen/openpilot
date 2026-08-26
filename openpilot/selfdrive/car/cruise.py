@@ -132,9 +132,14 @@ class VCruiseHelper:
 
     initial = V_CRUISE_INITIAL_EXPERIMENTAL_MODE if experimental_mode else V_CRUISE_INITIAL
 
-    if any(b.type in (ButtonType.accelCruise, ButtonType.resumeCruise) for b in CS.buttonEvents) and self.v_cruise_initialized:
-      self.v_cruise_kph = self.v_cruise_kph_last
+    # set picks the next ten at or above the current speed, every other button resumes
+    # the speed that was set before. with nothing set yet there is nothing to resume to,
+    # so those fall back to the same next ten.
+    if any(b.type == ButtonType.decelCruise for b in CS.buttonEvents) or not self.v_cruise_initialized:
+      # round first, m/s to km/h leaves 60 as 60.00000000000001 and that would jump a whole step
+      next_ten = math.ceil(round(CS.vEgo * CV.MS_TO_KPH, 1) / 10.) * 10.
+      self.v_cruise_kph = int(np.clip(next_ten, initial, V_CRUISE_MAX))
     else:
-      self.v_cruise_kph = int(round(np.clip(CS.vEgo * CV.MS_TO_KPH, initial, V_CRUISE_MAX)))
+      self.v_cruise_kph = self.v_cruise_kph_last
 
     self.v_cruise_cluster_kph = self.v_cruise_kph
