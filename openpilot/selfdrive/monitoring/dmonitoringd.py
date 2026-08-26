@@ -2,7 +2,24 @@
 import openpilot.cereal.messaging as messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import config_realtime_process
-from openpilot.selfdrive.monitoring.policy import DriverMonitoring
+from openpilot.selfdrive.monitoring.policy import AlertLevel, DriverMonitoring
+
+
+def neutralize_dm(DM: DriverMonitoring) -> None:
+  # DM off: wind the policy back to fully attentive after every step, rather than
+  # editing the packet it hands out. Nothing accumulates, so there is no lockout, no
+  # alert escalation, no DriverLockoutCount write, and the driver view keeps reading
+  # 100% awareness. Face and pose state is deliberately untouched so the cabin camera
+  # dialog still draws the face box and the pose calibration keeps filling in.
+  DM._reset_awareness()
+  DM.alert_level = AlertLevel.none
+  DM.lockout_active = False
+  DM.lockout_count = 0
+  DM.lockout_time_elapsed = 0
+  DM.alert_3_cnt = 0
+  DM.cnt_since_alert_3 = 0
+  DM.no_response_cnt = 0
+  DM.dcam_uncertain_cnt = 0
 
 
 def dmonitoringd_thread():
@@ -14,6 +31,7 @@ def dmonitoringd_thread():
 
   DM = DriverMonitoring(rhd_saved=params.get_bool("IsRhdDetected"), always_on=params.get_bool("AlwaysOnDM"))
   demo_mode=False
+  disable_dm = params.get_bool("DisableDriverMonitoring")
 
   # 20Hz <- dmonitoringmodeld
   while True:
@@ -28,6 +46,9 @@ def dmonitoringd_thread():
     elif valid:
       DM.run_step(sm, demo=demo_mode)
 
+    if disable_dm:
+      neutralize_dm(DM)
+
     # publish
     dat = DM.get_state_packet(valid=valid)
     pm.send('driverMonitoringState', dat)
@@ -36,6 +57,7 @@ def dmonitoringd_thread():
     if sm['driverStateV2'].frameId % 40 == 1:
       DM.always_on = params.get_bool("AlwaysOnDM")
       demo_mode = params.get_bool("IsDriverViewEnabled")
+      disable_dm = params.get_bool("DisableDriverMonitoring")
 
     # save rhd virtual toggle every 5 mins
     if (sm['driverStateV2'].frameId % 6000 == 0 and not demo_mode and
