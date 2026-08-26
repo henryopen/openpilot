@@ -23,7 +23,9 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.cereal import messaging
+from openpilot.common.constants import CV
 from openpilot.common.params import Params
+from openpilot.common.realtime import DT_MDL
 from openpilot.hud.radar_tracker import RadarTracker, cluster, relevant
 
 PORT = 8902
@@ -69,6 +71,57 @@ def _model(md):
               for e, st in zip(md.roadEdges, md.roadEdgeStds, strict=True)],
     "path": _resample(md.position),
   }
+
+
+class RoadEdgeBlock:
+  """Whether the road edge is too close to change lanes into.
+
+  sunnypilot worked this out in relc.py and published it on a custom message, which
+  master has no room for. Every input is on stock modelV2 though, and this file already
+  reads them, so the display works it out rather than going without. Same thresholds as
+  relc.py. Display only, it blocks nothing.
+  """
+  NEARSIDE_PROB = 0.2
+  EDGE_PROB = 0.35
+  REACTION_TIME = 1.0
+  CLEAR_TIME = 0.3
+  MIN_SPEED = 20 * CV.MPH_TO_MS
+  EDGE_MARGIN = 1.08
+  CLEARANCE = 3.7
+
+  def __init__(self):
+    self.detected = [False, False]
+    self._edge_timer = [0., 0.]
+    self._clear_timer = [0., 0.]
+
+  def reset(self):
+    self.detected = [False, False]
+    self._edge_timer = [0., 0.]
+    self._clear_timer = [0., 0.]
+
+  def update(self, md, v_ego):
+    if v_ego < self.MIN_SPEED:
+      self.reset()
+      return
+
+    edges = md.roadEdges
+    # laneLineProbs is four lines: the pair either side of us is [1] and [2], so the
+    # outer pair [0] and [3] is what a lane change would cross
+    for i, lane_prob in enumerate((md.laneLineProbs[0], md.laneLineProbs[3])):
+      edge_prob = min(max(1.0 - md.roadEdgeStds[i], 0.0), 1.0)
+      clearance = abs(edges[i].y[0]) - self.EDGE_MARGIN if len(edges) > i and len(edges[i].y) else 0.
+      close = edge_prob > self.EDGE_PROB and lane_prob < self.NEARSIDE_PROB and clearance < self.CLEARANCE
+
+      if close:
+        self._edge_timer[i] = min(self._edge_timer[i] + DT_MDL, self.REACTION_TIME + self.CLEAR_TIME)
+        self._clear_timer[i] = 0.
+        if self._edge_timer[i] > self.REACTION_TIME:
+          self.detected[i] = True
+      else:
+        self._clear_timer[i] += DT_MDL
+        if self._clear_timer[i] > self.CLEAR_TIME:
+          self._edge_timer[i] = 0.
+          self.detected[i] = False
 
 
 def _car_state(cs):
@@ -229,6 +282,7 @@ def poll_loop():
   mem_params = Params("/dev/shm/params")
   can_sock = messaging.sub_sock("can", timeout=20)
   tracker = RadarTracker()
+  edges = RoadEdgeBlock()
   while True:
     sm.update(1000)
     data = {"ts": time.monotonic(), "alive": {s: bool(sm.alive[s]) for s in SERVICES}}
@@ -240,6 +294,8 @@ def poll_loop():
         if c.src == 1 and RADAR_FIRST <= c.address <= RADAR_LAST:
           tracker.on_can(c.address, bytes(c.dat), now)
     data["standby"] = not onroad
+    if not onroad:
+      edges.reset()
     if onroad:
       try:
         data["carState"] = _car_state(sm["carState"])
@@ -255,6 +311,10 @@ def poll_loop():
         if _frame % 2 == 0 or _model_cache is None:   # 20Hz 進來、10Hz 重算，跟輸出頻率對齊
           _model_cache = _model(sm["modelV2"])
         data["modelV2"] = _model_cache
+        if sm.updated["modelV2"]:
+          edges.update(sm["modelV2"], float(sm["carState"].vEgo))
+        data["modelDataV2SP"] = {"leftLaneChangeEdgeBlock": edges.detected[0],
+                                 "rightLaneChangeEdgeBlock": edges.detected[1]}
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"], sm["selfdriveState"]))
       except Exception as e:
