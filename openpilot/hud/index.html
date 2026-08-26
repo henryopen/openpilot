@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>sunnypilot HUD</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #131a22;
+    --line: #1f2a36;
+    --text: #e8eef4;
+    --dim: #6b7a8a;
+    --green: #34d399;
+    --amber: #fbbf24;
+    --red: #f87171;
+    --blue: #60a5fa;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; user-select: none; }
+  html, body { width: 1280px; height: 400px; overflow: hidden; background: var(--bg);
+    font-family: "Noto Sans TC", "PingFang TC", system-ui, sans-serif; color: var(--text); cursor: none; }
+  #hud { display: none; width: 100%; height: 100%; padding: 18px 26px 12px; grid-template-columns: 340px 1fr 330px; grid-template-rows: 1fr 64px; gap: 0 26px; }
+  #hud.on { display: grid; }
+
+  /* ── 左：車速 ── */
+  .speed-block { display: flex; flex-direction: column; justify-content: center; align-items: center; border-right: 1px solid var(--line); }
+  #speed { font-size: 186px; font-weight: 800; line-height: 1; letter-spacing: -6px; font-variant-numeric: tabular-nums; }
+  .speed-sub { display: flex; gap: 26px; margin-top: 6px; align-items: baseline; }
+  .speed-sub .unit { color: var(--dim); font-size: 22px; }
+  .setchip { font-size: 26px; font-weight: 700; color: var(--blue); font-variant-numeric: tabular-nums; }
+  .setchip.off { color: var(--dim); font-weight: 400; }
+
+  /* ── 中：速限 / 狀態 ── */
+  .mid { display: grid; grid-template-columns: 150px 1fr; gap: 22px; align-items: center; }
+  .sl-sign { width: 140px; height: 140px; border-radius: 50%; background: #fff; border: 12px solid #e11d48;
+    display: flex; align-items: center; justify-content: center; font-size: 56px; font-weight: 800; color: #111;
+    font-variant-numeric: tabular-nums; justify-self: center; }
+  .sl-sign.invalid { filter: grayscale(1) brightness(.55); }
+  .sl-wrap { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .sl-state { font-size: 18px; color: var(--dim); }
+  .sl-state.hot { color: var(--amber); font-weight: 700; }
+  .midrows { display: flex; flex-direction: column; gap: 14px; }
+  .row { display: flex; align-items: center; gap: 14px; font-size: 24px; }
+  .row .k { color: var(--dim); font-size: 18px; width: 74px; flex: none; }
+  .row .v { font-weight: 700; font-variant-numeric: tabular-nums; }
+  .chip { padding: 3px 14px; border-radius: 999px; font-size: 18px; font-weight: 700; background: var(--panel); border: 1px solid var(--line); color: var(--dim); }
+  .chip.acc { color: var(--blue); border-color: var(--blue); }
+  .chip.blended { color: var(--amber); border-color: var(--amber); }
+  #leadbar { width: 240px; height: 10px; background: var(--panel); border-radius: 5px; overflow: hidden; }
+  #leadfill { height: 100%; width: 0%; background: var(--green); transition: width .2s; }
+
+  /* ── 右：OP 狀態 ── */
+  .right { border-left: 1px solid var(--line); padding-left: 26px; display: flex; flex-direction: column; justify-content: center; gap: 16px; }
+  .op-state { display: flex; align-items: center; gap: 14px; }
+  .dot { width: 22px; height: 22px; border-radius: 50%; background: var(--dim); flex: none; }
+  .dot.on { background: var(--green); box-shadow: 0 0 18px var(--green); }
+  .dot.ready { background: var(--blue); }
+  .op-state .label { font-size: 30px; font-weight: 800; }
+  .substate { font-size: 18px; color: var(--dim); }
+  #road { font-size: 20px; color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .blinkers { display: flex; gap: 12px; font-size: 26px; }
+  .blk { opacity: .12; transition: opacity .1s; color: var(--green); }
+  .blk.on { opacity: 1; animation: blink .8s step-start infinite; }
+  @keyframes blink { 50% { opacity: .15; } }
+
+  /* ── 底：警示列 ── */
+  .alerts { grid-column: 1 / -1; display: flex; align-items: center; gap: 18px; border-top: 1px solid var(--line); padding-top: 8px; }
+  #alert1 { font-size: 26px; font-weight: 800; }
+  #alert2 { font-size: 19px; color: var(--dim); }
+  .alerts.warn #alert1 { color: var(--amber); }
+  .alerts.crit #alert1 { color: var(--red); }
+
+  /* ── 待機/斷線畫面 ── */
+  #standby { display: flex; width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+  #clock { font-size: 130px; font-weight: 800; letter-spacing: -3px; font-variant-numeric: tabular-nums; }
+  #standby-msg { font-size: 24px; color: var(--dim); }
+  #standby-msg .ok { color: var(--green); }
+</style>
+</head>
+<body>
+  <div id="standby">
+    <div id="clock">--:--</div>
+    <div id="standby-msg">連線中…</div>
+  </div>
+
+  <div id="hud">
+    <div class="speed-block">
+      <div id="speed">0</div>
+      <div class="speed-sub">
+        <span class="unit">km/h</span>
+        <span id="setspeed" class="setchip off">SET --</span>
+      </div>
+    </div>
+
+    <div class="mid">
+      <div class="sl-wrap">
+        <div id="slsign" class="sl-sign invalid">--</div>
+        <div id="slstate" class="sl-state">SLA --</div>
+      </div>
+      <div class="midrows">
+        <div class="row"><span class="k">縱向</span><span id="dec" class="chip">--</span><span id="expmode" class="chip" style="display:none">EXP</span></div>
+        <div class="row"><span class="k">前車</span><span class="v" id="lead">--</span></div>
+        <div class="row"><span class="k"></span><div id="leadbar"><div id="leadfill"></div></div></div>
+        <div class="row"><span class="k">方向盤</span><span class="v" id="steer">0.0°</span></div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="op-state"><div id="opdot" class="dot"></div><div class="label" id="oplabel">OFF</div></div>
+      <div class="substate" id="opsub"></div>
+      <div id="road"></div>
+      <div class="blinkers"><span id="blkL" class="blk">◀◀</span><span id="blkR" class="blk">▶▶</span></div>
+    </div>
+
+    <div class="alerts" id="alertbox">
+      <span id="alert1"></span><span id="alert2"></span>
+    </div>
+  </div>
+
+<script>
+const FALLBACK_HOSTS = ["192.168.2.143"];   // hud_agent 掃不到時的保底（辦公室 LAN）
+
+async function getHosts() {   // C4 IP 是動態的（手機熱點 DHCP），由本機 hud_agent 掃描提供
+  try {
+    const r = await fetch("/host.json", { cache: "no-store" });
+    const j = await r.json();
+    if (j.hosts && j.hosts.length) return j.hosts;
+  } catch {}
+  return FALLBACK_HOSTS;
+}
+const KPH = 3.6;
+let es = null, lastData = 0;
+
+const $ = id => document.getElementById(id);
+const kph = v => Math.round((v || 0) * KPH);
+
+function showStandby(msg, cls) {
+  $("hud").classList.remove("on");
+  $("standby").style.display = "flex";
+  $("standby-msg").innerHTML = cls ? `<span class="${cls}">${msg}</span>` : msg;
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function probe(host) {   // EventSource 對連不上的主機會卡 CONNECTING，先用 fetch 探測
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), 2000);
+  try { const r = await fetch(`http://${host}:8902/health`, { signal: ctl.signal }); clearTimeout(t); return r.ok; }
+  catch { clearTimeout(t); return false; }
+}
+
+const DEMO = {   // ?demo=1 時在實機螢幕展示版面用的樣本畫格
+  standby: false,
+  carState: { vEgo: 17.2, vEgoCluster: 17.5, cruiseEnabled: true, cruiseAvailable: true, cruiseSpeed: 19.44,
+    leftBlinker: true, rightBlinker: false, standstill: false, steeringAngleDeg: -3.4 },
+  selfdriveState: { enabled: true, active: true, alertText1: "Press - to confirm speed limit", alertText2: "速限 50 → 60 km/h", alertStatus: "userPrompt", experimentalMode: false },
+  selfdriveStateSP: { mads: { state: "enabled", enabled: true, active: true, available: true } },
+  longitudinalPlanSP: { dec: { state: "blended" },
+    speedLimit: { resolver: { speedLimitFinal: 16.67, speedLimitValid: true }, assist: { state: "preActive" } } },
+  radarState: { leadStatus: true, dRel: 42.3, vRel: -0.9 },
+  liveMapDataSP: { roadName: "台3線 尖山路段" }
+};
+
+let connecting = false;
+async function connect() {
+  if (new URLSearchParams(location.search).has("demo")) { lastData = Date.now() + 9e9; render(DEMO); return; }
+  if (connecting) return;
+  connecting = true;
+  if (es) { es.close(); es = null; }
+  for (;;) {
+    const hosts = await getHosts();
+    for (const host of hosts) {
+      showStandby(`連線 ${host} …`);
+      if (await probe(host)) {
+        es = new EventSource(`http://${host}:8902/stream`);
+        es.onopen = () => showStandby("已連線，openpilot 待機", "ok");
+        es.onmessage = ev => { lastData = Date.now(); render(JSON.parse(ev.data)); };
+        es.onerror = () => { if (es) es.close(); es = null; lastData = 0; setTimeout(connect, 1500); };
+        connecting = false;
+        return;
+      }
+    }
+    showStandby("找不到 openpilot，重試中…");
+    await sleep(3000);
+  }
+}
+
+setInterval(() => {   // SSE 卡死看門狗
+  if (es && lastData && Date.now() - lastData > 5000) { es.close(); es = null; lastData = 0; connect(); }
+  const t = new Date();
+  $("clock").textContent = `${String(t.getHours()).padStart(2,"0")}:${String(t.getMinutes()).padStart(2,"0")}`;
+}, 1000);
+
+const SLA_TXT = { disabled: "SLA 關閉", inactive: "SLA 待命", preActive: "按 − 確認", pending: "等待新速限", adapting: "調整中", active: "定速於速限" };
+
+function render(d) {
+  if (d.standby) { showStandby("已連線，openpilot 待機", "ok"); return; }
+  $("standby").style.display = "none";
+  $("hud").classList.add("on");
+
+  const cs = d.carState || {};
+  $("speed").textContent = kph(cs.vEgoCluster || cs.vEgo);
+  const set = $("setspeed");
+  if (cs.cruiseEnabled) { set.textContent = `SET ${kph(cs.cruiseSpeed)}`; set.classList.remove("off"); }
+  else { set.textContent = cs.cruiseAvailable ? "SET --" : "ACC OFF"; set.classList.add("off"); }
+
+  const lp = d.longitudinalPlanSP || {};
+  const res = (lp.speedLimit || {}).resolver || {};
+  const assist = (lp.speedLimit || {}).assist || {};
+  const sl = kph(res.speedLimitFinal || res.speedLimit);
+  const sign = $("slsign");
+  if (res.speedLimitValid && sl > 0) { sign.textContent = sl; sign.classList.remove("invalid"); }
+  else { sign.textContent = "--"; sign.classList.add("invalid"); }
+  const st = $("slstate");
+  st.textContent = SLA_TXT[assist.state] || `SLA ${assist.state || "--"}`;
+  st.classList.toggle("hot", assist.state === "preActive" || assist.state === "adapting");
+
+  const dec = (lp.dec || {});
+  const decEl = $("dec");
+  decEl.textContent = dec.state === "blended" ? "BLENDED" : "ACC";
+  decEl.className = "chip " + (dec.state === "blended" ? "blended" : "acc");
+  $("expmode").style.display = (d.selfdriveState || {}).experimentalMode ? "" : "none";
+
+  const rs = d.radarState || {};
+  if (rs.leadStatus) {
+    $("lead").textContent = `${rs.dRel.toFixed(0)} m　${rs.vRel >= 0 ? "+" : ""}${(rs.vRel * KPH).toFixed(0)} km/h`;
+    $("leadfill").style.width = Math.max(4, Math.min(100, rs.dRel / 120 * 100)) + "%";
+    $("leadfill").style.background = rs.dRel < 20 ? "var(--red)" : rs.dRel < 40 ? "var(--amber)" : "var(--green)";
+  } else { $("lead").textContent = "無"; $("leadfill").style.width = "0%"; }
+
+  $("steer").textContent = `${(cs.steeringAngleDeg || 0).toFixed(1)}°`;
+
+  const ss = d.selfdriveState || {};
+  const mads = ((d.selfdriveStateSP || {}).mads) || {};
+  const dot = $("opdot"), lab = $("oplabel");
+  if (ss.enabled) { dot.className = "dot on"; lab.textContent = "ENGAGED"; }
+  else if (mads.active) { dot.className = "dot on"; lab.textContent = "MADS"; }
+  else if (cs.cruiseAvailable) { dot.className = "dot ready"; lab.textContent = "READY"; }
+  else { dot.className = "dot"; lab.textContent = "OFF"; }
+  $("opsub").textContent = mads.available ? `MADS ${mads.active ? "作動中" : "待命"}` : "";
+
+  $("road").textContent = ((d.liveMapDataSP || {}).roadName) || "";
+  $("blkL").classList.toggle("on", !!cs.leftBlinker);
+  $("blkR").classList.toggle("on", !!cs.rightBlinker);
+
+  const box = $("alertbox");
+  $("alert1").textContent = ss.alertText1 || "";
+  $("alert2").textContent = ss.alertText2 || "";
+  box.className = "alerts " + (ss.alertStatus === "critical" ? "crit" : ss.alertStatus === "userPrompt" ? "warn" : "");
+}
+
+connect();
+</script>
+</body>
+</html>

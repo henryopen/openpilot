@@ -1,0 +1,639 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<title>sunnypilot dash</title>
+<style>
+  :root{
+    --bg:#04070a; --line:#131c25;
+    --txt:#eef4fa; --dim:#54697d; --dim2:#93a8bb;
+    --amber:#ff8c1a; --red:#ff2d2d; --green:#2fd45a; --cyan:#22cdf2; --blue:#5aa9ff;
+    --sh:0 2px 10px rgba(0,0,0,.95), 0 0 30px rgba(0,0,0,.7);
+  }
+  *{margin:0;padding:0;box-sizing:border-box;user-select:none}
+  html,body{width:1280px;height:400px;overflow:hidden;background:var(--bg);cursor:none;
+    font-family:"Noto Sans TC","PingFang TC",system-ui,sans-serif;color:var(--txt);
+    -webkit-font-smoothing:antialiased}
+  #dash{position:relative;width:100%;height:100%}
+
+  /* 單一畫面：路面鋪滿，其餘全部疊加 */
+  #road{position:absolute;inset:0;z-index:1}
+  .ov{position:absolute;z-index:3;pointer-events:none;text-shadow:var(--sh)}
+
+  /* 左右上角的大數字（原側欄，改為疊加） */
+  .cnr{display:flex;flex-direction:column;top:12px}
+  .cnrL{left:20px;align-items:flex-start}
+  .cnrR{right:20px;align-items:flex-end}
+  .cap{font-size:11px;letter-spacing:3.5px;color:var(--dim2);font-weight:700}
+  .cap i{font-style:normal;font-size:10.5px;letter-spacing:.4px;color:#5f7488;
+    margin-left:11px;font-weight:600}
+  .num{font-size:82px;font-weight:800;line-height:.92;font-variant-numeric:tabular-nums;
+    letter-spacing:-3px;text-shadow:0 3px 16px rgba(0,0,0,.98),0 0 40px rgba(0,0,0,.85)}
+  .num.blue{color:var(--blue)}
+  .sub{font-size:17px;color:var(--dim2);font-weight:600;margin-top:2px;letter-spacing:.4px}
+  .sub b{color:var(--txt);font-weight:800}
+  .off .num{color:#5d7183}
+
+  /* 速限：原始值大、offset 與下一個速限小字 */
+  .slbox{top:152px;right:20px;display:flex;flex-direction:column;align-items:flex-end;gap:9px}
+  .sl{width:62px;height:62px;border-radius:50%;background:#fbfbfb;border:6px solid #dd1f27;
+    display:flex;align-items:center;justify-content:center;font-size:27px;font-weight:800;
+    color:#0c0c0c;text-shadow:none;box-shadow:0 4px 22px rgba(0,0,0,.85)}
+  .sl.off{filter:grayscale(1) brightness(.4)}
+  .slside{display:flex;flex-direction:column;gap:4px;font-weight:700;align-items:flex-end}
+  .slofs{font-size:19px;color:var(--dim2);letter-spacing:.3px}
+  .slnx{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:18px;color:var(--amber);opacity:0}
+  .slnx.on{opacity:1}
+  .slnx .v{background:#fbfbfb;color:#0c0c0c;border:4px solid #dd1f27;border-radius:50%;
+    width:42px;height:42px;display:flex;align-items:center;justify-content:center;
+    font-size:20px;font-weight:800;text-shadow:none}
+
+  /* 狀態 chips */
+  .chips{top:132px;left:20px;display:flex;flex-direction:column;gap:7px;align-items:flex-start}
+  .chip{padding:5px 13px;border-radius:5px;font-size:17px;font-weight:800;letter-spacing:.4px;
+    background:rgba(6,11,16,.82);border:1px solid var(--line);color:var(--dim2);text-shadow:none}
+  .chip.on{color:var(--green);border-color:rgba(47,212,90,.5);background:rgba(47,212,90,.12)}
+  .chip.cy{color:var(--cyan);border-color:rgba(34,205,242,.45);background:rgba(34,205,242,.1)}
+  .chip.cruise{color:#9db2c4;border-color:#2a3846;background:rgba(10,16,22,.85)}
+  .chip.lead{color:var(--green);border-color:rgba(47,212,90,.55);background:rgba(47,212,90,.13)}
+  .chip.e2e{color:#fff;background:var(--amber);border-color:var(--amber)}
+
+  /* 停止標誌 */
+  .stop{top:18px;right:212px;display:none;flex-direction:column;align-items:center}
+  .stop.on{display:flex}
+  .oct{width:52px;height:52px;background:#dd1f27;color:#fff;font-size:15px;font-weight:900;
+    clip-path:polygon(30% 0,70% 0,100% 30%,100% 70%,70% 100%,30% 100%,0 70%,0 30%);
+    display:flex;align-items:center;justify-content:center;box-shadow:0 0 26px rgba(221,31,39,.8)}
+  .oct-d{margin-top:5px;font-size:24px;font-weight:800;color:#ff6b6b;font-variant-numeric:tabular-nums}
+
+  /* 警示／事件訊息：有訊息才出現，依 alertStatus 變色 */
+  .alertbox{left:50%;transform:translateX(-50%);top:14px;max-width:660px;
+    padding:7px 22px;border-radius:8px;display:none;align-items:baseline;gap:9px;
+    background:rgba(7,11,16,.93);border:1.5px solid #26333f;text-align:center;z-index:5;
+    white-space:nowrap;overflow:hidden}
+  .alertbox.on{display:flex}
+  .alertbox.warn{border-color:rgba(255,140,26,.8);background:rgba(38,21,4,.94)}
+  .alertbox.crit{border-color:rgba(255,45,45,.95);background:rgba(46,7,7,.95);
+    animation:acrit .55s infinite alternate}
+  @keyframes acrit{from{box-shadow:0 0 0 rgba(255,45,45,0)}to{box-shadow:0 0 26px rgba(255,45,45,.6)}}
+  .a1{font-size:23px;font-weight:800;letter-spacing:.3px}
+  .a2{font-size:16px;color:#a9bccd;font-weight:600}
+  .a2:not(:empty)::before{content:"·";margin-right:9px;color:#55697c}
+  .alertbox.warn .a1{color:var(--amber)} .alertbox.crit .a1{color:#ff6b6b}
+  @media (prefers-reduced-motion: reduce){ .alertbox.crit{animation:none} }
+
+  /* 盲點：畫面邊緣發光帶（取代原本的側欄框） */
+  .bsd{position:absolute;top:0;bottom:76px;width:96px;z-index:2;opacity:0;transition:opacity .1s}
+  .bsd.on{opacity:1}
+  .bsdL{left:0;background:linear-gradient(90deg,rgba(255,45,45,.45),rgba(255,45,45,0))}
+  .bsdR{right:0;background:linear-gradient(270deg,rgba(255,45,45,.45),rgba(255,45,45,0))}
+
+  /* 底部資訊列：疊加、漸層淡入，不是實體分隔區 */
+  .bar{position:absolute;left:0;right:0;bottom:0;height:76px;display:flex;z-index:3;
+    border-top:1px solid #16212c;
+    background:linear-gradient(180deg,rgba(4,7,10,.86),rgba(4,7,10,.96) 40%,rgba(4,7,10,.99))}
+  .m{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;
+    padding:0 18px 9px;position:relative}
+  .m+.m::before{content:"";position:absolute;left:0;bottom:12px;width:1px;height:26px;background:#16212c}
+  .m .k{font-size:10px;letter-spacing:1.3px;color:var(--dim);white-space:nowrap;font-weight:600}
+  .m .v{font-size:35px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.05;
+    white-space:nowrap;text-shadow:var(--sh)}
+  .m .v u{text-decoration:none;font-size:12.5px;color:var(--dim2);font-weight:600;margin-left:3px}
+  .m .v i{font-style:normal;color:var(--dim)}
+  .v.ok{color:var(--green)} .v.am{color:var(--amber)} .v.bad{color:var(--red)} .v.dim{color:#3b4b5b}
+  .trk{position:absolute;left:18px;right:18px;bottom:4px;height:3px;background:rgba(14,22,30,.9);
+    border-radius:2px;overflow:hidden}
+  .trk i{display:block;height:100%;border-radius:2px;background:var(--green)}
+</style>
+</head>
+<body>
+<div id="dash">
+  <canvas id="road" width="1280" height="400"></canvas>
+
+  <div class="bsd bsdL" id="bsdL"></div>
+  <div class="bsd bsdR" id="bsdR"></div>
+
+  <div class="ov cnr cnrL" id="paneL">
+    <div class="cap">設定速度<i id="netInfo"></i></div>
+    <div class="num blue" id="maxV">60</div>
+  </div>
+
+  <div class="ov cnr cnrR" id="paneR">
+    <div class="cap">車速 km/h</div>
+    <div class="num" id="spdV">54</div>
+    <div class="sub" id="spdF">—</div>
+  </div>
+
+  <div class="ov slbox">
+    <div class="sl" id="sl">--</div>
+    <div class="slside">
+      <div class="slnx" id="slNx"><span class="v" id="slNxV">--</span><span id="slNxD">--</span></div>
+    </div>
+  </div>
+
+  <div class="ov chips">
+    <span class="chip on" id="cEng">ENGAGED</span>
+    <span class="chip cy" id="cRad">雷達確認 2</span>
+    <span class="chip src" id="cSrc">定速</span>
+  </div>
+
+  <div class="ov alertbox" id="alertBox">
+    <div class="a1" id="alert1"></div>
+    <div class="a2" id="alert2"></div>
+  </div>
+
+  <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
+
+  <div class="bar">
+    <div class="m"><div class="k">相對速度</div><div class="v" id="m1">—</div></div>
+    <div class="m"><div class="k">縱向 aTarget</div><div class="v" id="m3">0.00<u>m/s²</u></div></div>
+    <div class="m"><div class="k">轉向扭力</div><div class="v" id="m4">0.00</div><div class="trk"><i id="m4b" style="width:0"></i></div></div>
+    <div class="m"><div class="k">橫向G 目標 <i>/</i> 實際</div><div class="v" id="m5">0.00 / 0.00</div></div>
+  </div>
+</div>
+
+<script>
+/* 錯誤浮層：車機上看不到 console，出錯要能看見 */
+(function(){
+  function show(msg){
+    let d=document.getElementById('__err');
+    if(!d){ d=document.createElement('div'); d.id='__err';
+      d.style.cssText='position:absolute;left:200px;top:8px;z-index:99;max-width:860px;'+
+        'font:11.5px/1.45 monospace;color:#ff6b6b;background:rgba(8,0,0,.92);'+
+        'border:1px solid #7a1c1c;padding:6px 8px;white-space:pre-wrap';
+      document.body.appendChild(d); }
+    d.textContent=(d.textContent?d.textContent+'\n':'')+msg;
+  }
+  window.__hudErr=show;
+  window.addEventListener('error', e=>show('ERR '+e.message+' @'+(e.filename||'').split('/').pop()+':'+e.lineno));
+  window.addEventListener('unhandledrejection', e=>show('REJ '+(e.reason&&e.reason.message||e.reason)));
+})();
+/* ═════ 盲點指示：直接掛在側欄上（不再畫裝飾框）═════ */
+const $=id=>document.getElementById(id);
+function applyBsd(F){
+  $('bsdL').classList.toggle('on', !!F.bsdL);
+  $('bsdR').classList.toggle('on', !!F.bsdR);
+}
+
+/* ═════ 道路（照 openpilot model_renderer 的做法）═════ */
+const cv=document.getElementById('road'), cx=cv.getContext('2d');
+let W=cv.width; const H=cv.height, EGO_Y=H-76, VP_Y=42;   // = 底部資訊列頂端，路面與它切齊
+// 之後要在中央塞導航：setNavPane(340) 就把中央切成 路況 | 導航 兩視窗
+function setNavPane(w){          // 之後要塞導航：右側切 w px 給導航，路面等比縮
+  cv.width = W = Math.max(360, 1280 - w);
+  cv.style.width = W+'px';
+  MPP = MPP_BASE * W / W_BASE;
+}
+window.setNavPane=setNavPane;
+let SAMPLE_D=[0,5,10,15,20,25,30,40,50,60,75,90,110];
+const DMAX=100, MPP_BASE=85, W_BASE=1280;
+let MPP=MPP_BASE;   // 畫布變窄（切給導航）時等比縮，路面佔比不變
+function proj(d){ const t=Math.min(Math.max(d,0)/DMAX,1);
+  return { y: EGO_Y-(EGO_Y-VP_Y)*Math.pow(t,0.55), s: 1-0.72*Math.pow(t,0.46) }; }
+function px(d,y){ const p=proj(d); return { x: W/2 + y*MPP*p.s, y:p.y, s:p.s }; }  // device frame: 右為正
+
+// 把一條線畫成「有寬度的多邊形」——OP 的做法，寬度隨信心
+function ribbon(ys, halfW, style){
+  const A=[],B=[];
+  for(let i=0;i<SAMPLE_D.length;i++){
+    if(SAMPLE_D[i]>DMAX) break;
+    const p=px(SAMPLE_D[i], ys[i]);
+    const w=Math.max(0.7, halfW*MPP*p.s);
+    A.push({x:p.x-w,y:p.y}); B.push({x:p.x+w,y:p.y});
+  }
+  if(A.length<2) return;
+  cx.beginPath();
+  A.forEach((p,i)=> i?cx.lineTo(p.x,p.y):cx.moveTo(p.x,p.y));
+  for(let i=B.length-1;i>=0;i--) cx.lineTo(B[i].x,B[i].y);
+  cx.closePath(); cx.fillStyle=style; cx.fill();
+}
+function band(y1,y2,fill){
+  const A=[],B=[];
+  for(let i=0;i<SAMPLE_D.length;i++){
+    if(SAMPLE_D[i]>DMAX) break;
+    A.push(px(SAMPLE_D[i], y1[i])); B.push(px(SAMPLE_D[i], y2[i]));
+  }
+  if(A.length<2) return;
+  cx.beginPath();
+  A.forEach((p,i)=> i?cx.lineTo(p.x,p.y):cx.moveTo(p.x,p.y));
+  for(let i=B.length-1;i>=0;i--) cx.lineTo(B[i].x,B[i].y);
+  cx.closePath(); cx.fillStyle=fill; cx.fill();
+}
+
+// 期望距離低通濾波：吃 v^2 的公式原始值會亂跳，這裡用 EMA 壓成 ~0.8 秒時間常數
+// （跟縱向來源那個 0.8 秒遲滯一致，畫面才不會兩個節奏）
+let desHold=null;
+function smoothDes(v){
+  if(v===null || !(v>0)){ desHold=null; return 0; }
+  if(desHold===null){ desHold=v; return v; }
+  desHold += (v-desHold)*0.06;      // 20Hz * 0.06 -> tau ~= 0.83s
+  return desHold;
+}
+
+function drawRoad(F){
+  cx.clearRect(0,0,W,H);
+  const lanes=F.lanes||[], edges=F.edges||[], path=F.path||SAMPLE_D.map(()=>0);
+
+  // 相鄰車道可不可以換過去 —— 門檻照 sunnypilot relc.py（RoadEdgeLaneChangeController）
+  // 條件三者皆成立才算「不可換」：路緣信心>0.35、該側車道線信心<0.2、路緣間隙(扣車身1.08m)<3.7m
+  const EDGE_CLEARANCE=3.7, VEH_MARGIN=1.08, NEARSIDE_PROB=0.2, EDGE_PROB=0.35;
+  const sideBlocked=(edge, laneProb)=>{
+    if(!edge || !edge.y || !edge.y.length) return false;
+    const eProb = 1 - (edge.s!==undefined ? edge.s : 1);
+    const clearance = Math.abs(edge.y[0]) - VEH_MARGIN;
+    return eProb>EDGE_PROB && (laneProb||0)<NEARSIDE_PROB && clearance<EDGE_CLEARANCE;
+  };
+  // 有真實資料就用 OP 自己的判斷（modelV2SP.left/rightLaneChangeEdgeBlock），沒有才自己算
+  const blkL = (F.blkL!==undefined) ? !!F.blkL : sideBlocked(edges[0], (lanes[0]||{}).p);
+  const blkR = (F.blkR!==undefined) ? !!F.blkR : sideBlocked(edges[1], (lanes[3]||{}).p);
+
+  // 路面
+  if(edges.length>=2){
+    const g=cx.createLinearGradient(0,VP_Y,0,EGO_Y);
+    g.addColorStop(0,'#080e14'); g.addColorStop(1,'#141f2a');
+    band(edges[0].y, edges[1].y, g);
+  }
+  // 不可換的那一側：整片塗警示色（打該側方向燈時轉為紅色高亮）
+  const paintBlocked=(inner, edge, blinking)=>{
+    if(!inner || !edge) return;
+    band(inner.y, edge.y, blinking ? 'rgba(255,45,45,.30)' : 'rgba(255,120,40,.15)');
+  };
+  if(blkL) paintBlocked(lanes[1], edges[0], !!F.blinkL);
+  if(blkR) paintBlocked(lanes[2], edges[1], !!F.blinkR);
+
+  // 路緣（OP 是紅色，alpha = 1 - std）
+  edges.forEach(e=>{
+    const a=Math.max(0, Math.min(1, 1-(e.s!==undefined?e.s:0.3)));
+    if(a<0.05) return;
+    ribbon(e.y, 0.06, `rgba(255,60,60,${(a*0.55).toFixed(2)})`);
+  });
+  // 車道線：寬度與亮度都跟著信心 → 沒有的車道自然消失
+  lanes.forEach(l=>{
+    const p=Math.max(0,Math.min(1,l.p||0));
+    if(p<0.08) return;
+    ribbon(l.y, 0.025*p*1.9, `rgba(238,244,250,${(Math.min(p,0.75)).toFixed(2)})`);
+  });
+  // 規劃路徑
+  const HL=path.map(v=>v+0.45), HR=path.map(v=>v-0.45);
+  const pg=cx.createLinearGradient(0,EGO_Y,0,VP_Y+30);
+  pg.addColorStop(0, F.e2e?'rgba(255,140,26,.55)':'rgba(47,212,90,.5)');
+  pg.addColorStop(1, F.e2e?'rgba(255,140,26,0)':'rgba(47,212,90,0)');
+  band(HL,HR,pg);
+
+  // 盲點側區
+  if(F.bsdL||F.bsdR){
+    const gg=cx.createLinearGradient(0,EGO_Y-80,0,EGO_Y+30);
+    gg.addColorStop(0,'rgba(255,45,45,0)'); gg.addColorStop(1,'rgba(255,45,45,.3)');
+    cx.fillStyle=gg;
+    if(F.bsdL) cx.fillRect(W/2-150, EGO_Y-80, 88, 110);
+    if(F.bsdR) cx.fillRect(W/2+62, EGO_Y-80, 88, 110);
+  }
+  // 停止線
+  if(F.stop && F.stopD>2 && F.stopD<DMAX){
+    const p=px(F.stopD,0), hw=Math.max(44, 3.8*MPP*p.s);
+    cx.strokeStyle='rgba(255,45,45,.9)'; cx.lineWidth=Math.max(3,9*p.s);
+    cx.setLineDash([13*p.s+5, 9*p.s+4]);
+    cx.beginPath(); cx.moveTo(p.x-hw,p.y); cx.lineTo(p.x+hw,p.y); cx.stroke(); cx.setLineDash([]);
+  }
+  // 期望跟車距離（openpilot long MPC 公式：long_mpc.py）
+  // d_des = v_ego^2/(2*COMFORT_BRAKE) + t_follow*v_ego + STOP_DISTANCE - v_lead^2/(2*COMFORT_BRAKE)
+  const CB2=5.0, STOPD=6.0;                       // 2*COMFORT_BRAKE, STOP_DISTANCE
+  const MN=(F.leads||[]).find(l=>l.main);
+  let dDes=0;   // 濾波後的值見下方 smoothDes()
+  if(MN && F.engaged){          // 沒接管就沒有「目標跟車距離」可言
+    const tF=F.tFollow||1.45;                     // 1.25 積極 / 1.45 標準 / 1.75 輕鬆
+    const ve=Math.max(0,(F.vEgo||0))/3.6, vl=Math.max(0,((F.vEgo||0)+(MN.v||0))/3.6);
+    dDes = smoothDes(ve*ve/CB2 + tF*ve + STOPD - vl*vl/CB2);
+  } else { smoothDes(null); }
+  if(dDes>2 && dDes<DMAX){
+    const q=px(dDes,0), hw=Math.max(26, 4.0*MPP*q.s);
+    const tooClose = MN.d < dDes*0.85;
+    const col = tooClose ? '255,140,26' : '120,190,255';
+    cx.strokeStyle=`rgba(${col},.5)`; cx.lineWidth=Math.max(1.5,3*q.s);
+    cx.setLineDash([9*q.s+4, 7*q.s+3]);
+    cx.beginPath(); cx.moveTo(q.x-hw,q.y); cx.lineTo(q.x+hw,q.y); cx.stroke(); cx.setLineDash([]);
+    const fz=Math.max(23, 31*q.s);
+    cx.font=`800 ${fz}px system-ui`; cx.textAlign='left';
+    cx.lineWidth=Math.max(3,fz*0.16); cx.strokeStyle='rgba(4,7,10,.92)'; cx.lineJoin='round';
+    cx.strokeText(`目標 ${dDes.toFixed(0)}`, q.x+hw+6, q.y+fz*0.34);
+    cx.fillStyle=`rgba(${col},.9)`; cx.fillText(`目標 ${dDes.toFixed(0)}`, q.x+hw+6, q.y+fz*0.34);
+    cx.textAlign='center';
+  }
+
+  // 前車：小箭標，顏色＝相對速度；距離字才是主角
+  const MAIN=(F.leads||[]).find(l=>l.main);
+  (F.leads||[]).filter(L=> L.main || !MAIN ||
+        Math.abs(L.d-MAIN.d)>3.5 || Math.abs((L.y||0)-(MAIN.y||0))>1.6 ).forEach(L=>{
+    const p=px(L.d,L.y);
+    // 顏色分級：負值＝正在接近
+    const c = L.v<=-10 ? [255,45,45]      // 快速接近
+            : L.v<= -3 ? [255,140,26]     // 接近
+            : L.v< 1.5 ? [214,234,250]    // 同速
+            :            [47,212,90];     // 遠離
+    const RGB=`${c[0]},${c[1]},${c[2]}`;
+    const a0 = L.main?1:0.62;
+    const sz = Math.max(13, Math.min(30, 900/(L.d+18))) * (L.main?1.2:0.85);
+    // V 形箭標（有厚度，不是實心大三角）
+    const by=p.y, ty=by-sz*1.10;          // by=底部(對齊距離點), ty=尖端
+    const vpath=(k)=>{ cx.beginPath();
+      cx.moveTo(p.x-sz*1.15*k, by); cx.lineTo(p.x, ty);
+      cx.lineTo(p.x+sz*1.15*k, by); cx.lineTo(p.x+sz*0.72*k, by);
+      cx.lineTo(p.x, ty+sz*0.57*k); cx.lineTo(p.x-sz*0.72*k, by); cx.closePath(); };
+    if(L.main){ vpath(1); cx.fillStyle=`rgba(${RGB},.22)`; cx.shadowColor=`rgba(${RGB},.9)`;
+                cx.shadowBlur=26; cx.fill(); cx.fill(); cx.shadowBlur=0; }
+    vpath(1); cx.fillStyle=`rgba(${RGB},${a0})`; cx.fill();
+    // 距離：主角，大字
+    if((L.main || L.d<60) && !L.side){
+      const fs = L.main ? Math.max(30, 46*p.s) : Math.max(21, 30*p.s);
+      // dRel 量的是前車「車尾」= 箭標底部；字放在雷達線下方，右側留給左右前車
+      const tx  = p.x;
+      const tby = Math.min(by + sz*0.25 + fs*0.92, H-84);
+      const t   = L.d.toFixed(0);
+      cx.textAlign='center'; cx.font=`900 ${fs}px system-ui`;
+      cx.lineWidth=Math.max(3, fs*0.16); cx.strokeStyle='rgba(4,7,10,.92)';
+      cx.lineJoin='round'; cx.strokeText(t, tx, tby);
+      cx.fillStyle=L.main?'#fff':`rgba(${RGB},.85)`; cx.fillText(t, tx, tby);
+      const tw=cx.measureText(t).width;
+      cx.font=`700 ${fs*0.4}px system-ui`; cx.textAlign='left';
+      cx.strokeText('m', tx+tw/2+4, tby);
+      cx.fillStyle=`rgba(${RGB},.95)`; cx.fillText('m', tx+tw/2+4, tby);
+      cx.textAlign='center';
+    }
+    // 雷達確認：底部短線
+    if(L.radar){
+      cx.strokeStyle='rgba(34,205,242,.85)'; cx.lineWidth=2;
+      cx.beginPath(); cx.moveTo(p.x-sz*0.9, by+5); cx.lineTo(p.x+sz*0.9, by+5); cx.stroke();
+    }
+  });
+}
+
+/* ═════ 縱向來源濾波（避免一直跳）═════ */
+const SRC={cruise:'定速', lead0:'跟車', lead1:'跟車 2', lead2:'跟車 3', e2e:'模型 E2E'};
+let srcHold='cruise', srcCand='cruise', srcCnt=0;
+function filterSrc(s, instant){
+  if(instant){ srcHold=s; srcCand=s; srcCnt=0; return s; }
+  if(s===srcHold){ srcCand=s; srcCnt=0; return srcHold; }
+  if(s===srcCand){ srcCnt++; } else { srcCand=s; srcCnt=1; }
+  if(srcCnt>=16){ srcHold=s; srcCnt=0; }      // 連續 0.8 秒才換
+  return srcHold;
+}
+
+function render(F){
+  const set=(id,v)=>{ const el=$(id); if(el) el.textContent=v; };
+  set('maxV', F.vCruise>0?F.vCruise:'--');
+  set('spdV', F.vEgo);
+  set('spdF', F.road || '—');
+  $('paneL').className='ov cnr cnrL'+(F.engaged?'':' off');
+  applyBsd(F);
+  // 速限：圓標永遠顯示「原始法定速限」；offset 與生效值只用小字附註
+  const slRaw = (F.slRaw!==undefined && F.slRaw!==null) ? F.slRaw : F.sl;
+  const sl=$('sl');
+  sl.textContent = slRaw>0?slRaw:'--'; sl.className='sl'+(slRaw>0?'':' off');
+  const nx=$('slNx');
+  if(F.slNext>0){ nx.className='slnx on'; set('slNxV', F.slNext);
+                  set('slNxD', F.slNextD>0?`${F.slNextD.toFixed(0)} m`:''); }
+  else nx.className='slnx';
+  const e=$('cEng');
+  e.textContent=F.engaged?'ENGAGED':'READY'; e.className='chip'+(F.engaged?' on':'');
+  const nr=(F.leads||[]).filter(l=>l.radar).length;
+  set('cRad', nr?`雷達確認 ${nr}`:'純視覺');
+  const src=filterSrc(F.src, !!F._demo);
+  const isE2E = src==='e2e';
+  F.e2e = isE2E;
+  // 縱向來源：定速 / 跟車 / 模型 E2E 三者互斥 -> 同一個 chip 切換
+  const sc=$('cSrc');
+  sc.style.display = F.engaged ? '' : 'none';
+  sc.textContent = SRC[src] || src;
+  sc.className = 'chip ' + (isE2E ? 'e2e' : src.startsWith('lead') ? 'lead' : 'cruise');
+  // 警示／事件訊息（selfdriveState.alertText1/2 就是 openpilot event 轉出來的文字）
+  const ab=$('alertBox');
+  const t1=(F.alert1||'').trim(), t2=(F.alert2||'').trim();
+  if(t1||t2){
+    ab.className='ov alertbox on'+(F.alertStatus==='critical'?' crit'
+                                 : F.alertStatus==='userPrompt'?' warn':'');
+    set('alert1',t1); set('alert2',t2);
+  } else ab.className='ov alertbox';
+  const sb=$('stopBox');
+  sb.className='ov stop'+(F.stop?' on':'');
+  set('stopD', F.stop&&F.stopD?`${F.stopD.toFixed(0)} m`:'—');
+
+  const m=(F.leads||[]).find(l=>l.main);
+  const m1=$('m1');
+  m1.innerHTML = m?`${m.v>0?'+':''}${m.v.toFixed(1)}<u>km/h</u>`:'—';
+  m1.className='v '+(m?(m.v<-5?'bad':m.v<0?'am':'ok'):'dim');
+  $('m3').innerHTML=`${F.aT>=0?'+':''}${F.aT.toFixed(2)}<u>m/s²</u>`;
+  document.getElementById('m4').innerHTML=`${F.tq.toFixed(2)}${F.sat?'<u style="color:#ff2d2d">飽和</u>':''}`;
+  document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
+  document.getElementById('m4b').style.background=F.sat?'#ff2d2d':'#5aa9ff';
+  document.getElementById('m5').innerHTML=`${F.lDes.toFixed(2)} <i>/</i> ${F.lAct.toFixed(2)}`;
+  drawRoad(F);
+}
+
+const D0=[0,5,10,15,20,25,30,40,50,60,75,90,110];
+const mk=(o,c)=>D0.map(d=>o+c*d*d*0.0011);
+
+/* ═════ 展示畫面：3 組狀態輪播，涵蓋所有會出現的元素 ═════
+   互斥的狀態（接管/未接管、E2E/跟車、警示等級…）沒辦法擠在同一張，所以輪播
+   這不是真實資料，接上 SSE 後會自動停掉 */
+const DEMOS = [
+  { _t:'跟車 + 提示警示',
+    vEgo:52, vCruise:60, engaged:true, src:'lead0', road:'國道3號 南下 32.4K',
+    slRaw:50, slOfs:10, slNext:40, slNextD:320, tFollow:1.45,
+    bsdL:true, bsdR:true,                       // 左右盲點
+    blkR:true, blinkR:true,                     // 右側車道太窄 + 右方向燈
+    stop:true, stopD:72,
+    lanes:[{y:mk(-5.4,.55),p:.62},{y:mk(-1.8,.55),p:.99},
+           {y:mk(1.85,.55),p:.99},{y:mk(5.2,.55),p:.08}],
+    edges:[{y:mk(-7.4,.55),s:.35},{y:mk(3.6,.55),s:.30}],
+    path:mk(0.05,.55),
+    leads:[{d:44,y:0.15,v:-6.5,radar:true,main:true},     // 橘＝接近（距離仍充足 -> 目標線藍）
+           {d:52,y:-3.5,v:2.0,radar:false,main:false}],   // 綠＝拉開
+    aT:-1.35, tq:0.86, sat:true, lDes:1.62, lAct:1.41,
+    alert1:'請注意前方路況', alert2:'速限 50 → 40 km/h，即將減速', alertStatus:'userPrompt' },
+
+  { _t:'E2E + 危險警告',
+    vEgo:88, vCruise:110, engaged:true, src:'e2e', road:'國道1號 北上 128.7K',
+    slRaw:100, slNext:0, slNextD:0, tFollow:1.25,
+    blkL:true, blinkL:true,                     // 左側車道太窄 + 左方向燈
+    stop:false, stopD:0,
+    lanes:[{y:mk(-5.2,-.35),p:.06},{y:mk(-1.75,-.35),p:.99},
+           {y:mk(1.9,-.35),p:.99},{y:mk(5.5,-.35),p:.80}],
+    edges:[{y:mk(-3.4,-.35),s:.30},{y:mk(6.8,-.35),s:.45}],
+    path:mk(0,-.35),
+    leads:[{d:19,y:0.1,v:-13.5,radar:false,main:true},    // 紅＝快速接近、純視覺
+           {d:44,y:3.6,v:-0.4,radar:false,main:false}],   // 白＝同速
+    aT:-2.4, tq:0.31, lDes:0.42, lAct:0.38,
+    alert1:'立即接管', alert2:'系統無法辨識前方路況', alertStatus:'critical' },
+
+  { _t:'未接管（車在開，OP 沒接管）',
+    vEgo:46, vCruise:0, engaged:false, src:'cruise', road:'台3線 尖山路段',
+    slRaw:50, slNext:0, slNextD:0,          // 速限照常偵測
+    bsdR:true,                              // 盲點照常運作
+    stop:false, stopD:0,
+    lanes:[{y:mk(-5.0,.9),p:.55},{y:mk(-1.8,.9),p:.92},
+           {y:mk(1.8,.9),p:.92},{y:mk(5.0,.9),p:.50}],
+    edges:[{y:mk(-7.2,.9),s:.5},{y:mk(7.2,.9),s:.5}],
+    path:mk(0,.9),
+    leads:[{d:36,y:-0.3,v:1.2,radar:true,main:true}],   // 前車照常偵測，但沒有目標跟車線
+    aT:0, tq:0, lDes:0, lAct:0,             // 沒在控制 -> 縱向/橫向輸出為 0
+    alert1:'按 RES 啟用', alert2:'', alertStatus:'normal' },
+];
+
+let demoIdx=0, demoTimer=null;
+function showDemo(){
+  const D=DEMOS[demoIdx % DEMOS.length];
+  render({...D, _demo:true});
+  setConn(window.__connState||'offline', `展示 ${(demoIdx % DEMOS.length)+1}/${DEMOS.length} · ${D._t}`);
+  demoIdx++;
+}
+const DEMO_FIX = new URLSearchParams(location.search).get('demo');   // ?demo=2 固定看第 2 組
+function startDemo(){
+  if(demoTimer) return;
+  if(DEMO_FIX){ demoIdx = Math.max(0, parseInt(DEMO_FIX,10)-1); showDemo(); demoTimer=-1; return; }
+  showDemo(); demoTimer=setInterval(showDemo, 7000);
+}
+function stopDemo(){ if(demoTimer && demoTimer!==-1) clearInterval(demoTimer); demoTimer=null; }
+window.render=render; window.DEMOS=DEMOS;
+
+// 待機標示：接上 SSE 之前告訴看的人「這不是即時資料」
+if(!new URLSearchParams(location.search).has('play')){
+  const t=document.createElement('div');
+  t.id='__demoTag';
+  t.style.cssText='position:absolute;top:300px;right:20px;font-size:11.5px;color:#5a6b7c;'+
+                  'z-index:9;letter-spacing:.3px;font-weight:600;text-align:right;line-height:1.5';
+  t.textContent='展示模式 · 尚未連線車機';
+  (document.getElementById('dash')||document.body).appendChild(t);
+  startDemo();
+}
+
+/* ═════ 即時資料（SSE，來自 C4 的 sp-hud :8902）═════ */
+const KPH=3.6;
+const FALLBACK_HOSTS=["192.168.2.143"];   // hud_agent 掃不到時的保底
+async function getHosts(){                // C4 IP 是動態的（手機熱點 DHCP），由 Pi 上 hud_agent 提供
+  try{ const r=await fetch('/host.json',{cache:'no-store'}); const j=await r.json();
+       if(j.hosts&&j.hosts.length) return j.hosts; }catch(e){}
+  return FALLBACK_HOSTS;
+}
+async function probe(h){                  // EventSource 連不上會卡住，先用 fetch 探測
+  const c=new AbortController(), t=setTimeout(()=>c.abort(),2000);
+  try{ const r=await fetch(`http://${h}:8902/health`,{signal:c.signal}); clearTimeout(t); return r.ok; }
+  catch(e){ clearTimeout(t); return false; }
+}
+
+// cereal 原始欄位 -> HUD 用的格式。速限/速度單位都是 m/s，這裡換算 km/h
+function fromSSE(J){
+  if(!J || J.standby || !J.carState) return null;
+  const cs=J.carState, ss=J.selfdriveState||{}, rs=J.radarState||{};
+  const rv=(((J.selfdriveStateSP||{}).speedLimit)||{}).resolver||{};
+  const lm=J.liveMapDataSP||{}, mv=J.modelV2, msp=J.modelDataV2SP||{}, ct=J.control||{};
+  const v=cs.vEgoCluster||cs.vEgo||0;
+  const kph=x=>Math.round((x||0)*KPH);
+  const F={
+    vEgo:kph(v), vCruise:kph(cs.cruiseSpeed),
+    engaged: !!(ss.enabled||ss.active),
+    road: lm.roadName||'—',
+    src: ct.src||'cruise',
+    // 速限：圓標用原始值，offset 另外標；前方變化用 liveMapDataSP
+    slRaw: rv.speedLimitValid ? kph(rv.speedLimit) : (lm.speedLimitValid ? kph(lm.speedLimit) : 0),
+    slOfs: kph(rv.speedLimitOffset),
+    slNext: lm.speedLimitAheadValid ? kph(lm.speedLimitAhead) : 0,
+    slNextD: lm.speedLimitAheadDistance||0,
+    // 盲點 / 換道封鎖（OP 自己的判斷）/ 方向燈
+    bsdL: !!cs.leftBlindspot,  bsdR: !!cs.rightBlindspot,
+    blkL: !!msp.leftLaneChangeEdgeBlock, blkR: !!msp.rightLaneChangeEdgeBlock,
+    blinkL: !!cs.leftBlinker,  blinkR: !!cs.rightBlinker,
+    aT: ct.aTarget||0, tq: ct.torque||0, sat: !!ct.sat,
+    lDes: (ct.curvature||0)*v*v,   // 目標橫向加速度 = v^2 * 曲率
+    lAct: (cs.yawRate||0)*v,       // 實際橫向加速度 = v * 偏航率
+    alert1: ss.alertText1||'', alert2: ss.alertText2||'', alertStatus: ss.alertStatus||'normal',
+    stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[],
+  };
+  (rs.leads||[]).forEach((L,i)=>{        // leadOne / leadTwo（同車道，第二台在更前面）
+    if(!L.status) return;
+    F.leads.push({d:L.dRel||0, y:-(L.yRel||0), v:kph(L.vRel), radar:true, main:i===0});
+  });
+  if(mv && mv.lanes){ F.lanes=mv.lanes; F.edges=mv.edges; F.path=mv.path;
+                      if(mv.d && mv.d.length) SAMPLE_D=mv.d; }
+  return F;
+}
+
+function setConn(state, extra){           // live / standby / offline
+  window.__connState = state;
+  if(extra!==undefined) window.__demoLabel = extra;
+  if(state==='live') window.__demoLabel = '';
+  const t=document.getElementById('__demoTag'); if(!t) return;
+  const base = state==='live' ? '' :
+               state==='standby' ? '已連線 · 車輛待機' : '尚未連線車機';
+  t.innerHTML = [base, window.__demoLabel||''].filter(Boolean).join('<br>');
+  t.style.color = state==='standby' ? '#5a8a66' : '#5a6b7c';
+}
+
+let es=null;
+async function connect(){
+  if(new URLSearchParams(location.search).has('play')) return;   // 回放模式不連線
+  if(es){ es.close(); es=null; }
+  for(;;){
+    for(const h of await getHosts()){
+      if(await probe(h)){
+        window.__esHost=h;
+        es=new EventSource(`http://${h}:8902/stream`);
+        es.onmessage=ev=>{
+          try{ const F=fromSSE(JSON.parse(ev.data));
+               if(F){ stopDemo(); setConn('live'); render(F); } else { setConn('standby'); startDemo(); } }
+          catch(e){ window.__hudErr&&window.__hudErr('SSE '+(e&&e.message||e)); }
+        };
+        es.onerror=()=>{ if(es){es.close(); es=null;} setConn('offline'); startDemo(); setTimeout(connect,1500); };
+        return;
+      }
+    }
+    setConn('offline');
+    await new Promise(r=>setTimeout(r,3000));
+  }
+}
+connect();
+
+// 左上角顯示目前的 AP 與 C4 IP（AP 名稱由 Pi 的 hud_agent 從 host.json 一併提供）
+async function updateNet(){
+  const el=document.getElementById('netInfo'); if(!el) return;
+  try{
+    const r=await fetch('/host.json',{cache:'no-store'});
+    const j=await r.json();
+    const ssid=j.ssid||'', host=window.__esHost||j.c4||(j.hosts&&j.hosts[0])||'';
+    el.textContent=[ssid, host].filter(Boolean).join('  ·  ');
+  }catch(e){ el.textContent = window.__esHost || ''; }
+}
+updateNet(); setInterval(updateNet, 15000);
+
+/* ═════ 回放 ═════ */
+if(new URLSearchParams(location.search).has('play')){
+  fetch('playback.json').then(r=>{ if(!r.ok) throw new Error('playback.json HTTP '+r.status); return r.json(); }).then(J=>{
+    SAMPLE_D=J.d; const F=J.f;
+    const tag=document.createElement('div');
+    tag.style.cssText='position:absolute;bottom:6px;right:18px;font-size:10.5px;color:#2f3f4e;z-index:9;letter-spacing:.3px';
+    document.body.appendChild(tag);
+    const lp=(a,b,t)=>a+(b-a)*t, la=(a,b,t)=>a.map((v,i)=>lp(v,b[i]!==undefined?b[i]:v,t));
+    const t0=performance.now();
+    function tick(){ const now=performance.now(); try{
+      const idx=(now-t0)/50, i=Math.floor(idx)%F.length; window.__i=i; const f=Math.min(1,idx-Math.floor(idx));
+      const A=F[i], B=F[(i+1)%F.length], S={...A};
+      S.vEgo=Math.round(lp(A.vEgo,B.vEgo,f));
+      S.aT=lp(A.aT,B.aT,f); S.tq=lp(A.tq,B.tq,f);
+      S.lDes=lp(A.lDes,B.lDes,f); S.lAct=lp(A.lAct,B.lAct,f);
+      if(A.path&&B.path) S.path=la(A.path,B.path,f);
+      if(A.lanes&&B.lanes&&A.lanes.length===B.lanes.length)
+        S.lanes=A.lanes.map((l,k)=>({y:la(l.y,B.lanes[k].y,f), p:lp(l.p,B.lanes[k].p,f)}));
+      if(A.edges&&B.edges&&A.edges.length===B.edges.length)
+        S.edges=A.edges.map((l,k)=>({y:la(l.y,B.edges[k].y,f), s:lp(l.s||.3,B.edges[k].s||.3,f)}));
+      if(A.leads&&B.leads&&A.leads.length===B.leads.length)
+        S.leads=A.leads.map((l,k)=>({...l, d:lp(l.d,B.leads[k].d,f), y:lp(l.y,B.leads[k].y,f)}));
+      const mm=(S.leads||[]).find(l=>l.main); S.stopD=mm?mm.d:0;
+      render(S);
+      tag.textContent=`回放 8/23 route07 · ${(i/20).toFixed(0)}s / ${(F.length/20).toFixed(0)}s`;
+      }catch(e){ window.__hudErr&&window.__hudErr('TICK '+(e&&e.message||e)+' | i='+(window.__i||'?')); }
+    }
+    setInterval(tick, 50);   // 20Hz，跟錄製頻率一致；rAF 在 kiosk 背景會被瀏覽器停掉
+  }).catch(e=>{ console.error('playback',e); window.__hudErr&&window.__hudErr('PLAYBACK '+(e&&e.message||e)); });
+}
+</script>
+</body>
+</html>
