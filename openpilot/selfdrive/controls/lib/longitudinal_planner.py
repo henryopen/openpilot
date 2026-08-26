@@ -27,6 +27,23 @@ MIN_ALLOW_THROTTLE_SPEED = 2.5
 _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
+# The driver sets MAX by what the dash shows, but openpilot controls on true wheel speed,
+# so this car ran about 7% faster than the number set. Regression over 81753 samples of
+# route 00000004--422ccab765 (vEgo vs vEgoCluster): dash = 1.071*true + 2.07 km/h. Cruise
+# and speed limit targets are dash speeds and are converted back here. Re-run the
+# regression if the tyres or wheel size change.
+DASH_GAIN = 1.071
+DASH_OFFSET_KPH = 2.07
+DASH_MAX_KPH = 200.  # above this the value is a sentinel rather than a speed, pass it through
+
+
+def dash_to_true(v_target: float) -> float:
+  v_kph = v_target * CV.MS_TO_KPH
+  if v_kph <= 0. or v_kph > DASH_MAX_KPH:
+    return v_target
+  return max((v_kph - DASH_OFFSET_KPH) / DASH_GAIN, 0.) * CV.KPH_TO_MS
+
+
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
@@ -78,7 +95,7 @@ class LongitudinalPlanner:
 
     v_ego = sm['carState'].vEgo
     v_cruise_kph = min(sm['carState'].vCruise, V_CRUISE_MAX)
-    v_cruise = v_cruise_kph * CV.KPH_TO_MS
+    v_cruise = dash_to_true(v_cruise_kph * CV.KPH_TO_MS)
     if sm['controlsState'].forceDecel:
       v_cruise = 0.0
 
