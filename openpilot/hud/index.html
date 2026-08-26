@@ -156,7 +156,7 @@ const DEMO = {   // ?demo=1 時在實機螢幕展示版面用的樣本畫格
   selfdriveStateSP: { mads: { state: "enabled", enabled: true, active: true, available: true } },
   longitudinalPlanSP: { dec: { state: "blended" },
     speedLimit: { resolver: { speedLimitFinal: 16.67, speedLimitValid: true }, assist: { state: "preActive" } } },
-  radarState: { leadStatus: true, dRel: 42.3, vRel: -0.9 },
+  radarState: { leadStatus: true, dRel: 42.3, vRel: -0.9, radar: true },
   liveMapDataSP: { roadName: "台3線 尖山路段" }
 };
 
@@ -222,7 +222,7 @@ function render(d) {
 
   const rs = d.radarState || {};
   if (rs.leadStatus) {
-    $("lead").textContent = `${rs.dRel.toFixed(0)} m　${rs.vRel >= 0 ? "+" : ""}${(rs.vRel * KPH).toFixed(0)} km/h`;
+    $("lead").textContent = `${rs.dRel.toFixed(0)} m　${rs.vRel >= 0 ? "+" : ""}${(rs.vRel * KPH).toFixed(0)} km/h　${rs.radar ? "雷達" : "視覺"}`;
     $("leadfill").style.width = Math.max(4, Math.min(100, rs.dRel / 120 * 100)) + "%";
     $("leadfill").style.background = rs.dRel < 20 ? "var(--red)" : rs.dRel < 40 ? "var(--amber)" : "var(--green)";
   } else { $("lead").textContent = "無"; $("leadfill").style.width = "0%"; }

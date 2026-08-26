@@ -125,16 +125,22 @@ def _selfdrive_state(ss):
 
 def _lead(lead):
   return {
-    "status": bool(lead.status),
+    "status": bool(lead.present),   # sunnypilot called this status
     "dRel": float(lead.dRel),
     "vRel": float(lead.vRel),
     "yRel": float(lead.yRel),
     "vLead": float(lead.vLead),
+    "radar": bool(lead.radar),      # matched to a radar track, rather than vision alone
+    "prob": float(lead.modelProb),
   }
 
 
 def _radar_state(rs):
-  return {"leads": [_lead(rs.leadOne), _lead(rs.leadTwo)]}
+  one, two = _lead(rs.leadOne), _lead(rs.leadTwo)
+  # the page reads the first lead off the top level
+  return {"leadStatus": one["status"], "dRel": one["dRel"], "vRel": one["vRel"],
+          "yRel": one["yRel"], "vLead": one["vLead"], "radar": one["radar"],
+          "leads": [one, two]}
 
 
 def _sp_shapes(params, mem_params, cs, cc, ss):
