@@ -21,12 +21,13 @@ class CarEvents:
     self.low_speed_alert = False
     self.no_steer_warning = False
     self.silent_steer_warning = True
+    self.cancel_pressed_while_enabled = False
 
   def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl):
     if self.CP.brand in ('body', 'mock'):
       return Events()
 
-    events = self.create_common_events(CS, CS_prev)
+    events = self.create_common_events(CS, CS_prev, CC)
 
     if self.CP.brand == 'chrysler':
       # Low speed steer alert hysteresis logic
@@ -93,7 +94,7 @@ class CarEvents:
 
     return events
 
-  def create_common_events(self, CS: structs.CarState, CS_prev: car.CarState):
+  def create_common_events(self, CS: structs.CarState, CS_prev: car.CarState, CC: car.CarControl):
     events = Events()
 
     CI = interfaces[self.CP.carFingerprint]
@@ -152,12 +153,17 @@ class CarEvents:
     if CS.buttonEnable:
       events.add(EventName.buttonEnable)
 
-    # Handle cancel button presses
+    # The middle button is a pause/resume button on this car. A press while engaged disengages,
+    # a press while disengaged brings openpilot back. Remember the state at the moment the button
+    # went down, otherwise releasing it would immediately re-engage what the press just cancelled.
     for b in CS.buttonEvents:
-      # Disable on rising and falling edge of cancel for both stock and OP long
-      # TODO: only check the cancel button with openpilot longitudinal on all brands to match panda safety
       if b.type == ButtonType.cancel and (allow_button_cancel or not self.CP.pcmCruise):
-        events.add(EventName.buttonCancel)
+        if b.pressed:
+          self.cancel_pressed_while_enabled = CC.enabled
+          if CC.enabled:
+            events.add(EventName.buttonCancel)
+        elif not self.cancel_pressed_while_enabled:
+          events.add(EventName.buttonEnable)
 
     # Handle permanent and temporary steering faults
     self.steering_unpressed = 0 if CS.steeringPressed else self.steering_unpressed + 1
