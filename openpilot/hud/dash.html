@@ -546,7 +546,7 @@ function fromSSE(J){
     lDes: (ct.curvature||0)*v*v,   // 目標橫向加速度 = v^2 * 曲率
     lAct: (cs.yawRate||0)*v,       // 實際橫向加速度 = v * 偏航率
     alert1: ss.alertText1||'', alert2: ss.alertText2||'', alertStatus: ss.alertStatus||'normal',
-    stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[],
+    stop: !!ct.stop, stopD: ct.stopDistance||0, leads:[], lanes:[], edges:[], path:[],
   };
   (rs.leads||[]).forEach((L,i)=>{        // leadOne / leadTwo（同車道，第二台在更前面）
     if(!L.status) return;

@@ -26,6 +26,7 @@ from openpilot.cereal import messaging
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.hud.radar_tracker import RadarTracker, cluster, relevant
 
 PORT = 8902
@@ -153,6 +154,24 @@ def _lat_saturated(cs):
     return False
 
 
+def _stop_distance(speeds):
+  """How much further the plan runs before it comes to rest.
+
+  There is no stop line on the wire, so integrate the plan's own speed trajectory.
+  It only reaches 2.5s ahead, so this is the distance left to a stop that is already
+  being braked for, not the distance to one still up the road.
+  """
+  t = ModelConstants.T_IDXS
+  if len(speeds) < 2:
+    return 0.
+  dist = 0.
+  for i in range(min(len(speeds), len(t)) - 1):
+    dist += (speeds[i] + speeds[i + 1]) / 2 * (t[i + 1] - t[i])
+    if speeds[i + 1] < 0.1:
+      break
+  return dist
+
+
 def _control(cc, lp, cs):
   a = cc.actuators
   return {
@@ -163,6 +182,8 @@ def _control(cc, lp, cs):
     "aTarget": float(lp.aTarget),
     "src": str(lp.longitudinalPlanSource),   # cruise / lead0 / lead1 / lead2 / e2e
     "hasLead": bool(lp.hasLead),
+    "stop": bool(lp.shouldStop),             # the model's own call, via the planner
+    "stopDistance": _stop_distance(lp.speeds),
   }
 
 
