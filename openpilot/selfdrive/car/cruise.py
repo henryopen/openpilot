@@ -28,10 +28,14 @@ CRUISE_INTERVAL_SIGN = {
   ButtonType.decelCruise: -1,
 }
 
-# Speed limits from the offline map. Anything outside this is bad map data rather than a
-# road we could be on: 30 is the lowest posted limit here and 110 the highest.
-SPEED_LIMIT_MIN_KPH = 30
+# Speed limits from the offline map. Outside this the value is bad map data rather than a
+# road we could be on. Compared as rounded km/h so a real 50 km/h limit cannot be lost to a
+# floating point ulp at the boundary.
+SPEED_LIMIT_MIN_KPH = 50
 SPEED_LIMIT_MAX_KPH = 110
+# A new limit this far below the current set speed is never adopted automatically: dropping
+# that much on a highway is dangerous. The driver can still take it with the +/- buttons.
+SPEED_LIMIT_MAX_AUTO_DROP_KPH = 30
 SPEED_LIMIT_ASSIST = 3          # SpeedLimitMode: 0 off, 3 assist
 SPEED_LIMIT_READ_INTERVAL = 50  # cruise runs at 100 Hz, mapd only updates a couple of times a second
 
@@ -151,8 +155,14 @@ class VCruiseHelper:
     if limit_kph == self.speed_limit_kph:
       return
 
+    target = float(np.clip(limit_kph + self.speed_limit_offset, V_CRUISE_MIN, V_CRUISE_MAX))
+    if self.v_cruise_kph - target > SPEED_LIMIT_MAX_AUTO_DROP_KPH:
+      # Too big a drop to take on its own. Leave the limit unrecorded so it is reconsidered
+      # once the driver has brought the set speed closer themselves.
+      return
+
     self.speed_limit_kph = limit_kph
-    self.v_cruise_kph = float(np.clip(limit_kph + self.speed_limit_offset, V_CRUISE_MIN, V_CRUISE_MAX))
+    self.v_cruise_kph = target
 
   def update_button_timers(self, CS, enabled):
     # increment timer for buttons still pressed
