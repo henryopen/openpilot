@@ -71,6 +71,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"LanguageSetting", {PERSISTENT, STRING, "en"}},
     {"LastGPSPosition", {PERSISTENT, STRING}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+    {"SmartCruiseControlVision", {PERSISTENT, BOOL, "1"}},
     {"SpeedLimitMode", {PERSISTENT, INT, "3"}},
     {"SpeedLimitValueOffset", {PERSISTENT, INT, "10"}},
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
