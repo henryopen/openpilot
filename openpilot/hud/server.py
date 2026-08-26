@@ -24,12 +24,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
+from openpilot.hud.radar_tracker import RadarTracker, cluster, relevant
 
 PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "modelV2", "carControl",
             "longitudinalPlan", "controlsState"]
 
 KPH_TO_MS = 1 / 3.6
+RADAR_FIRST, RADAR_LAST = 0x238, 0x255   # the front radar's track list, on bus 1
 
 # modelV2 的線是 33 個不等距點；降取樣成固定距離，HUD 夠用又不會塞爆 SSE
 SAMPLE_X = [0, 5, 12, 20, 30, 45, 60, 80, 95, 110]
@@ -135,6 +137,30 @@ def _lead(lead):
   }
 
 
+def _radar_targets(tracker, v_ego):
+  """Everything the radar sees, not just the one target being followed.
+
+  radard only ever hands out two leads and they are both in our own lane, so the
+  cars either side never reach the display. The tracks are on bus 1 anyway, so read
+  them here. This is display only: what actually controls the car is still the
+  single target radard picked.
+  """
+  try:
+    return [
+      {"status": True,
+       "dRel": round(g["dRel"], 1),
+       "yRel": round(g["yRel"], 1),
+       "vRel": round(g["vRel"], 1),
+       "radar": True,
+       "side": abs(g["yRel"]) > 1.8,      # in a lane beside us rather than ahead
+       "lane": g["lane"],
+       "oncoming": g["oncoming"]}
+      for g in relevant(cluster(tracker.points(v_ego)), v_ego)
+    ]
+  except Exception:
+    return []
+
+
 def _radar_state(rs):
   one, two = _lead(rs.leadOne), _lead(rs.leadTwo)
   # the page reads the first lead off the top level
@@ -177,16 +203,30 @@ def poll_loop():
   sm = messaging.SubMaster(SERVICES)
   params = Params()
   mem_params = Params("/dev/shm/params")
+  can_sock = messaging.sub_sock("can", timeout=20)
+  tracker = RadarTracker()
   while True:
     sm.update(1000)
     data = {"ts": time.monotonic(), "alive": {s: bool(sm.alive[s]) for s in SERVICES}}
     onroad = sm.alive["carState"]
+
+    now = time.monotonic()
+    for msg in messaging.drain_sock(can_sock):
+      for c in msg.can:
+        if c.src == 1 and RADAR_FIRST <= c.address <= RADAR_LAST:
+          tracker.on_can(c.address, bytes(c.dat), now)
     data["standby"] = not onroad
     if onroad:
       try:
         data["carState"] = _car_state(sm["carState"])
         data["selfdriveState"] = _selfdrive_state(sm["selfdriveState"])
         data["radarState"] = _radar_state(sm["radarState"])
+        others = _radar_targets(tracker, float(sm["carState"].vEgo))
+        # radard's leads come first, so the page still treats the followed car as the main one
+        followed = data["radarState"]["dRel"] if data["radarState"]["leadStatus"] else None
+        data["radarState"]["leads"] += [t for t in others
+                                        if followed is None or abs(t["dRel"] - followed) > 3.0]
+        data["radarState"]["targets"] = len(others)
         _frame += 1
         if _frame % 2 == 0 or _model_cache is None:   # 20Hz 進來、10Hz 重算，跟輸出頻率對齊
           _model_cache = _model(sm["modelV2"])
