@@ -6,6 +6,7 @@ from opendbc.car.structs import car
 from openpilot.common.params import Params
 from openpilot.common.hardware import PC, COMMA_HARDWARE
 from openpilot.system.manager.process import PythonProcess, NativeProcess, DaemonProcess
+from openpilot.selfdrive.mapd.mapd import MAPD_PATH, MAPD_ROOT
 
 WEBCAM = os.getenv("USE_WEBCAM") is not None
 
@@ -51,6 +52,10 @@ def qcomgps(started: bool, params: Params, CP: car.CarParams) -> bool:
 
 def always_run(started: bool, params: Params, CP: car.CarParams) -> bool:
   return True
+
+def mapd_ready(started: bool, params: Params, CP: car.CarParams) -> bool:
+  # no point starting either half without the binary and its offline tiles
+  return started and os.path.exists(MAPD_PATH) and os.path.isdir(os.path.join(MAPD_ROOT, 'offline'))
 
 def only_onroad(started: bool, params: Params, CP: car.CarParams) -> bool:
   return started
@@ -108,6 +113,10 @@ procs = [
   PythonProcess("maneuversd", "openpilot.tools.longitudinal_maneuvers.maneuversd", long_maneuver),
   PythonProcess("lateral_maneuversd", "openpilot.tools.lateral_maneuvers.lateral_maneuversd", lat_maneuver),
   PythonProcess("radard", "openpilot.selfdrive.controls.radard", only_onroad),
+
+  # offline OSM speed limits: the binary does the map lookups, mapd_bridge tells it where we are
+  NativeProcess("mapd", MAPD_ROOT, ["bash", "-c", f"{MAPD_PATH} > /dev/null 2>&1"], mapd_ready),
+  PythonProcess("mapd_bridge", "openpilot.selfdrive.mapd.mapd", mapd_ready),
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("modem", "openpilot.common.hardware.comma.modem", always_run, enabled=COMMA_HARDWARE),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),
