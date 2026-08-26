@@ -3,6 +3,7 @@ import numpy as np
 
 from opendbc.car.structs import car
 from openpilot.common.constants import CV
+from openpilot.common.params import Params
 
 
 # WARNING: this value was determined based on the model's training distribution,
@@ -27,6 +28,13 @@ CRUISE_INTERVAL_SIGN = {
   ButtonType.decelCruise: -1,
 }
 
+# Speed limits from the offline map. Anything outside this is bad map data rather than a
+# road we could be on: 30 is the lowest posted limit here and 110 the highest.
+SPEED_LIMIT_MIN_KPH = 30
+SPEED_LIMIT_MAX_KPH = 110
+SPEED_LIMIT_ASSIST = 3          # SpeedLimitMode: 0 off, 3 assist
+SPEED_LIMIT_READ_INTERVAL = 50  # cruise runs at 100 Hz, mapd only updates a couple of times a second
+
 
 class VCruiseHelper:
   def __init__(self, CP):
@@ -36,6 +44,13 @@ class VCruiseHelper:
     self.v_cruise_kph_last = 0
     self.button_timers = {ButtonType.decelCruise: 0, ButtonType.accelCruise: 0}
     self.button_change_states = {btn: {"standstill": False, "enabled": False} for btn in self.button_timers}
+
+    self.params = Params()
+    self.mem_params = Params("/dev/shm/params")
+    self.speed_limit_frame = 0
+    self.speed_limit_kph = 0.
+    self.speed_limit_mode = 0
+    self.speed_limit_offset = 0.
 
   @property
   def v_cruise_initialized(self):
@@ -88,6 +103,7 @@ class VCruiseHelper:
           break
 
     if button_type is None:
+      self._update_speed_limit()
       return
 
     # Don't adjust speed when pressing resume to exit standstill
@@ -112,6 +128,31 @@ class VCruiseHelper:
       self.v_cruise_kph = max(self.v_cruise_kph, CS.vEgo * CV.MS_TO_KPH)
 
     self.v_cruise_kph = np.clip(round(self.v_cruise_kph, 1), V_CRUISE_MIN, V_CRUISE_MAX)
+
+  def _update_speed_limit(self):
+    """Follow the posted limit from the offline map, once per change.
+
+    The set speed only moves when the limit itself changes, so a button press still has the
+    final say: whatever is dialled in stays until the road's limit actually changes.
+    """
+    self.speed_limit_frame += 1
+    if self.speed_limit_frame % SPEED_LIMIT_READ_INTERVAL != 0:
+      return
+
+    self.speed_limit_mode = self.params.get("SpeedLimitMode", return_default=True)
+    if self.speed_limit_mode != SPEED_LIMIT_ASSIST:
+      return
+    self.speed_limit_offset = self.params.get("SpeedLimitValueOffset", return_default=True)
+
+    limit_kph = round((self.mem_params.get("MapSpeedLimit") or 0.) * CV.MS_TO_KPH)
+    if not SPEED_LIMIT_MIN_KPH <= limit_kph <= SPEED_LIMIT_MAX_KPH:
+      return
+
+    if limit_kph == self.speed_limit_kph:
+      return
+
+    self.speed_limit_kph = limit_kph
+    self.v_cruise_kph = float(np.clip(limit_kph + self.speed_limit_offset, V_CRUISE_MIN, V_CRUISE_MAX))
 
   def update_button_timers(self, CS, enabled):
     # increment timer for buttons still pressed
