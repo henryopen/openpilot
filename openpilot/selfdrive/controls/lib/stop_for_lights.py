@@ -29,6 +29,10 @@ STOP_WITHIN = 15.               # the standstill has to be this junction, not a 
 FILTER_TIME = 1.0               # a red light does not appear and vanish inside a second
 THRESHOLD = 1 - 1 / np.e        # ~0.63, the filter's value after one time constant
 MAX_DECEL = -1.5                # the most a false call is allowed to cost
+COMMITTED = 15 * CV.KPH_TO_MS   # below this the stop is happening, see it through
+STOPPED = 0.5                   # standing still
+SETTLE = 1.5                    # the model needs a moment at a halt before it says so
+HOLD_MAX = 180.                 # no light is this long; let go rather than strand the car
 
 
 class StopForLights:
@@ -38,6 +42,8 @@ class StopForLights:
     self.frame = 0
     self.filter = FirstOrderFilter(0., FILTER_TIME, DT_MDL)
     self.is_active = False
+    self.held_for = 0.
+    self.stopped_for = 0.
     self.stop_distance = 0.
 
   def update_params(self) -> None:
@@ -60,17 +66,54 @@ class StopForLights:
     self.stop_distance = float(x[idx])
     return self.stop_distance < STOP_WITHIN
 
-  def update(self, md, v_ego: float) -> None:
+  def _reset(self) -> None:
+    self.filter.x = 0.
+    self.is_active = False
+    self.held_for = 0.
+    self.stopped_for = 0.
+    self.stop_distance = 0.
+
+  def update(self, md, v_ego: float, gas_pressed: bool = False) -> None:
     self.update_params()
 
-    if not self.enabled or v_ego < MIN_SPEED:
+    if not self.enabled or gas_pressed:
+      self._reset()
+      return
+
+    if self.is_active:
+      self.held_for += DT_MDL
+      if self.held_for > HOLD_MAX:
+        # something is wrong with the call: it has kept us here far longer than a light
+        self._reset()
+      elif v_ego < STOPPED:
+        # Stopped for this junction. Nothing else keeps us here - the e2e branch is what
+        # holds standstill, and cruise wants the set speed back - so stay until the model
+        # says the way is clear. That is also what lets us move off when it changes.
+        # The model only calls a stop once we are actually at one, so give it a moment
+        # to catch up before reading anything into its silence.
+        self.stopped_for += DT_MDL
+        if md.action.shouldStop:
+          self.is_active = True
+        elif self.stopped_for > SETTLE:
+          self.is_active = False
+      elif v_ego < COMMITTED:
+        # slow enough that the stop is happening; see it through
+        self.stopped_for = 0.
+        self.is_active = True
+      else:
+        # still quick: let the model take it back if it no longer sees a stop
+        self.filter.update(1. if self._predicts_a_stop(md) else 0.)
+        self.is_active = self.filter.x > THRESHOLD
+      return
+
+    if v_ego < MIN_SPEED:
       self.filter.x = 0.
-      self.is_active = False
-      self.stop_distance = 0.
       return
 
     self.filter.update(1. if self._predicts_a_stop(md) else 0.)
     self.is_active = self.filter.x > THRESHOLD
+    if self.is_active:
+      self.held_for = 0.
 
   def limit(self, a_target_e2e: float) -> float:
     """What the model is allowed to ask for. Gentle braking, never a stab at the brake."""
