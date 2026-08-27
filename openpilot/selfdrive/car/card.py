@@ -70,7 +70,8 @@ class Car:
   def __init__(self, CI=None, RI=None) -> None:
     self.can_sock = messaging.sub_sock('can', timeout=20)
     self.sm = messaging.SubMaster(['pandaStates', 'carControl', 'onroadEvents'])
-    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput', 'radarTracks'])
+    self.pm = messaging.PubMaster(['sendcan', 'carState', 'carParams', 'carOutput',
+                                  'radarTracks', 'radarTracksSP'])
 
     self.can_rcv_cum_timeout_counter = 0
 
@@ -226,6 +227,16 @@ class Car:
       tracks_msg.valid = not any(RD.errors.to_dict().values())
       tracks_msg.radarTracks = RD
       self.pm.send('radarTracks', tracks_msg)
+
+      # radarTracks carries only what radard is allowed to follow. Everything the radar
+      # reports goes out here instead, for the display and for watching the lanes beside us.
+      every = getattr(self.RI, 'all_points', None)
+      if every is not None:
+        all_msg = messaging.new_message('radarTracksSP')
+        all_msg.valid = tracks_msg.valid
+        all_msg.radarTracksSP.points = [{'trackId': p.trackId, 'dRel': p.dRel,
+                                         'yRel': p.yRel, 'vRel': p.vRel} for p in every]
+        self.pm.send('radarTracksSP', all_msg)
 
   def controls_update(self, CS: car.CarState, CC: car.CarControl):
     """control update loop, driven by carControl"""

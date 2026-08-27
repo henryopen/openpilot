@@ -1,6 +1,8 @@
 using Cxx = import "/include/c++.capnp";
 $Cxx.namespace("cereal");
 
+using Car = import "/car.capnp";
+
 @0xb526ba661d550a59;
 
 # custom.capnp: a home for empty structs reserved for custom forks
@@ -10,7 +12,12 @@ $Cxx.namespace("cereal");
 # DO rename the structs
 # DON'T change the identifier (e.g. @0x81c2f05a394cf4af)
 
-struct CustomReserved0 @0x81c2f05a394cf4af {
+# Every target the front radar reports, where radarTracks carries only the one radard is
+# allowed to follow. A guardrail scanned along its length looks like a car keeping station
+# ahead, so handing the whole list to radard measured worse than vision alone; the display
+# and anything that watches the lanes beside us still wants all of it.
+struct RadarTracksSP @0x81c2f05a394cf4af {
+  points @0 :List(Car.RadarData.RadarPoint);
 }
 
 struct CustomReserved1 @0xaedffd8f31e7b55d {

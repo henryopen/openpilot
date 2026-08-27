@@ -1,55 +1,17 @@
 """Pick out and steady the radar's other targets, for display only.
 
 radard is handed a single target so that a guardrail cannot be mistaken for the car ahead,
-which means the cars either side never reach the display. The full track list is on the bus
-regardless, so this reads it here.
-
-The decode is not repeated: the dbc, the slot handling and the thresholds all come from
-opendbc, the same ones that feed the car, and only the choice of which targets to show is
-made here. Nothing in this file controls the car.
+which means the cars either side never reach radarState. card publishes the full list as
+radarTracksSP, decoded once, on the car, by the same radar_interface that feeds radard.
+Nothing here touches CAN or the decode: what happens in this file is choosing which targets
+are worth drawing and holding them steady enough to look at.
 """
-import math
-
-from opendbc.can import CANParser
-from openpilot.selfdrive.pandad.pandad_api_impl import can_capnp_to_list
-from opendbc.car.hyundai.radar_interface import (CUSTIN_MIN_HITS, CUSTIN_MIN_RANGE,
-                                                 CUSTIN_MIN_SCORE, CUSTIN_RADAR_ADDRS,
-                                                 CustinSlot)
 
 LANE_HALF = 5.5          # keep this lane and the two beside it; roadside sits outside
 STATIC_TH = 2.5          # |vRel + vEgo| under this is something standing still
 MIN_RANGE = 2.0          # closer than this is bumper clutter
 
 LANE_NAME = {-2: '右右', -1: '右', 0: '前', 1: '左', 2: '左左'}
-
-
-class RadarReader:
-  """Every track on the bus, decoded with opendbc's own dbc and thresholds."""
-
-  def __init__(self):
-    self.rcp = CANParser("custin_radar", [(f"RADAR_TRACK_{a:x}", 33) for a in CUSTIN_RADAR_ADDRS], 1)
-    self.slots = {a: CustinSlot() for a in CUSTIN_RADAR_ADDRS}
-    self.hits = dict.fromkeys(CUSTIN_RADAR_ADDRS, 0)
-
-  def update(self, can_strings, t):
-    if not can_strings:
-      return []
-    self.rcp.update(can_capnp_to_list(can_strings))
-    out = []
-    for a in CUSTIN_RADAR_ADDRS:
-      msg = self.rcp.vl[f"RADAR_TRACK_{a:x}"]
-      rng = msg["LONG_DIST"]
-      az = math.radians(msg["AZIMUTH"])
-      if rng > CUSTIN_MIN_RANGE and msg["SCORE"] >= CUSTIN_MIN_SCORE:
-        self.slots[a].update(t, math.cos(az) * rng)
-        self.hits[a] = min(self.hits[a] + 1, CUSTIN_MIN_HITS)
-      else:
-        self.slots[a].reset()
-        self.hits[a] = 0
-      fit = self.slots[a].solve()
-      if fit is not None and self.hits[a] >= CUSTIN_MIN_HITS:
-        out.append({"dRel": fit[0], "yRel": -math.sin(az) * rng, "vRel": fit[1]})
-    return out
 
 
 def lane_of(y_rel):

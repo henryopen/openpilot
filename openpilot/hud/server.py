@@ -26,10 +26,10 @@ from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.hud.radar_tracker import RadarReader, TargetTracker, relevant
+from openpilot.hud.radar_tracker import TargetTracker, relevant
 
 PORT = 8902
-SERVICES = ["carState", "selfdriveState", "radarState", "modelV2", "carControl",
+SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
             "longitudinalPlan", "controlsState"]
 
 KPH_TO_MS = 1 / 3.6
@@ -251,8 +251,6 @@ def poll_loop():
   sm = messaging.SubMaster(SERVICES)
   params = Params()
   mem_params = Params("/dev/shm/params")
-  can_sock = messaging.sub_sock("can", timeout=20)
-  radar = RadarReader()   # opendbc's own dbc and thresholds, so there is only one decode
   targets = TargetTracker()
   last_target_t = time.monotonic()
   edges = RoadEdgeLaneChangeController()
@@ -262,7 +260,8 @@ def poll_loop():
     onroad = sm.alive["carState"]
 
     now = time.monotonic()
-    radar_points = radar.update(messaging.drain_sock_raw(can_sock), now)
+    radar_points = [{"dRel": float(p.dRel), "yRel": float(p.yRel), "vRel": float(p.vRel)}
+                    for p in sm["radarTracksSP"].points]
     data["standby"] = not onroad
     if not onroad:
       edges.reset()
