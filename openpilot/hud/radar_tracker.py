@@ -15,24 +15,20 @@ which is what made the display look nothing like traffic.
 bus 1, 0x238 + 3n (n = 0..9), 33 Hz, 8 bytes:
   FLAG      bit 0-1
   LONG_DIST bit 2-11    x 0.1 m
-  LAT_DIST  bit 18-28   signed, x -0.0178 m   (not an angle, see below)
+  AZIMUTH   bit 18-28   signed, x 0.0388 deg
   V_ABS     bit 34-44   signed, the target's own speed rather than a relative one
 
-This field was read as an azimuth at 0.0388 deg per LSB until 2026-08-27. It is not an
-angle, it is the lateral offset itself. Taking it for an angle and multiplying by range
-made yRel proportional to range, so every target slid toward the centre as it came closer,
-on the plan view as much as in perspective.
+On 2026-08-27 this field was briefly re-read as a lateral offset rather than an angle,
+because targets appeared to drift toward the centre of the screen as they approached and
+the offset model made that go away. It was wrong. Replaying the logs and comparing the
+radar's own lateral figure against the vision lead on the same car puts the angle within
+0.01 m over 1170 frames in town, where the offset model sits 0.43 m out and is the closer
+of the two in only 12% of frames.
 
-Three frames from seg16 of route b7ed007484 have the answer, measured off the camera
-footage: the lead 30.4 m ahead at -0.44 deg, a motorcycle to our left at 24.0 m and
--8.6 deg, another at 33.5 m and -4.8 deg. Read as a lateral offset the field fits all
-three to within a quarter of a metre with one constant, -0.0178 m per LSB. Read as an
-angle the same three want scales of 0.0408, 0.0336 and -0.04 - the last one disagreeing
-in sign, which is the mismatch FIELD_MAP.md recorded as "lead truth -0.44 deg, decoded
-+0.43 deg" and never resolved.
-
-Eleven signed bits at this scale reach about +-18 m, which covers the field of view. The
-range field stays a slant range, so the longitudinal distance is the leg of the triangle.
+The three camera-measured targets used to justify the change could not tell the two apart:
+their slant ranges were 24.0, 33.5 and 30.4 m, and over so narrow a span sin(raw*s)*rng and
+raw*k have the same shape. The one frame that could have separated them, the lead at
+-0.44 deg, was set aside as a measurement error. It was the only real evidence there.
 
 The list carries no relative speed, so it comes from a least squares fit of range over a
 short window, which measured to 0.33 m/s against the stock ACC's own target.
@@ -41,7 +37,7 @@ import math
 from collections import deque
 
 RADAR_ADDRS = list(range(0x238, 0x256, 3))   # 10 targets, three addresses each
-Y_SCALE = -0.0178        # m per LSB, fitted to three camera-measured targets
+AZ_SCALE = 0.0388        # deg per LSB, from video geometry
 V_SCALE = 0.02526        # m/s per LSB
 V_OFFSET = 2.587         # m/s. Both calibrated against the stock ACC, r=0.949
 WIN = 12                 # ~0.36 s at 33 Hz
@@ -65,11 +61,9 @@ def parse_track(d):
   rng = _ext(d, 2, 10) * 0.1
   if rng <= 0.5:
     return None
-  y = _ext(d, 18, 11, True) * Y_SCALE
-  y = max(-rng, min(rng, y))            # lateral cannot exceed the slant range
-  x = math.sqrt(max(0.0, rng * rng - y * y))
+  az = math.radians(_ext(d, 18, 11, True) * AZ_SCALE)
   v_abs = _ext(d, 34, 11, True) * V_SCALE + V_OFFSET
-  return {"rng": rng, "dRel": x, "yRel": y, "vAbs": v_abs}
+  return {"rng": rng, "dRel": math.cos(az) * rng, "yRel": -math.sin(az) * rng, "vAbs": v_abs}
 
 
 class Slot:
