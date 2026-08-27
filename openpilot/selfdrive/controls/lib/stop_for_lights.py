@@ -62,7 +62,8 @@ class StopForLights:
     idx = next((i for i, u in enumerate(v) if u < VEL_STOPPED), None)
     if idx is None:
       return False
-    if any(u > VEL_TAIL for u in v[idx:]):   # dips and recovers: traffic, not a light
+    # capnp lists index but do not slice, so walk it
+    if any(v[i] > VEL_TAIL for i in range(idx, len(v))):   # dips and recovers: traffic, not a light
       return False
 
     self.stop_distance = float(x[idx])
