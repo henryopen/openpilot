@@ -26,7 +26,7 @@ from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.hud.radar_tracker import RadarTracker, cluster, relevant
+from openpilot.hud.radar_tracker import RadarTracker, TargetTracker, cluster, relevant
 
 PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "modelV2", "carControl",
@@ -159,7 +159,7 @@ def _lead(lead):
   }
 
 
-def _radar_targets(tracker, v_ego):
+def _radar_targets(tracker, targets, v_ego, dt):
   """Everything the radar sees, not just the one target being followed.
 
   radard only ever hands out two leads and they are both in our own lane, so the
@@ -168,16 +168,20 @@ def _radar_targets(tracker, v_ego):
   single target radard picked.
   """
   try:
+    groups = relevant(cluster(tracker.points(v_ego)), v_ego)
     return [
       {"status": True,
-       "dRel": round(g["dRel"], 1),
-       "yRel": round(g["yRel"], 1),
-       "vRel": round(g["vRel"], 1),
+       "id": t.id,                        # stable across frames, so the page can follow one car
+       "dRel": round(t.dRel, 1),
+       "yRel": round(t.yRel, 1),
+       "vRel": round(t.vRel, 1),
        "radar": True,
-       "side": abs(g["yRel"]) > 1.8,      # in a lane beside us rather than ahead
-       "lane": g["lane"],
-       "oncoming": g["oncoming"]}
-      for g in relevant(cluster(tracker.points(v_ego)), v_ego)
+       "coast": t.misses > 0,             # held over a dropped frame rather than seen right now
+       "side": abs(t.yRel) > 1.8,         # in a lane beside us rather than ahead
+       "lane": t.lane,
+       "laneN": t.lane_n,                 # -2..2, negative to our right
+       "oncoming": t.oncoming}
+      for t in targets.update(groups, dt)
     ]
   except Exception:
     return []
@@ -251,6 +255,8 @@ def poll_loop():
   mem_params = Params("/dev/shm/params")
   can_sock = messaging.sub_sock("can", timeout=20)
   tracker = RadarTracker()
+  targets = TargetTracker()
+  last_target_t = time.monotonic()
   edges = RoadEdgeLaneChangeController()
   while True:
     sm.update(1000)
@@ -265,12 +271,15 @@ def poll_loop():
     data["standby"] = not onroad
     if not onroad:
       edges.reset()
+      targets.reset()
     if onroad:
       try:
         data["carState"] = _car_state(sm["carState"])
         data["selfdriveState"] = _selfdrive_state(sm["selfdriveState"])
         data["radarState"] = _radar_state(sm["radarState"])
-        others = _radar_targets(tracker, float(sm["carState"].vEgo))
+        dt = max(1e-3, min(0.5, now - last_target_t))
+        last_target_t = now
+        others = _radar_targets(tracker, targets, float(sm["carState"].vEgo), dt)
         # radard's leads come first, so the page still treats the followed car as the main one
         followed = data["radarState"]["dRel"] if data["radarState"]["leadStatus"] else None
         data["radarState"]["leads"] += [t for t in others

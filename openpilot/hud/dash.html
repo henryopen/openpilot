@@ -104,9 +104,34 @@
   .trk{position:absolute;left:18px;right:18px;bottom:4px;height:3px;background:rgba(14,22,30,.9);
     border-radius:2px;overflow:hidden}
   .trk i{display:block;height:100%;border-radius:2px;background:var(--green)}
+
+  /* 待機畫面：openpilot 沒在跑時蓋住儀表，樣式沿用舊版 index.html */
+  #standby { position:fixed; inset:0; z-index:50; background:var(--bg,#0b0f14);
+             display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; }
+  #clock { font-size:130px; font-weight:800; letter-spacing:-3px; font-variant-numeric:tabular-nums; color:#e8eef4; }
+  #standby-msg { font-size:24px; color:#5a6b7c; }
+  #standby-msg .ok { color:#3fb96b; }
+  #standby-net { font-size:26px; font-weight:700; color:#7fb4e8; letter-spacing:1px; font-variant-numeric:tabular-nums; }
+
+  /* 車道占用：橫向量測有雜訊，分格比畫精確位置可靠 */
+  .lanes{position:absolute;left:20px;top:236px;z-index:4;display:flex;gap:6px;align-items:flex-end}
+  .lanes .ln{min-width:52px;padding:4px 7px 5px;border-radius:7px;background:rgba(18,26,36,.82);
+             border:1px solid rgba(90,107,124,.32);text-align:center}
+  .lanes .ln .k{font-size:9.5px;letter-spacing:.6px;color:var(--dim);font-weight:700}
+  .lanes .ln .v{font-size:17px;font-weight:800;font-variant-numeric:tabular-nums;color:#e8eef4;line-height:1.15}
+  .lanes .ln.self{border-color:rgba(214,234,250,.5)}
+  .lanes .ln.onc{border-color:rgba(122,146,184,.45)}
+  .lanes .ln.onc .v{color:#7a92b8;font-size:15px}
+  .lanes .ln.empty .v{color:var(--dim2)}
 </style>
 </head>
 <body>
+<div id="standby">
+  <div id="clock">--:--</div>
+  <div id="standby-msg">連線中…</div>
+  <div id="standby-net"></div>
+</div>
+
 <div id="dash">
   <canvas id="road" width="1280" height="400"></canvas>
 
@@ -143,6 +168,13 @@
   </div>
 
   <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
+
+  <div class="lanes">
+    <div class="ln"      ><div class="k">左車道</div><div class="v" id="lnL">—</div></div>
+    <div class="ln self" ><div class="k">本車道</div><div class="v" id="lnC">—</div></div>
+    <div class="ln"      ><div class="k">右車道</div><div class="v" id="lnR">—</div></div>
+    <div class="ln onc"  ><div class="k">對向</div><div class="v" id="lnO">—</div></div>
+  </div>
 
   <div class="bar">
     <div class="m"><div class="k">相對速度</div><div class="v" id="m1">—</div></div>
@@ -326,24 +358,35 @@ function drawRoad(F){
         Math.abs(L.d-MAIN.d)>3.5 || Math.abs((L.y||0)-(MAIN.y||0))>1.6 ).forEach(L=>{
     const p=px(L.d,L.y);
     // 顏色分級：負值＝正在接近
-    const c = L.v<=-10 ? [255,45,45]      // 快速接近
+    // 對向來車的相對速度跟「前方有車急煞」一樣是大負值，共用紅色會誤導，給它自己的顏色
+    const c = L.onc ? [122,146,184]       // 對向來車：擦身而過，不是要跟的目標
+            : L.v<=-10 ? [255,45,45]      // 快速接近
             : L.v<= -3 ? [255,140,26]     // 接近
             : L.v< 1.5 ? [214,234,250]    // 同速
             :            [47,212,90];     // 遠離
     const RGB=`${c[0]},${c[1]},${c[2]}`;
-    const a0 = L.main?1:0.62;
+    const a0 = (L.main?1:0.62) * (L.coast?0.45:1) * (L.onc?0.7:1);   // 掉格保持中的淡一點，對向的再淡一點
     const sz = Math.max(13, Math.min(30, 900/(L.d+18))) * (L.main?1.2:0.85);
     // V 形箭標（有厚度，不是實心大三角）
-    const by=p.y, ty=by-sz*1.10;          // by=底部(對齊距離點), ty=尖端
+    const dir = L.onc ? 1 : -1;           // 對向來車的箭頭倒過來指向我們
+    const by=p.y, ty=by+sz*1.10*dir;      // by=底部(對齊距離點), ty=尖端
     const vpath=(k)=>{ cx.beginPath();
       cx.moveTo(p.x-sz*1.15*k, by); cx.lineTo(p.x, ty);
       cx.lineTo(p.x+sz*1.15*k, by); cx.lineTo(p.x+sz*0.72*k, by);
-      cx.lineTo(p.x, ty+sz*0.57*k); cx.lineTo(p.x-sz*0.72*k, by); cx.closePath(); };
+      cx.lineTo(p.x, ty-sz*0.57*k*dir); cx.lineTo(p.x-sz*0.72*k, by); cx.closePath(); };
     if(L.main){ vpath(1); cx.fillStyle=`rgba(${RGB},.22)`; cx.shadowColor=`rgba(${RGB},.9)`;
                 cx.shadowBlur=26; cx.fill(); cx.fill(); cx.shadowBlur=0; }
     vpath(1); cx.fillStyle=`rgba(${RGB},${a0})`; cx.fill();
+    if(L.main){                     // leadOne：鎖定角框，一眼看出 openpilot 跟的是哪一台
+      const hw=sz*1.55, top=ty-sz*0.30, bot=by+sz*0.30, cn=sz*0.55;
+      cx.strokeStyle='rgba(255,255,255,.95)'; cx.lineWidth=Math.max(2, sz*0.13); cx.lineCap='round';
+      const corner=(x,y,dx,dy)=>{ cx.beginPath(); cx.moveTo(x+dx*cn,y); cx.lineTo(x,y); cx.lineTo(x,y+dy*cn); cx.stroke(); };
+      corner(p.x-hw, top, 1, 1);  corner(p.x+hw, top, -1, 1);
+      corner(p.x-hw, bot, 1, -1); corner(p.x+hw, bot, -1, -1);
+      cx.lineCap='butt';
+    }
     // 距離：主角，大字
-    if((L.main || L.d<60) && !L.side){
+    if((L.main || L.d<60) && !L.side && !L.onc){    // 對向車不標距離，那個數字對駕駛沒有意義
       const fs = L.main ? Math.max(30, 46*p.s) : Math.max(21, 30*p.s);
       // dRel 量的是前車「車尾」= 箭標底部；字放在雷達線下方，右側留給左右前車
       const tx  = p.x;
@@ -397,6 +440,21 @@ function render(F){
   e.textContent=F.engaged?'ENGAGED':'READY'; e.className='chip'+(F.engaged?' on':'');
   const nr=(F.leads||[]).filter(l=>l.radar).length;
   set('cRad', nr?`雷達確認 ${nr}`:'純視覺');
+  // 車道占用：橫向量測在 30 m 外有 ~1.5 m 雜訊，直接畫位置會抖，分格顯示才穩
+  // radard 的視覺 lead 沒有 lane 欄位（那是雷達 track 才算的），用它的橫向位置補判
+  const laneOf=(l)=> l.lane || (Math.abs(l.y) < LANE_W/2 ? '前' : (l.y < 0 ? '左' : '右'));
+  const near=(names)=>{
+    const c=(F.leads||[]).filter(l=>!l.onc && names.includes(laneOf(l)));
+    if(!c.length) return '—';
+    return Math.round(Math.min(...c.map(l=>l.d))) + ' m';
+  };
+  const lv={lnL:near(['左','左左']), lnC:near(['前']), lnR:near(['右','右右'])};
+  const onc=(F.leads||[]).filter(l=>l.onc).length;
+  lv.lnO = onc ? onc + ' 台' : '—';
+  for(const id in lv){
+    set(id, lv[id]);
+    const el=$(id); if(el && el.parentElement) el.parentElement.classList.toggle('empty', lv[id]==='—');
+  }
   const src=filterSrc(F.src, !!F._demo);
   const isE2E = src==='e2e';
   F.e2e = isE2E;
@@ -497,6 +555,7 @@ function stopDemo(){ if(demoTimer && demoTimer!==-1) clearInterval(demoTimer); d
 // openpilot is not driving: show nothing rather than a demo that looks like live data
 function showIdle(){
   stopDemo();
+  targetF = null; resetSmooth();
   render({vEgo:0, vCruise:0, engaged:false, road:'', src:'cruise',
           slRaw:0, slOfs:0, slNext:0, slNextD:0,
           bsdL:false, bsdR:false, blkL:false, blkR:false, blinkL:false, blinkR:false,
@@ -515,6 +574,99 @@ if(!new URLSearchParams(location.search).has('play')){
   (document.getElementById('dash')||document.body).appendChild(t);
   setConn('offline');
 }
+
+/* ═════ 顯示平滑：SSE 10 Hz 進來，畫面用 rAF 插值，目標才不會一格一格跳 ═════ */
+const SM_TAU = 0.13;        // 秒。越大越穩、跟得越慢
+const SM_GATE = 6;          // 公尺。兩幀之間距離差在這之內視為同一個目標
+let targetF = null, shownF = null, lastT = 0;
+
+function matchLeads(prev, next, dt){
+  const used = new Set();
+  const a = 1 - Math.exp(-dt / SM_TAU);
+  return next.map(n => {
+    let best = -1, bestD = SM_GATE;
+    if(n.id != null){                                      // 後端給了穩定 id 就照 id 接
+      best = prev.findIndex((p, i) => !used.has(i) && p.id === n.id);
+    }
+    if(best < 0){
+      prev.forEach((p, i) => {
+        if(used.has(i) || !!p.main !== !!n.main) return;
+        const dd = Math.hypot(p.d - n.d, (p.y - n.y) * 2); // 橫向抖動加倍看待
+        if(dd < bestD){ bestD = dd; best = i; }
+      });
+    }
+    if(best < 0) return Object.assign({}, n);              // 新目標：直接就位，不從別處滑過來
+    used.add(best);
+    const p = prev[best];
+    return Object.assign({}, n, {d: p.d + (n.d - p.d) * a,
+                                 y: p.y + (n.y - p.y) * a,
+                                 v: p.v + (n.v - p.v) * a});
+  });
+}
+
+const LANE_W = 3.5;        // m, 與 radar_tracker 同一個值
+const ROAD_TAU = 0.08;      // 秒。路面的平滑；停下來時模型輸出更吵，下面會再放寬
+function lerpArr(prev, next, a){
+  if(!prev || !next || prev.length !== next.length) return next;
+  const out = new Array(next.length);
+  for(let i = 0; i < next.length; i++) out[i] = prev[i] + (next[i] - prev[i]) * a;
+  return out;
+}
+function smoothRoad(prev, next, a){
+  if(!prev) return next;
+  return {
+    path: lerpArr(prev.path, next.path, a),
+    lanes: (next.lanes || []).map((l, i) => {
+      const q = (prev.lanes || [])[i];
+      return q ? {y: lerpArr(q.y, l.y, a), p: q.p + (l.p - q.p) * a} : l;
+    }),
+    edges: (next.edges || []).map((e, i) => {
+      const q = (prev.edges || [])[i];
+      return q ? {y: lerpArr(q.y, e.y, a), s: q.s + (e.s - q.s) * a} : e;
+    }),
+  };
+}
+
+function tick(ts){
+  requestAnimationFrame(tick);
+  if(!targetF) return;
+  const dt = lastT ? Math.min((ts - lastT) / 1000, 0.25) : 0.016;
+  lastT = ts;
+  // 車停著時模型的車道線一樣在跳，而那時根本不需要跟得快，所以放寬平滑
+  const slow = (targetF.vEgo || 0) < 3;
+  const ra = 1 - Math.exp(-dt / (ROAD_TAU * (slow ? 3 : 1)));
+  if(!shownF){
+    shownF = Object.assign({}, targetF, {leads: (targetF.leads || []).map(l => Object.assign({}, l))});
+  } else {
+    const road = smoothRoad(shownF, targetF, ra);
+    shownF = Object.assign({}, targetF, road,
+                           {leads: matchLeads(shownF.leads || [], targetF.leads || [], dt)});
+  }
+  render(shownF);
+}
+requestAnimationFrame(tick);
+
+function showFrame(F){ targetF = F; }          // 走平滑那條路
+function resetSmooth(){ shownF = null; lastT = 0; }
+
+/* ═════ 待機畫面控制 ═════ */
+let lastData = 0;
+function showStandbyScreen(msg, ok){
+  const el=document.getElementById('standby'); if(!el) return;
+  el.style.display='flex';
+  const m=document.getElementById('standby-msg');
+  if(m && msg) m.innerHTML = ok ? `<span class="ok">${msg}</span>` : msg;
+}
+function hideStandbyScreen(){
+  const el=document.getElementById('standby'); if(el) el.style.display='none';
+}
+setInterval(()=>{                       // 時鐘 ＋ SSE 停送資料的看門狗
+  const c=document.getElementById('clock');
+  if(c){ const t=new Date(); c.textContent=`${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`; }
+  if(es && lastData && Date.now()-lastData>5000){   // 連線還在但資料停了：畫面不能continue顯示過時數值
+    lastData=0; setConn('standby'); showIdle(); showStandbyScreen('已連線，openpilot 待機','ok');
+  }
+}, 1000);
 
 /* ═════ 即時資料（SSE，來自 C4 的 sp-hud :8902）═════ */
 const KPH=3.6;
@@ -558,9 +710,16 @@ function fromSSE(J){
     alert1: ss.alertText1||'', alert2: ss.alertText2||'', alertStatus: ss.alertStatus||'normal',
     stop: !!ct.stop, stopD: ct.stopDistance||0, leads:[], lanes:[], edges:[], path:[],
   };
-  (rs.leads||[]).forEach((L,i)=>{        // leadOne / leadTwo（同車道，第二台在更前面）
+  (rs.leads||[]).forEach((L,i)=>{
     if(!L.status) return;
-    F.leads.push({d:L.dRel||0, y:-(L.yRel||0), v:kph(L.vRel), radar:true, main:i===0});
+    if(i===1) return;                    // leadTwo 不是第二台車，是 leadOne 同一台的另一組估計
+    // 橫向量測在 30 m 外約有 1.5 m 雜訊，而且會隨接近往中間漂。既然車道已經判出來了，
+    // 就把同向車往所屬車道中心拉一部分，位置才不會在車道之間游移。對向車不動。
+    let y = -(L.yRel || 0);
+    if(!L.oncoming && L.laneN != null) y = y * 0.55 + (-L.laneN * LANE_W) * 0.45;
+    F.leads.push({d:L.dRel||0, y:y, v:kph(L.vRel), radar:!!L.radar,
+                  coast:!!L.coast, onc:!!L.oncoming, lane:L.lane||'', main:i===0,
+                  id:(L.id!=null?'r'+L.id:(i===0?'lead':null))});
   });
   if(mv && mv.lanes){ F.lanes=mv.lanes; F.edges=mv.edges; F.path=mv.path;
                       if(mv.d && mv.d.length) SAMPLE_D=mv.d; }
@@ -592,14 +751,17 @@ async function connect(){
         es=new EventSource(`http://${h}:8902/stream`);
         es.onmessage=ev=>{
           try{ const F=fromSSE(JSON.parse(ev.data));
-               if(F){ stopDemo(); setConn('live'); render(F); } else { setConn('standby'); showIdle(); } }
+               lastData=Date.now();
+               if(F){ stopDemo(); hideStandbyScreen(); setConn('live'); showFrame(F); }
+               else { setConn('standby'); showIdle(); showStandbyScreen('已連線，openpilot 待機','ok'); } }
           catch(e){ window.__hudErr&&window.__hudErr('SSE '+(e&&e.message||e)); }
         };
-        es.onerror=()=>{ if(es){es.close(); es=null;} setConn('offline'); showIdle(); setTimeout(connect,1500); };
+        es.onerror=()=>{ if(es){es.close(); es=null;} lastData=0; setConn('offline'); showIdle(); showStandbyScreen('連線中斷，重試中…'); setTimeout(connect,1500); };
         return;
       }
     }
     setConn('offline');
+    showStandbyScreen('找不到 openpilot，重試中…');
     await new Promise(r=>setTimeout(r,3000));
   }
 }
@@ -614,6 +776,8 @@ async function updateNet(){
     const ssid=j.ssid||'', host=window.__esHost||j.c4||(j.hosts&&j.hosts[0])||'';
     window.__selfIp = j.self||'';
     el.textContent=[ssid, host].filter(Boolean).join('  ·  ');
+    const sb=document.getElementById('standby-net');
+    if(sb) sb.textContent=[j.self?'本機 '+j.self:'', host?'車機 '+host:''].filter(Boolean).join('   ·   ');
     setConn(window.__connState||'offline');
   }catch(e){ el.textContent = window.__esHost || ''; }
 }
@@ -621,6 +785,7 @@ updateNet(); setInterval(updateNet, 15000);
 
 /* ═════ 回放 ═════ */
 if(new URLSearchParams(location.search).has('play')){
+  hideStandbyScreen();
   fetch('playback.json').then(r=>{ if(!r.ok) throw new Error('playback.json HTTP '+r.status); return r.json(); }).then(J=>{
     SAMPLE_D=J.d; const F=J.f;
     const tag=document.createElement('div');

@@ -4,11 +4,38 @@ radard is handed a single target so that a guardrail cannot be mistaken for the 
 ahead, which means the cars either side never reach the display. The full track list is
 on the bus regardless, so the HUD reads it here. Nothing in this file controls the car.
 
-bus 1, 0x238-0x255, 33 Hz, 8 bytes:
+The 30 addresses are 10 targets of three messages each, not 30 separate tracks. Only the
+first of each three carries the position: its FLAG byte stays 0 and its azimuth stays inside
+about a quarter of the field, while the other two swing across the full +-1024 and their
+range column sits in a narrow band. Sampled over 20 s of driving, the valid-frame counts of
+0x238 and 0x239 match exactly (664/664) and the pattern repeats every three addresses, which
+is what gives the grouping away. Reading all 30 produced two fake targets for every real one,
+which is what made the display look nothing like traffic.
+
+bus 1, 0x238 + 3n (n = 0..9), 33 Hz, 8 bytes:
   FLAG      bit 0-1
   LONG_DIST bit 2-11    x 0.1 m
-  AZIMUTH   bit 18-28   signed, x 0.0388 deg
+  AZIMUTH   bit 18-28   signed, x 0.0388 deg  (known wrong, see below)
   V_ABS     bit 34-44   signed, the target's own speed rather than a relative one
+
+The azimuth field is wrong and we could not settle it on 2026-08-27. It barely moves as a
+target closes in, so yRel degenerates into a fixed fraction of the range and every target
+slides toward the centre of the screen on approach. Measured over 108 tracks its |dy/dd| is
+0.20, and it ranks 157th of 268 bit-field candidates.
+
+Two searches failed to replace it. Fitting against the vision lead's yRel tops out at r=0.65,
+because leadOne sits within half a metre of dead ahead almost the whole time. A
+self-consistency search (score each candidate by how little the computed yRel drifts with
+range) picked bit 26 at 0.05 deg and scored 0.042, but on the road it put oncoming traffic on
+our right: 74 frames right against 34 left, where the field in use here gets 187 left against
+6. Squeezing every target toward the centre line also satisfies "yRel does not drift with
+range", which is what that search actually found.
+
+What is missing is a target well off to one side for long enough to fit against. Every log to
+hand is slow city driving with the traffic within a couple of metres of our own lane, and
+vision offers no ground truth out there either: leadsV3 only reports lead candidates, and its
+y stayed inside -3.2..+1.4 m across a whole segment. Settle this with a highway run where a
+car holds station in the next lane for a few seconds.
 
 The list carries no relative speed, so it comes from a least squares fit of range over a
 short window, which measured to 0.33 m/s against the stock ACC's own target.
@@ -16,7 +43,7 @@ short window, which measured to 0.33 m/s against the stock ACC's own target.
 import math
 from collections import deque
 
-RADAR_ADDRS = list(range(0x238, 0x256))
+RADAR_ADDRS = list(range(0x238, 0x256, 3))   # 10 targets, three addresses each
 AZ_SCALE = 0.0388        # deg per LSB, from video geometry
 V_SCALE = 0.02526        # m/s per LSB
 V_OFFSET = 2.587         # m/s. Both calibrated against the stock ACC, r=0.949
@@ -87,11 +114,14 @@ class RadarTracker:
     self.slots = {a: Slot() for a in RADAR_ADDRS}
 
   def on_can(self, addr, data, t):
+    sl = self.slots.get(addr)      # the two companion addresses of each target are not tracks
+    if sl is None:
+      return
     m = parse_track(data)
     if m is None:
-      self.slots[addr].reset()
+      sl.reset()
     else:
-      self.slots[addr].update(m, t)
+      sl.update(m, t)
 
   def points(self, v_ego):
     """[(addr, dRel, yRel, vRel, is_static)]"""
@@ -122,6 +152,9 @@ def cluster(pts, d_tol=4.0, y_tol=2.2, v_tol=6.0):
   return groups
 
 
+LANE_NAME = {-2: '右右', -1: '右', 0: '前', 1: '左', 2: '左左'}
+
+
 def lane_of(y_rel):
   if y_rel > 5.4:
     return '左左'
@@ -132,6 +165,10 @@ def lane_of(y_rel):
   if y_rel < -1.8:
     return '右'
   return '前'
+
+
+def lane_index(y_rel):
+  return max(-2, min(2, int(round(y_rel / LANE_W))))
 
 
 def relevant(groups, v_ego):
@@ -145,6 +182,98 @@ def relevant(groups, v_ego):
     if g['dRel'] < MIN_RANGE:
       continue
     g['lane'] = lane_of(g['yRel'])
-    g['oncoming'] = g['vRel'] < -(v_ego * 0.6)
+    g['oncoming'] = (g['vRel'] + v_ego) < ONCOMING_V   # 目標自己在倒著走 = 對向車
     out.append(g)
   return sorted(out, key=lambda g: g['dRel'])
+
+# ── 顯示用的目標生命週期管理 ───────────────────────────────────────────────
+# 每一格單獨算出來的 group 沒有身分：雷達 slot 會抖，同一台車在相鄰兩格可能落在不同
+# slot，靠近 STATIC_TH 的目標也會在「靜止/移動」之間進出，所以直接畫出來會一直閃。
+# 量測 12 秒的輸出：25 個目標裡有 11 個活不到 0.5 秒。這裡做的是量產雷達那三件事:
+# 關聯給 id、連續命中才確認、掉格先滑行保持。
+CONFIRM_HITS = 3         # 連續出現這麼多格才上畫面
+COAST_MISS = 3           # 掉格容忍格數，10 Hz 下約 0.3 秒
+ASSOC_D = 4.5            # 關聯門檻，公尺
+ASSOC_Y = 2.5            # 關聯門檻，橫向公尺
+V_SMOOTH = 0.35          # vRel 的低通，擬合窗口剛換時會噴尖峰
+Y_SMOOTH = 0.2           # yRel 的低通。角度量到的橫向在 30 m 外約有 1.5 m 的雜訊，
+                         # 壓得比距離兇一點才不會讓目標在車道之間游移
+LANE_W = 3.5             # m, 一般車道寬
+LANE_HYST = 0.7          # m, 要越過中線這麼多才改判車道，免得騎在線上的目標一直跳
+ONCOMING_V = -2.0        # m/s, 絕對速度低於此 = 逆向而來。用絕對速度判，不是相對速度：
+                         # 對向車的 vRel 跟「前方有車在急煞」一模一樣，只看相對速度會混淆
+COAST_SHIFT = 2.0        # 掉格期間最多外推這麼多公尺。橫向沒有速度可推，只推縱向的話
+                         # 目標會沿著固定的橫向位置直直逼近本車，對向車尤其明顯
+
+
+class Target:
+  __slots__ = ('id', 'dRel', 'yRel', 'vRel', 'lane', 'lane_n', 'oncoming', 'hits', 'misses', 'shift')
+
+  def __init__(self, tid, g):
+    self.id = tid
+    self.dRel = g['dRel']
+    self.yRel = g['yRel']
+    self.vRel = g['vRel']
+    self.lane = g.get('lane', '前')
+    self.lane_n = lane_index(self.yRel)
+    self.oncoming = g.get('oncoming', False)
+    self.hits = 1
+    self.misses = 0
+    self.shift = 0.0
+
+  def absorb(self, g):
+    self.dRel = g['dRel']
+    self.yRel = (1 - Y_SMOOTH) * self.yRel + Y_SMOOTH * g['yRel']
+    self.vRel = (1 - V_SMOOTH) * self.vRel + V_SMOOTH * g['vRel']
+    want = lane_index(self.yRel)
+    if want != self.lane_n and abs(self.yRel - self.lane_n * LANE_W) > LANE_W / 2 + LANE_HYST:
+      self.lane_n = want                 # 只有真的越過中線一段距離才改判
+    self.lane = LANE_NAME[self.lane_n]
+    self.oncoming = g.get('oncoming', False)
+    self.hits += 1
+    self.misses = 0
+    self.shift = 0.0
+
+
+class TargetTracker:
+  def __init__(self):
+    self.targets = []
+    self._next_id = 1
+
+  def update(self, groups, dt):
+    for t in self.targets:                       # 掉格的先用相對速度往前推
+      step = t.vRel * dt
+      if t.misses > 0:                           # 已經在掉格：外推要封頂，否則會被推著撞過來
+        room = COAST_SHIFT - abs(t.shift)
+        step = 0.0 if room <= 0 else max(-room, min(room, step))
+        t.shift += step
+      t.dRel += step
+
+    used = set()
+    for g in groups:
+      best, score = None, 1e9
+      for t in self.targets:
+        if id(t) in used:
+          continue
+        dd, dy = abs(t.dRel - g['dRel']), abs(t.yRel - g['yRel'])
+        if dd > ASSOC_D or dy > ASSOC_Y:
+          continue
+        if dd + dy * 2 < score:
+          score, best = dd + dy * 2, t
+      if best is None:
+        best = Target(self._next_id, g)
+        self._next_id += 1
+        self.targets.append(best)
+      else:
+        best.absorb(g)
+      used.add(id(best))
+
+    for t in self.targets:
+      if id(t) not in used:
+        t.misses += 1
+
+    self.targets = [t for t in self.targets if t.misses <= COAST_MISS]
+    return [t for t in self.targets if t.hits >= CONFIRM_HITS]
+
+  def reset(self):
+    self.targets = []
