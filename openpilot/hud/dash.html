@@ -493,6 +493,17 @@ function startDemo(){
   showDemo(); demoTimer=setInterval(showDemo, 7000);
 }
 function stopDemo(){ if(demoTimer && demoTimer!==-1) clearInterval(demoTimer); demoTimer=null; }
+
+// openpilot is not driving: show nothing rather than a demo that looks like live data
+function showIdle(){
+  stopDemo();
+  render({vEgo:0, vCruise:0, engaged:false, road:'', src:'cruise',
+          slRaw:0, slOfs:0, slNext:0, slNextD:0,
+          bsdL:false, bsdR:false, blkL:false, blkR:false, blinkL:false, blinkR:false,
+          aT:0, tq:0, sat:false, lDes:0, lAct:0,
+          alert1:'', alert2:'', alertStatus:'normal',
+          stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[]});
+}
 window.render=render; window.DEMOS=DEMOS;
 
 // 待機標示：接上 SSE 之前告訴看的人「這不是即時資料」
@@ -501,9 +512,8 @@ if(!new URLSearchParams(location.search).has('play')){
   t.id='__demoTag';
   t.style.cssText='position:absolute;top:300px;right:20px;font-size:11.5px;color:#5a6b7c;'+
                   'z-index:9;letter-spacing:.3px;font-weight:600;text-align:right;line-height:1.5';
-  t.textContent='展示模式 · 尚未連線車機';
   (document.getElementById('dash')||document.body).appendChild(t);
-  startDemo();
+  setConn('offline');
 }
 
 /* ═════ 即時資料（SSE，來自 C4 的 sp-hud :8902）═════ */
@@ -564,7 +574,10 @@ function setConn(state, extra){           // live / standby / offline
   const t=document.getElementById('__demoTag'); if(!t) return;
   const base = state==='live' ? '' :
                state==='standby' ? '已連線 · 車輛待機' : '尚未連線車機';
-  t.innerHTML = [base, window.__demoLabel||''].filter(Boolean).join('<br>');
+  const where = state==='live' ? '' :
+                [window.__selfIp ? '本機 ' + window.__selfIp : '',
+                 window.__esHost ? '車機 ' + window.__esHost : ''].filter(Boolean).join(' · ');
+  t.innerHTML = [base, where, window.__demoLabel||''].filter(Boolean).join('<br>');
   t.style.color = state==='standby' ? '#5a8a66' : '#5a6b7c';
 }
 
@@ -579,10 +592,10 @@ async function connect(){
         es=new EventSource(`http://${h}:8902/stream`);
         es.onmessage=ev=>{
           try{ const F=fromSSE(JSON.parse(ev.data));
-               if(F){ stopDemo(); setConn('live'); render(F); } else { setConn('standby'); startDemo(); } }
+               if(F){ stopDemo(); setConn('live'); render(F); } else { setConn('standby'); showIdle(); } }
           catch(e){ window.__hudErr&&window.__hudErr('SSE '+(e&&e.message||e)); }
         };
-        es.onerror=()=>{ if(es){es.close(); es=null;} setConn('offline'); startDemo(); setTimeout(connect,1500); };
+        es.onerror=()=>{ if(es){es.close(); es=null;} setConn('offline'); showIdle(); setTimeout(connect,1500); };
         return;
       }
     }
@@ -599,7 +612,9 @@ async function updateNet(){
     const r=await fetch('/host.json',{cache:'no-store'});
     const j=await r.json();
     const ssid=j.ssid||'', host=window.__esHost||j.c4||(j.hosts&&j.hosts[0])||'';
+    window.__selfIp = j.self||'';
     el.textContent=[ssid, host].filter(Boolean).join('  ·  ');
+    setConn(window.__connState||'offline');
   }catch(e){ el.textContent = window.__esHost || ''; }
 }
 updateNet(); setInterval(updateNet, 15000);

@@ -5,7 +5,7 @@ The C4's IP is dynamic (phone hotspot DHCP), so hardcoding hosts doesn't work.
 A background thread scans the Pi's local subnets for an open sp_hud port (8902)
 and exposes the result at /host.json for the HUD page (same origin, no CORS).
 
-  GET /host.json  -> {"hosts": ["<found-ip>", ...fallbacks]}
+  GET /host.json  -> {"hosts": ["<found-ip>", ...fallbacks], "self": "<this pi's ip>"}
   GET /<file>     -> static files from this script's directory
 """
 import ipaddress
@@ -28,6 +28,16 @@ CACHE_FILE = HUD_DIR / "last_host.txt"
 _found: str | None = None
 _ssid: str = ""
 _lock = threading.Lock()
+
+
+def own_ip() -> str:
+  """This Pi's own address, so the screen can say where to reach it."""
+  try:
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+      s.connect(("8.8.8.8", 1))   # nothing is sent; this just picks the outbound interface
+      return s.getsockname()[0]
+  except OSError:
+    return ""
 
 
 def read_ssid() -> str:
@@ -127,7 +137,8 @@ class Handler(SimpleHTTPRequestHandler):
         found = _found
         ssid = _ssid
       hosts = ([found] if found else []) + [h for h in FALLBACK_HOSTS if h != found]
-      body = json.dumps({"hosts": hosts, "ssid": ssid, "c4": found or ""}).encode()
+      body = json.dumps({"hosts": hosts, "ssid": ssid, "c4": found or "",
+                         "self": own_ip()}).encode()
       self.send_response(200)
       self.send_header("Content-Type", "application/json")
       self.send_header("Cache-Control", "no-store")

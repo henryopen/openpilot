@@ -73,6 +73,7 @@
   #standby { display: flex; width: 100%; height: 100%; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
   #clock { font-size: 130px; font-weight: 800; letter-spacing: -3px; font-variant-numeric: tabular-nums; }
   #standby-msg { font-size: 24px; color: var(--dim); }
+  #standby-net { font-size: 26px; font-weight: 700; color: #7fb4e8; letter-spacing: 1px; font-variant-numeric: tabular-nums; }
   #standby-msg .ok { color: var(--green); }
 </style>
 </head>
@@ -80,6 +81,7 @@
   <div id="standby">
     <div id="clock">--:--</div>
     <div id="standby-msg">連線中…</div>
+    <div id="standby-net"></div>
   </div>
 
   <div id="hud">
@@ -123,6 +125,7 @@ async function getHosts() {   // C4 IP 是動態的（手機熱點 DHCP），由
   try {
     const r = await fetch("/host.json", { cache: "no-store" });
     const j = await r.json();
+    setNet(j.self || "", j.hosts && j.hosts[0] || "");
     if (j.hosts && j.hosts.length) return j.hosts;
   } catch {}
   return FALLBACK_HOSTS;
@@ -132,6 +135,12 @@ let es = null, lastData = 0;
 
 const $ = id => document.getElementById(id);
 const kph = v => Math.round((v || 0) * KPH);
+
+function setNet(self, c4) {
+  const el = $("standby-net");
+  if (!el) return;
+  el.textContent = [self ? "本機 " + self : "", c4 ? "車機 " + c4 : ""].filter(Boolean).join("   ·   ");
+}
 
 function showStandby(msg, cls) {
   $("hud").classList.remove("on");
