@@ -15,27 +15,24 @@ which is what made the display look nothing like traffic.
 bus 1, 0x238 + 3n (n = 0..9), 33 Hz, 8 bytes:
   FLAG      bit 0-1
   LONG_DIST bit 2-11    x 0.1 m
-  AZIMUTH   bit 18-28   signed, x 0.0388 deg  (known wrong, see below)
+  LAT_DIST  bit 18-28   signed, x -0.0178 m   (not an angle, see below)
   V_ABS     bit 34-44   signed, the target's own speed rather than a relative one
 
-The azimuth field is wrong and we could not settle it on 2026-08-27. It barely moves as a
-target closes in, so yRel degenerates into a fixed fraction of the range and every target
-slides toward the centre of the screen on approach. Measured over 108 tracks its |dy/dd| is
-0.20, and it ranks 157th of 268 bit-field candidates.
+This field was read as an azimuth at 0.0388 deg per LSB until 2026-08-27. It is not an
+angle, it is the lateral offset itself. Taking it for an angle and multiplying by range
+made yRel proportional to range, so every target slid toward the centre as it came closer,
+on the plan view as much as in perspective.
 
-Two searches failed to replace it. Fitting against the vision lead's yRel tops out at r=0.65,
-because leadOne sits within half a metre of dead ahead almost the whole time. A
-self-consistency search (score each candidate by how little the computed yRel drifts with
-range) picked bit 26 at 0.05 deg and scored 0.042, but on the road it put oncoming traffic on
-our right: 74 frames right against 34 left, where the field in use here gets 187 left against
-6. Squeezing every target toward the centre line also satisfies "yRel does not drift with
-range", which is what that search actually found.
+Three frames from seg16 of route b7ed007484 have the answer, measured off the camera
+footage: the lead 30.4 m ahead at -0.44 deg, a motorcycle to our left at 24.0 m and
+-8.6 deg, another at 33.5 m and -4.8 deg. Read as a lateral offset the field fits all
+three to within a quarter of a metre with one constant, -0.0178 m per LSB. Read as an
+angle the same three want scales of 0.0408, 0.0336 and -0.04 - the last one disagreeing
+in sign, which is the mismatch FIELD_MAP.md recorded as "lead truth -0.44 deg, decoded
++0.43 deg" and never resolved.
 
-What is missing is a target well off to one side for long enough to fit against. Every log to
-hand is slow city driving with the traffic within a couple of metres of our own lane, and
-vision offers no ground truth out there either: leadsV3 only reports lead candidates, and its
-y stayed inside -3.2..+1.4 m across a whole segment. Settle this with a highway run where a
-car holds station in the next lane for a few seconds.
+Eleven signed bits at this scale reach about +-18 m, which covers the field of view. The
+range field stays a slant range, so the longitudinal distance is the leg of the triangle.
 
 The list carries no relative speed, so it comes from a least squares fit of range over a
 short window, which measured to 0.33 m/s against the stock ACC's own target.
@@ -44,7 +41,7 @@ import math
 from collections import deque
 
 RADAR_ADDRS = list(range(0x238, 0x256, 3))   # 10 targets, three addresses each
-AZ_SCALE = 0.0388        # deg per LSB, from video geometry
+Y_SCALE = -0.0178        # m per LSB, fitted to three camera-measured targets
 V_SCALE = 0.02526        # m/s per LSB
 V_OFFSET = 2.587         # m/s. Both calibrated against the stock ACC, r=0.949
 WIN = 12                 # ~0.36 s at 33 Hz
@@ -68,9 +65,11 @@ def parse_track(d):
   rng = _ext(d, 2, 10) * 0.1
   if rng <= 0.5:
     return None
-  az = math.radians(_ext(d, 18, 11, True) * AZ_SCALE)
+  y = _ext(d, 18, 11, True) * Y_SCALE
+  y = max(-rng, min(rng, y))            # lateral cannot exceed the slant range
+  x = math.sqrt(max(0.0, rng * rng - y * y))
   v_abs = _ext(d, 34, 11, True) * V_SCALE + V_OFFSET
-  return {"rng": rng, "dRel": math.cos(az) * rng, "yRel": -math.sin(az) * rng, "vAbs": v_abs}
+  return {"rng": rng, "dRel": x, "yRel": y, "vAbs": v_abs}
 
 
 class Slot:
