@@ -26,14 +26,13 @@ from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.modeld.constants import ModelConstants
-from openpilot.hud.radar_tracker import RadarTracker, TargetTracker, cluster, relevant
+from openpilot.hud.radar_tracker import RadarReader, TargetTracker, relevant
 
 PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "modelV2", "carControl",
             "longitudinalPlan", "controlsState"]
 
 KPH_TO_MS = 1 / 3.6
-RADAR_FIRST, RADAR_LAST = 0x238, 0x255   # the front radar's track list, on bus 1
 
 # modelV2 的線是 33 個不等距點；降取樣成固定距離，HUD 夠用又不會塞爆 SSE
 SAMPLE_X = [0, 5, 12, 20, 30, 45, 60, 80, 95, 110]
@@ -159,16 +158,15 @@ def _lead(lead):
   }
 
 
-def _radar_targets(tracker, targets, v_ego, dt):
+def _radar_targets(points, targets, v_ego, dt):
   """Everything the radar sees, not just the one target being followed.
 
-  radard only ever hands out two leads and they are both in our own lane, so the
-  cars either side never reach the display. The tracks are on bus 1 anyway, so read
-  them here. This is display only: what actually controls the car is still the
-  single target radard picked.
+  radard only ever hands out two leads and they are both in our own lane, so the cars
+  either side never reach the display. The decode is opendbc's, the same one that feeds
+  the car; what happens here is only the picking and smoothing a display needs.
   """
   try:
-    groups = relevant(cluster(tracker.points(v_ego)), v_ego)
+    groups = relevant(points, v_ego)
     return [
       {"status": True,
        "id": t.id,                        # stable across frames, so the page can follow one car
@@ -254,7 +252,7 @@ def poll_loop():
   params = Params()
   mem_params = Params("/dev/shm/params")
   can_sock = messaging.sub_sock("can", timeout=20)
-  tracker = RadarTracker()
+  radar = RadarReader()   # opendbc's own dbc and thresholds, so there is only one decode
   targets = TargetTracker()
   last_target_t = time.monotonic()
   edges = RoadEdgeLaneChangeController()
@@ -264,10 +262,7 @@ def poll_loop():
     onroad = sm.alive["carState"]
 
     now = time.monotonic()
-    for msg in messaging.drain_sock(can_sock):
-      for c in msg.can:
-        if c.src == 1 and RADAR_FIRST <= c.address <= RADAR_LAST:
-          tracker.on_can(c.address, bytes(c.dat), now)
+    radar_points = radar.update(messaging.drain_sock_raw(can_sock), now)
     data["standby"] = not onroad
     if not onroad:
       edges.reset()
@@ -279,7 +274,7 @@ def poll_loop():
         data["radarState"] = _radar_state(sm["radarState"])
         dt = max(1e-3, min(0.5, now - last_target_t))
         last_target_t = now
-        others = _radar_targets(tracker, targets, float(sm["carState"].vEgo), dt)
+        others = _radar_targets(radar_points, targets, float(sm["carState"].vEgo), dt)
         # radard's leads come first, so the page still treats the followed car as the main one
         followed = data["radarState"]["dRel"] if data["radarState"]["leadStatus"] else None
         data["radarState"]["leads"] += [t for t in others

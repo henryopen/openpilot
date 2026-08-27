@@ -1,151 +1,55 @@
-"""Read the Custin's front radar track list off bus 1, for display only.
+"""Pick out and steady the radar's other targets, for display only.
 
-radard is handed a single target so that a guardrail cannot be mistaken for the car
-ahead, which means the cars either side never reach the display. The full track list is
-on the bus regardless, so the HUD reads it here. Nothing in this file controls the car.
+radard is handed a single target so that a guardrail cannot be mistaken for the car ahead,
+which means the cars either side never reach the display. The full track list is on the bus
+regardless, so this reads it here.
 
-The 30 addresses are 10 targets of three messages each, not 30 separate tracks. Only the
-first of each three carries the position: its FLAG byte stays 0 and its azimuth stays inside
-about a quarter of the field, while the other two swing across the full +-1024 and their
-range column sits in a narrow band. Sampled over 20 s of driving, the valid-frame counts of
-0x238 and 0x239 match exactly (664/664) and the pattern repeats every three addresses, which
-is what gives the grouping away. Reading all 30 produced two fake targets for every real one,
-which is what made the display look nothing like traffic.
-
-bus 1, 0x238 + 3n (n = 0..9), 33 Hz, 8 bytes:
-  FLAG      bit 0-1
-  LONG_DIST bit 2-11    x 0.1 m
-  AZIMUTH   bit 18-28   signed, x 0.0388 deg
-  V_ABS     bit 34-44   signed, the target's own speed rather than a relative one
-
-On 2026-08-27 this field was briefly re-read as a lateral offset rather than an angle,
-because targets appeared to drift toward the centre of the screen as they approached and
-the offset model made that go away. It was wrong. Replaying the logs and comparing the
-radar's own lateral figure against the vision lead on the same car puts the angle within
-0.01 m over 1170 frames in town, where the offset model sits 0.43 m out and is the closer
-of the two in only 12% of frames.
-
-The three camera-measured targets used to justify the change could not tell the two apart:
-their slant ranges were 24.0, 33.5 and 30.4 m, and over so narrow a span sin(raw*s)*rng and
-raw*k have the same shape. The one frame that could have separated them, the lead at
--0.44 deg, was set aside as a measurement error. It was the only real evidence there.
-
-The list carries no relative speed, so it comes from a least squares fit of range over a
-short window, which measured to 0.33 m/s against the stock ACC's own target.
+The decode is not repeated: the dbc, the slot handling and the thresholds all come from
+opendbc, the same ones that feed the car, and only the choice of which targets to show is
+made here. Nothing in this file controls the car.
 """
 import math
-from collections import deque
 
-RADAR_ADDRS = list(range(0x238, 0x256, 3))   # 10 targets, three addresses each
-AZ_SCALE = 0.0388        # deg per LSB, from video geometry
-V_SCALE = 0.02526        # m/s per LSB
-V_OFFSET = 2.587         # m/s. Both calibrated against the stock ACC, r=0.949
-WIN = 12                 # ~0.36 s at 33 Hz
-MIN_N = 6
+from opendbc.can import CANParser
+from openpilot.selfdrive.pandad.pandad_api_impl import can_capnp_to_list
+from opendbc.car.hyundai.radar_interface import (CUSTIN_MIN_HITS, CUSTIN_MIN_RANGE,
+                                                 CUSTIN_MIN_SCORE, CUSTIN_RADAR_ADDRS,
+                                                 CustinSlot)
 
 LANE_HALF = 5.5          # keep this lane and the two beside it; roadside sits outside
 STATIC_TH = 2.5          # |vRel + vEgo| under this is something standing still
 MIN_RANGE = 2.0          # closer than this is bumper clutter
 
-
-def _ext(d, off, ln, sg=False):
-  v = int.from_bytes(d, 'big')
-  sh = 64 - off - ln
-  r = (v >> sh) & ((1 << ln) - 1)
-  if sg and r >= (1 << (ln - 1)):
-    r -= (1 << ln)
-  return r
-
-
-def parse_track(d):
-  rng = _ext(d, 2, 10) * 0.1
-  if rng <= 0.5:
-    return None
-  az = math.radians(_ext(d, 18, 11, True) * AZ_SCALE)
-  v_abs = _ext(d, 34, 11, True) * V_SCALE + V_OFFSET
-  return {"rng": rng, "dRel": math.cos(az) * rng, "yRel": -math.sin(az) * rng, "vAbs": v_abs}
-
-
-class Slot:
-  __slots__ = ('buf', 'y')
-
-  def __init__(self):
-    self.buf = deque(maxlen=WIN)
-    self.y = 0.0
-
-  def reset(self):
-    self.buf.clear()
-
-  def update(self, m, t):
-    b = self.buf
-    if b and (t - b[-1][0] > 0.2 or abs(m['dRel'] - b[-1][1]) > 3.0):
-      b.clear()
-    b.append((t, m['dRel']))
-    self.y = m['yRel'] if len(b) == 1 else 0.7 * self.y + 0.3 * m['yRel']
-
-  def solve(self):
-    """Range and its rate over the window, or None if there is not enough to fit."""
-    b = self.buf
-    if len(b) < MIN_N:
-      return None
-    if len({round(r, 1) for _, r in b}) == 1:   # a range that never moves is a stale slot
-      return None
-    ts = [p[0] for p in b]
-    rs = [p[1] for p in b]
-    n = len(b)
-    mt = sum(ts) / n
-    mr = sum(rs) / n
-    sxx = sum((t - mt) ** 2 for t in ts)
-    if sxx <= 0:
-      return None
-    v = sum((t - mt) * (r - mr) for t, r in zip(ts, rs, strict=True)) / sxx
-    return mr + v * (ts[-1] - mt), v
-
-
-class RadarTracker:
-  def __init__(self):
-    self.slots = {a: Slot() for a in RADAR_ADDRS}
-
-  def on_can(self, addr, data, t):
-    sl = self.slots.get(addr)      # the two companion addresses of each target are not tracks
-    if sl is None:
-      return
-    m = parse_track(data)
-    if m is None:
-      sl.reset()
-    else:
-      sl.update(m, t)
-
-  def points(self, v_ego):
-    """[(addr, dRel, yRel, vRel, is_static)]"""
-    out = []
-    for a, sl in self.slots.items():
-      s = sl.solve()
-      if s is None:
-        continue
-      d, v = s
-      out.append((a, d, sl.y, v, abs(v + v_ego) < STATIC_TH))
-    return out
-
-
-def cluster(pts, d_tol=4.0, y_tol=2.2, v_tol=6.0):
-  """One car lights up several slots, so merge the ones sitting on top of each other."""
-  groups = []
-  for p in sorted(pts, key=lambda q: q[1]):
-    for g in groups:
-      if abs(g['dRel'] - p[1]) < d_tol and abs(g['yRel'] - p[2]) < y_tol and abs(g['vRel'] - p[3]) < v_tol:
-        g['members'].append(p)
-        n = len(g['members'])
-        g['dRel'] = sum(m[1] for m in g['members']) / n
-        g['yRel'] = sum(m[2] for m in g['members']) / n
-        g['vRel'] = sum(m[3] for m in g['members']) / n
-        break
-    else:
-      groups.append({"dRel": p[1], "yRel": p[2], "vRel": p[3], "members": [p]})
-  return groups
-
-
 LANE_NAME = {-2: '右右', -1: '右', 0: '前', 1: '左', 2: '左左'}
+
+
+class RadarReader:
+  """Every track on the bus, decoded with opendbc's own dbc and thresholds."""
+
+  def __init__(self):
+    self.rcp = CANParser("custin_radar", [(f"RADAR_TRACK_{a:x}", 33) for a in CUSTIN_RADAR_ADDRS], 1)
+    self.slots = {a: CustinSlot() for a in CUSTIN_RADAR_ADDRS}
+    self.hits = dict.fromkeys(CUSTIN_RADAR_ADDRS, 0)
+
+  def update(self, can_strings, t):
+    if not can_strings:
+      return []
+    self.rcp.update(can_capnp_to_list(can_strings))
+    out = []
+    for a in CUSTIN_RADAR_ADDRS:
+      msg = self.rcp.vl[f"RADAR_TRACK_{a:x}"]
+      rng = msg["LONG_DIST"]
+      az = math.radians(msg["AZIMUTH"])
+      if rng > CUSTIN_MIN_RANGE and msg["SCORE"] >= CUSTIN_MIN_SCORE:
+        self.slots[a].update(t, math.cos(az) * rng)
+        self.hits[a] = min(self.hits[a] + 1, CUSTIN_MIN_HITS)
+      else:
+        self.slots[a].reset()
+        self.hits[a] = 0
+      fit = self.slots[a].solve()
+      if fit is not None and self.hits[a] >= CUSTIN_MIN_HITS:
+        out.append({"dRel": fit[0], "yRel": -math.sin(az) * rng, "vRel": fit[1]})
+    return out
 
 
 def lane_of(y_rel):
