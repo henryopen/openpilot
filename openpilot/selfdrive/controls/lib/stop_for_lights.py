@@ -32,6 +32,7 @@ MAX_DECEL = -1.5                # the most a false call is allowed to cost
 COMMITTED = 15 * CV.KPH_TO_MS   # below this the stop is happening, see it through
 STOPPED = 0.5                   # standing still
 SETTLE = 1.5                    # the model needs a moment at a halt before it says so
+CLEAR_FOR = 1.0                 # and has to keep saying it: at a halt the flag flickers
 HOLD_MAX = 180.                 # no light is this long; let go rather than strand the car
 
 
@@ -44,6 +45,7 @@ class StopForLights:
     self.is_active = False
     self.held_for = 0.
     self.stopped_for = 0.
+    self.clear_for = 0.
     self.stop_distance = 0.
 
   def update_params(self) -> None:
@@ -71,6 +73,7 @@ class StopForLights:
     self.is_active = False
     self.held_for = 0.
     self.stopped_for = 0.
+    self.clear_for = 0.
     self.stop_distance = 0.
 
   def update(self, md, v_ego: float, gas_pressed: bool = False) -> None:
@@ -91,14 +94,24 @@ class StopForLights:
         # says the way is clear. That is also what lets us move off when it changes.
         # The model only calls a stop once we are actually at one, so give it a moment
         # to catch up before reading anything into its silence.
+        #
+        # And once at a halt the flag flickers - anything moving nearby is enough to have
+        # the model briefly draw a path forward again. Over this car's logs that happens
+        # 442 times across the stops, half of them lasting a single frame, while the model
+        # genuinely clearing a junction holds for the best part of a second. So the flag
+        # has to keep saying go, not just say it once.
         self.stopped_for += DT_MDL
         if md.action.shouldStop:
+          self.clear_for = 0.
           self.is_active = True
-        elif self.stopped_for > SETTLE:
-          self.is_active = False
+        else:
+          self.clear_for += DT_MDL
+          if self.stopped_for > SETTLE and self.clear_for > CLEAR_FOR:
+            self.is_active = False
       elif v_ego < COMMITTED:
         # slow enough that the stop is happening; see it through
         self.stopped_for = 0.
+        self.clear_for = 0.
         self.is_active = True
       else:
         # still quick: let the model take it back if it no longer sees a stop
