@@ -14,6 +14,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDX
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
+from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights
 from openpilot.common.swaglog import cloudlog
 
 A_CRUISE_MAX_VALS = [1.6, 1.2, 0.8, 0.6]
@@ -81,6 +82,7 @@ class LongitudinalPlanner:
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.curve_speed = CurveSpeedControl()
+    self.stop_for_lights = StopForLights()
     self.a_cruise = init_a
     self.output_a_target = init_a
     self.output_should_stop = False
@@ -164,6 +166,13 @@ class LongitudinalPlanner:
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
     if sm['selfdriveState'].experimentalMode:
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
+    else:
+      # the model can see this junction coming to a stop; let it brake for it, gently, and
+      # only while it says so. candidates are resolved by min(), so this cannot speed us up.
+      self.stop_for_lights.update(sm['modelV2'], v_ego)
+      if self.stop_for_lights.is_active:
+        candidates.append((self.stop_for_lights.limit(output_a_target_e2e),
+                           LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
