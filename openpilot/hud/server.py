@@ -292,6 +292,7 @@ def poll_loop():
         data["modelDataV2SP"] = {"leftLaneChangeEdgeBlock": edges.left_edge_detected,
                                  "rightLaneChangeEdgeBlock": edges.right_edge_detected}
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
+        data["control"]["reason"] = mem_params.get("LongPlanReason") or ""
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"], sm["selfdriveState"]))
       except Exception as e:
         data["error"] = str(e)

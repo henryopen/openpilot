@@ -14,6 +14,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDX
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
+from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights
 from openpilot.common.swaglog import cloudlog
 
@@ -29,6 +30,9 @@ A_CRUISE_MIN = -1.2
 # because the candidates are resolved with min().
 J_CRUISE_COMFORT = 0.16
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
+# str() on a capnp enum gives its number, not its name
+PLAN_SOURCE_NAMES = {LongitudinalPlanSource.cruise: "cruise", LongitudinalPlanSource.lead0: "lead0",
+                     LongitudinalPlanSource.lead1: "lead1", LongitudinalPlanSource.e2e: "e2e"}
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
@@ -90,6 +94,8 @@ class LongitudinalPlanner:
     self.allow_throttle = True
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
+    self.mem_params = Params("/dev/shm/params")
+    self.plan_reason = ""
     self.curve_speed = CurveSpeedControl()
     self.stop_for_lights = StopForLights()
     self.a_cruise = init_a
@@ -166,7 +172,9 @@ class LongitudinalPlanner:
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)
+    curve_limited = False
     if self.curve_speed.is_active:
+      curve_limited = self.curve_speed.a_target < self.a_cruise
       self.a_cruise = min(self.a_cruise, self.curve_speed.a_target)
 
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
@@ -184,6 +192,17 @@ class LongitudinalPlanner:
                            LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
+
+    # name what set this accel, so the display can say so: stop_for_lights borrows the
+    # e2e slot outside experimental mode, and the curve limiter hides inside cruise
+    reason = PLAN_SOURCE_NAMES.get(self.mpc.source, "cruise")
+    if reason == "cruise" and curve_limited:
+      reason = "curve"
+    elif reason == "e2e" and not sm['selfdriveState'].experimentalMode:
+      reason = "stoplight"
+    if reason != self.plan_reason:
+      self.plan_reason = reason
+      self.mem_params.put_nonblocking("LongPlanReason", reason)
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 

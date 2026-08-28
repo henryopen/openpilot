@@ -420,7 +420,8 @@ function drawRoad(F){
 }
 
 /* ═════ 縱向來源濾波（避免一直跳）═════ */
-const SRC={cruise:'定速', lead0:'跟車', lead1:'跟車 2', lead2:'跟車 3', e2e:'模型 E2E'};
+const SRC={cruise:'定速', lead0:'跟車', lead1:'跟車 2', lead2:'跟車 3', e2e:'模型 E2E',
+           stoplight:'路口煞停', curve:'彎道減速'};
 let srcHold='cruise', srcCand='cruise', srcCnt=0;
 function filterSrc(s, instant){
   if(instant){ srcHold=s; srcCand=s; srcCnt=0; return s; }
@@ -451,7 +452,7 @@ function render(F){
   set('cRad', nr?`雷達確認 ${nr}`:'純視覺');
   drawBev(F);
   const src=filterSrc(F.src, !!F._demo);
-  const isE2E = src==='e2e';
+  const isE2E = src==='e2e'||src==='stoplight'||src==='curve';
   F.e2e = isE2E;
   // 縱向來源：定速 / 跟車 / 模型 E2E 三者互斥 -> 同一個 chip 切換
   const sc=$('cSrc');
@@ -760,7 +761,7 @@ function fromSSE(J){
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed),
     engaged: !!(ss.enabled||ss.active),
     road: lm.roadName||'—',
-    src: ct.src||'cruise',
+    src: ct.reason||ct.src||'cruise',
     // 速限：圓標用原始值，offset 另外標；前方變化用 liveMapDataSP
     slRaw: rv.speedLimitValid ? kph(rv.speedLimit) : (lm.speedLimitValid ? kph(lm.speedLimit) : 0),
     slOfs: kph(rv.speedLimitOffset),
