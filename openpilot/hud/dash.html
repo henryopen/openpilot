@@ -446,9 +446,14 @@ function render(F){
   const sl=$('sl');
   sl.textContent = slRaw>0?slRaw:'--'; sl.className='sl'+(slRaw>0?'':' off');
   const nx=$('slNx');
-  if(F.slNext>0){ nx.className='slnx on'; set('slNxV', F.slNext);
-                  set('slNxD', F.slNextD>0?`${F.slNextD.toFixed(0)} m`:''); }
-  else nx.className='slnx';
+  if(F.slNext>0){
+    nx.className='slnx on'; set('slNxV', F.slNext);
+    // mapd 只有 1-2Hz，直接顯示會一跳一跳；兩次更新之間用車速把距離連續遞減
+    const nowD=Date.now();
+    if(F.slNextD!==__slnRaw){ __slnRaw=F.slNextD; __slnAt=nowD; }
+    const run=Math.max(0, __slnRaw - (F.vEgo/3.6)*(nowD-__slnAt)/1000);
+    set('slNxD', run>0?`${run.toFixed(0)} m`:'');
+  } else { nx.className='slnx'; __slnRaw=-1; }
   const e=$('cEng');
   // MAIN 亮但 OP 未啟動是個要知道的狀態：儀表看起來 ON，其實還要按一下才接管
   e.textContent=F.engaged?'ENGAGED':(F.avail?'MAIN ON · 按鍵啟動':'MAIN OFF');
@@ -657,6 +662,7 @@ const SM_TAU = 0.13;        // 秒。越大越穩、跟得越慢
 const SM_GATE = 6;          // 公尺。兩幀之間距離差在這之內視為同一個目標
 let targetF = null, shownF = null, lastT = 0;
 let __stopSeen = 0, __stopEma = 0;
+let __slnRaw = -1, __slnAt = 0;      // 速限預告距離：來源只有 1-2Hz，兩次更新間用車速內插
 
 function matchLeads(prev, next, dt){
   const used = new Set();
