@@ -784,10 +784,14 @@ function fromSSE(J){
   (rs.leads||[]).forEach((L,i)=>{
     if(!L.status) return;
     if(i===1) return;                    // leadTwo 不是第二台車，是 leadOne 同一台的另一組估計
-    // 橫向量測在 30 m 外約有 1.5 m 雜訊，而且會隨接近往中間漂。既然車道已經判出來了，
-    // 就把同向車往所屬車道中心拉一部分，位置才不會在車道之間游移。對向車不動。
+    // 雷達的橫向量測會隨目標接近而往中間漂（52443582c 對視覺驗證過：漂移是量測特性，
+    // 不是換算錯）。遠處量測準、近處會漂，所以往車道中心的拉力隨距離增強：
+    // 40m 處只拉 0.35（跨線動作看得到），10m 內拉 0.85（旁車穩穩待在自己車道）。
     let y = -(L.yRel || 0);
-    if(!L.oncoming && L.laneN != null) y = y * 0.55 + (-L.laneN * LANE_W) * 0.45;
+    if(!L.oncoming && L.laneN != null){
+      const w = Math.min(.85, Math.max(.35, .85 - ((L.dRel || 0) - 8) * (0.5 / 32)));
+      y = y * (1 - w) + (-L.laneN * LANE_W) * w;
+    }
     F.leads.push({d:L.dRel||0, y:y, v:kph(L.vRel), radar:!!L.radar,
                   coast:!!L.coast, onc:!!L.oncoming, lane:L.lane||'', main:i===0,
                   id:(L.id!=null?'r'+L.id:(i===0?'lead':null))});
