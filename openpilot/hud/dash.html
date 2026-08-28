@@ -829,7 +829,7 @@ async function updateNet(){
     window.__selfIp = j.self||'';
     el.textContent=[ssid, host].filter(Boolean).join('  ·  ');
     const sb=document.getElementById('standby-net');
-    if(sb) sb.textContent=[j.self?'本機 '+j.self:'', host?'車機 '+host:''].filter(Boolean).join('   ·   ');
+    if(sb) sb.textContent=[ssid?'WiFi '+ssid:'WiFi 未連線', j.self?'本機 '+j.self:'', host?'車機 '+host:''].filter(Boolean).join('   ·   ');
     setConn(window.__connState||'offline');
   }catch(e){ el.textContent = window.__esHost || ''; }
 }
