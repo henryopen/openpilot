@@ -116,6 +116,9 @@
   #reconnBtn { font-size:20px; font-weight:700; color:#cfe3f5; background:#16222e;
     border:1px solid #2c465c; border-radius:12px; padding:13px 30px; letter-spacing:1px; }
   #reconnBtn:disabled { opacity:.45 }
+  #netInfo { padding:10px 16px; margin:-10px -4px; }  /* 放大點擊範圍，手指按得到 */
+  #backHud { font-size:20px; font-weight:700; color:#8fd4a8; background:#122019;
+    border:1px solid #2e6b45; border-radius:12px; padding:13px 30px; letter-spacing:1px; }
   #apRow { display:flex; gap:12px; }
   .apbtn { font-size:18px; font-weight:700; color:#9fb4c8; background:#101922;
     border:1px solid #24384a; border-radius:10px; padding:13px 20px; }
@@ -136,6 +139,7 @@
   <div id="standby-msg">連線中…</div>
   <div id="standby-net"></div>
   <div id="netRow">
+    <button id="backHud">返回 HUD</button>
     <button id="reconnBtn">重新連線 WiFi</button>
     <div id="apRow"></div>
   </div>
@@ -712,6 +716,7 @@ function resetSmooth(){ shownF = null; lastT = 0; }
 
 /* ═════ 待機畫面控制 ═════ */
 let lastData = 0;
+let manualStandby = false;   // 使用者主動進待機選 AP：資料再多也不自動跳回 HUD
 function showStandbyScreen(msg, ok){
   const el=document.getElementById('standby'); if(!el) return;
   el.style.display='flex';
@@ -813,7 +818,7 @@ async function connect(){
         es.onmessage=ev=>{
           try{ const F=fromSSE(JSON.parse(ev.data));
                lastData=Date.now();
-               if(F){ stopDemo(); hideStandbyScreen(); setConn('live'); showFrame(F); }
+               if(F){ stopDemo(); if(!manualStandby) hideStandbyScreen(); setConn('live'); showFrame(F); }
                else { setConn('standby'); showIdle(); showStandbyScreen('已連線，openpilot 待機','ok'); } }
           catch(e){ window.__hudErr&&window.__hudErr('SSE '+(e&&e.message||e)); }
         };
@@ -856,6 +861,19 @@ if(rb) rb.addEventListener('click', async ()=>{
     updateNet();
   }catch(e){ rb.textContent='失敗：'+(e&&e.message||e); }
   setTimeout(()=>{ rb.textContent=old; rb.disabled=false; }, 5000);
+});
+
+// HUD ↔ 待機互切：左上角 netInfo 點了進待機（選 AP 用）；「返回 HUD」跳回去
+const ni=document.getElementById('netInfo');
+if(ni) ni.addEventListener('click', ()=>{
+  manualStandby=true;
+  showStandbyScreen('AP 設定 — 選好按「返回 HUD」','ok');
+  refreshApRow();
+});
+const bh=document.getElementById('backHud');
+if(bh) bh.addEventListener('click', ()=>{
+  manualStandby=false;
+  if(Date.now()-lastData<5000) hideStandbyScreen();   // 有即時資料才有 HUD 可回；離線就留在待機
 });
 
 // AP 切換列：列出已存的網路，按了直接切過去（會斷開目前連線 — 這是使用者明確按的）
