@@ -202,7 +202,7 @@ class LongitudinalPlanner:
       reason = "stoplight"
     if reason != self.plan_reason:
       self.plan_reason = reason
-      self.mem_params.put_nonblocking("LongPlanReason", reason)
+      self.mem_params.put("LongPlanReason", reason)   # block=False by default
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
