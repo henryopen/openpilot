@@ -74,12 +74,16 @@ def _model(md):
 
 def _car_state(cs):
   cruise = cs.cruiseState
+  # With openpilot longitudinal the set speed lives in carState.vCruise (km/h, 255 when
+  # unset); cruiseState.speed belongs to the stock ACC and stays 0 on this car.
+  v_cruise = float(cs.vCruise)
+  cruise_speed = v_cruise * KPH_TO_MS if 0. < v_cruise < 250. else 0.
   return {
     "vEgo": float(cs.vEgo),
     "vEgoCluster": float(cs.vEgoCluster),
     "cruiseEnabled": bool(cruise.enabled),
     "cruiseAvailable": bool(cruise.available),
-    "cruiseSpeed": float(cruise.speed),
+    "cruiseSpeed": cruise_speed,
     "gasPressed": bool(cs.gasPressed),
     "brakePressed": bool(cs.brakePressed),
     "leftBlinker": bool(cs.leftBlinker),
