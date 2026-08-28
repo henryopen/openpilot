@@ -28,6 +28,10 @@ CACHE_FILE = HUD_DIR / "last_host.txt"
 _found: str | None = None
 _ssid: str = ""
 _lock = threading.Lock()
+_reconnect_lock = threading.Lock()
+
+# 車上熱點優先，家裡 AP 其次；密碼都已存在 NM keyfile，這裡只負責叫起來
+KNOWN_WIFI = ["MotowayapC", "Motowayap"]
 
 
 def own_ip() -> str:
@@ -124,6 +128,32 @@ def discover_loop():
       time.sleep(15)
 
 
+def net_reconnect() -> dict:
+  """待機畫面的重連按鈕。Pi 在車上重開機後若沒自動接回熱點，螢幕上沒有任何辦法補救 —
+  這裡給 dash.html 一個出口。只在「目前沒連線」時才會 con up，在家按不會踢掉現有連線。"""
+  for cmd in (["nmcli", "radio", "wifi", "on"], ["nmcli", "dev", "wifi", "rescan"]):
+    try:
+      subprocess.run(cmd, timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+      pass
+  time.sleep(3)
+  ssid = read_ssid()
+  if ssid:
+    return {"ok": True, "ssid": ssid, "action": "already-connected"}
+  tried, last_err = [], ""
+  for name in KNOWN_WIFI:
+    tried.append(name)
+    try:
+      r = subprocess.run(["nmcli", "-w", "15", "con", "up", name],
+                         capture_output=True, text=True, timeout=25)
+      if r.returncode == 0:
+        return {"ok": True, "ssid": read_ssid(), "action": "connected", "tried": tried}
+      last_err = (r.stderr or r.stdout).strip().splitlines()[-1] if (r.stderr or r.stdout).strip() else ""
+    except Exception as e:
+      last_err = str(e)
+  return {"ok": False, "ssid": "", "tried": tried, "error": last_err}
+
+
 class Handler(SimpleHTTPRequestHandler):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, directory=str(HUD_DIR), **kwargs)
@@ -131,7 +161,25 @@ class Handler(SimpleHTTPRequestHandler):
   def log_message(self, format, *args):
     pass
 
+  def _json(self, obj):
+    body = json.dumps(obj).encode()
+    self.send_response(200)
+    self.send_header("Content-Type", "application/json")
+    self.send_header("Cache-Control", "no-store")
+    self.send_header("Content-Length", str(len(body)))
+    self.end_headers()
+    self.wfile.write(body)
+
   def do_GET(self):
+    if self.path.startswith("/net/reconnect"):
+      if not _reconnect_lock.acquire(blocking=False):
+        self._json({"ok": False, "error": "busy"})
+        return
+      try:
+        self._json(net_reconnect())
+      finally:
+        _reconnect_lock.release()
+      return
     if self.path.startswith("/host.json"):
       with _lock:
         found = _found

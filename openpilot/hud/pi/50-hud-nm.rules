@@ -1,0 +1,7 @@
+// hud_agent (User=pi) 的待機畫面重連按鈕需要叫 nmcli scan / con up
+// 裝到 Pi: sudo cp 50-hud-nm.rules /etc/polkit-1/rules.d/ && sudo systemctl restart polkit
+polkit.addRule(function(action, subject) {
+  if (action.id.indexOf("org.freedesktop.NetworkManager.") == 0 && subject.user == "pi") {
+    return polkit.Result.YES;
+  }
+});
