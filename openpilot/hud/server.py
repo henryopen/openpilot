@@ -22,7 +22,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from openpilot.cereal import messaging
+from openpilot.cereal import custom, messaging
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.modeld.constants import ModelConstants
@@ -33,8 +33,11 @@ SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV
             "longitudinalPlan", "longitudinalPlanSP", "controlsState"]
 
 # what the planner says set the accel; the page shows these instead of the raw plan source
-REASON_NAMES = {"cruise": "cruise", "lead": "lead0", "stopLight": "stoplight",
-                "curve": "curve", "e2e": "e2e"}
+# Keyed on the enum's raw value: a constant stringifies to its number while a value read
+# off a message gives its name, and relying on which one arrives here is asking for it.
+_R = custom.LongitudinalPlanSP.Reason
+REASON_NAMES = {_R.cruise: "cruise", _R.lead: "lead0", _R.stopLight: "stoplight",
+                _R.curve: "curve", _R.e2e: "e2e"}
 
 KPH_TO_MS = 1 / 3.6
 
@@ -317,7 +320,7 @@ def poll_loop():
         data["modelDataV2SP"] = {"leftLaneChangeEdgeBlock": edges.left_edge_detected,
                                  "rightLaneChangeEdgeBlock": edges.right_edge_detected}
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
-        data["control"]["reason"] = REASON_NAMES.get(str(sm["longitudinalPlanSP"].reason), "")
+        data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"], sm["selfdriveState"]))
       except Exception as e:
         data["error"] = str(e)
