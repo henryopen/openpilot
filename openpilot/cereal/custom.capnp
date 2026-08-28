@@ -20,7 +20,19 @@ struct RadarTracksSP @0x81c2f05a394cf4af {
   points @0 :List(Car.RadarData.RadarPoint);
 }
 
-struct CustomReserved1 @0xaedffd8f31e7b55d {
+# What actually set the longitudinal accel this frame. The plan source alone cannot say:
+# stop_for_lights borrows the e2e slot outside experimental mode, and the curve limiter
+# never appears at all - it caps cruise from inside. Display only.
+struct LongitudinalPlanSP @0xaedffd8f31e7b55d {
+  reason @0 :Reason;
+
+  enum Reason {
+    cruise @0;
+    lead @1;
+    stopLight @2;
+    curve @3;
+    e2e @4;
+  }
 }
 
 struct CustomReserved2 @0xf35cc4560bbf6ec2 {

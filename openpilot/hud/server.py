@@ -30,7 +30,11 @@ from openpilot.hud.radar_tracker import TargetTracker, relevant
 
 PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
-            "longitudinalPlan", "controlsState"]
+            "longitudinalPlan", "longitudinalPlanSP", "controlsState"]
+
+# what the planner says set the accel; the page shows these instead of the raw plan source
+REASON_NAMES = {"cruise": "cruise", "lead": "lead0", "stopLight": "stoplight",
+                "curve": "curve", "e2e": "e2e"}
 
 KPH_TO_MS = 1 / 3.6
 
@@ -313,7 +317,7 @@ def poll_loop():
         data["modelDataV2SP"] = {"leftLaneChangeEdgeBlock": edges.left_edge_detected,
                                  "rightLaneChangeEdgeBlock": edges.right_edge_detected}
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
-        data["control"]["reason"] = mem_params.get("LongPlanReason") or ""
+        data["control"]["reason"] = REASON_NAMES.get(str(sm["longitudinalPlanSP"].reason), "")
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"], sm["selfdriveState"]))
       except Exception as e:
         data["error"] = str(e)

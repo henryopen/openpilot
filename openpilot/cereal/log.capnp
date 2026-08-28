@@ -2631,7 +2631,7 @@ struct Event {
     # DON'T change the ID (e.g. @107)
     # DON'T change which struct it points to
     radarTracksSP @107 :Custom.RadarTracksSP;
-    customReserved1 @108 :Custom.CustomReserved1;
+    longitudinalPlanSP @108 :Custom.LongitudinalPlanSP;
     customReserved2 @109 :Custom.CustomReserved2;
     customReserved3 @110 :Custom.CustomReserved3;
     customReserved4 @111 :Custom.CustomReserved4;
