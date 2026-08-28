@@ -280,8 +280,11 @@ def poll_loop():
         others = _radar_targets(radar_points, targets, float(sm["carState"].vEgo), dt)
         # radard's leads come first, so the page still treats the followed car as the main one
         followed = data["radarState"]["dRel"] if data["radarState"]["leadStatus"] else None
+        # radar and vision disagree more the further the car: ~6 m at 40 m out on this
+        # car's logs, so a fixed 3 m gate let the same car through twice
+        gate = max(3.0, 0.2 * followed) if followed is not None else 3.0
         data["radarState"]["leads"] += [t for t in others
-                                        if followed is None or abs(t["dRel"] - followed) > 3.0]
+                                        if followed is None or abs(t["dRel"] - followed) > gate]
         data["radarState"]["targets"] = len(others)
         _frame += 1
         if _frame % 2 == 0 or _model_cache is None:   # 20Hz 進來、10Hz 重算，跟輸出頻率對齊

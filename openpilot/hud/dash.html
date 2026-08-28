@@ -913,31 +913,24 @@ refreshApRow(); setInterval(refreshApRow, 20000);
 if(new URLSearchParams(location.search).has('play')){
   hideStandbyScreen();
   fetch('playback.json').then(r=>{ if(!r.ok) throw new Error('playback.json HTTP '+r.status); return r.json(); }).then(J=>{
-    SAMPLE_D=J.d; const F=J.f;
+    SAMPLE_D=J.d; const F=J.f; const LABEL=J.label||'回放';
     const tag=document.createElement('div');
-    tag.style.cssText='position:absolute;bottom:6px;right:18px;font-size:10.5px;color:#2f3f4e;z-index:9;letter-spacing:.3px';
+    tag.style.cssText='position:absolute;bottom:6px;right:18px;font-size:14px;color:#6b8299;z-index:9;letter-spacing:.5px;font-variant-numeric:tabular-nums';
     document.body.appendChild(tag);
-    const lp=(a,b,t)=>a+(b-a)*t, la=(a,b,t)=>a.map((v,i)=>lp(v,b[i]!==undefined?b[i]:v,t));
-    const t0=performance.now();
+    // 回放跟即時走同一條平滑管線（showFrame -> smoothRoad/matchLeads），不再自己內插，
+    // 不然路面和目標就是原始 20Hz 的抖動 —— 即時看起來穩是因為有這層。
+    const t0=performance.now(); let lastI=-1;
     function tick(){ const now=performance.now(); try{
-      const idx=(now-t0)/50, i=Math.floor(idx)%F.length; window.__i=i; const f=Math.min(1,idx-Math.floor(idx));
-      const A=F[i], B=F[(i+1)%F.length], S={...A};
-      S.vEgo=Math.round(lp(A.vEgo,B.vEgo,f));
-      S.aT=lp(A.aT,B.aT,f); S.tq=lp(A.tq,B.tq,f);
-      S.lDes=lp(A.lDes,B.lDes,f); S.lAct=lp(A.lAct,B.lAct,f);
-      if(A.path&&B.path) S.path=la(A.path,B.path,f);
-      if(A.lanes&&B.lanes&&A.lanes.length===B.lanes.length)
-        S.lanes=A.lanes.map((l,k)=>({y:la(l.y,B.lanes[k].y,f), p:lp(l.p,B.lanes[k].p,f)}));
-      if(A.edges&&B.edges&&A.edges.length===B.edges.length)
-        S.edges=A.edges.map((l,k)=>({y:la(l.y,B.edges[k].y,f), s:lp(l.s||.3,B.edges[k].s||.3,f)}));
-      if(A.leads&&B.leads&&A.leads.length===B.leads.length)
-        S.leads=A.leads.map((l,k)=>({...l, d:lp(l.d,B.leads[k].d,f), y:lp(l.y,B.leads[k].y,f)}));
-      const mm=(S.leads||[]).find(l=>l.main); S.stopD=mm?mm.d:0;
-      render(S);
-      tag.textContent=`回放 8/23 route07 · ${(i/20).toFixed(0)}s / ${(F.length/20).toFixed(0)}s`;
+      const i=Math.floor((now-t0)/50)%F.length; window.__i=i;
+      if(i===lastI) return;
+      if(i<lastI) resetSmooth();               // 循環回到開頭：別從結尾滑回來
+      lastI=i;
+      const A=F[i];
+      showFrame(A);
+      tag.textContent=`${LABEL}${A.clk?'　'+A.clk:''} · ${(i/20).toFixed(0)}s / ${(F.length/20).toFixed(0)}s`;
       }catch(e){ window.__hudErr&&window.__hudErr('TICK '+(e&&e.message||e)+' | i='+(window.__i||'?')); }
     }
-    setInterval(tick, 50);   // 20Hz，跟錄製頻率一致；rAF 在 kiosk 背景會被瀏覽器停掉
+    setInterval(tick, 50);   // 20Hz 餵幀；rAF 平滑器負責畫
   }).catch(e=>{ console.error('playback',e); window.__hudErr&&window.__hudErr('PLAYBACK '+(e&&e.message||e)); });
 }
 </script>
