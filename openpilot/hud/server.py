@@ -61,9 +61,27 @@ def _resample(line):
   return [round(float(v), 3) for v in out]
 
 
+def _planned_stop(md):
+  """Where the model's own speed profile comes to rest, for the display only.
+
+  shouldStop fires once the stop is imminent; the model sees the junction seconds
+  earlier. Same profile test stop_for_lights uses (falls to rest and stays there),
+  but with no trigger gate - this only draws a sign, it never brakes."""
+  v, x = md.velocity.x, md.position.x
+  if len(v) == 0 or len(x) != len(v):
+    return 0.
+  idx = next((i for i, u in enumerate(v) if u < 0.5), None)
+  if idx is None:
+    return 0.
+  if any(v[i] > 1.0 for i in range(idx, len(v))):   # dips and recovers: traffic, not a stop
+    return 0.
+  return float(x[idx])
+
+
 def _model(md):
   return {
     "d": SAMPLE_X,
+    "stopAhead": round(_planned_stop(md), 1),
     "lanes": [{"y": _resample(l), "p": round(float(p), 3)}
               for l, p in zip(md.laneLines, md.laneLineProbs, strict=True)],
     "edges": [{"y": _resample(e), "s": round(float(st), 3)}
