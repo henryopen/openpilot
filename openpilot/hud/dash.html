@@ -57,6 +57,7 @@
   .chip.cruise{color:#9db2c4;border-color:#2a3846;background:rgba(10,16,22,.85)}
   .chip.lead{color:var(--green);border-color:rgba(47,212,90,.55);background:rgba(47,212,90,.13)}
   .chip.e2e{color:#fff;background:var(--amber);border-color:var(--amber)}
+  .chip.wait{color:var(--amber);border-color:var(--amber)}
 
   /* 停止標誌 */
   .stop{top:18px;right:212px;display:none;flex-direction:column;align-items:center}
@@ -447,7 +448,9 @@ function render(F){
                   set('slNxD', F.slNextD>0?`${F.slNextD.toFixed(0)} m`:''); }
   else nx.className='slnx';
   const e=$('cEng');
-  e.textContent=F.engaged?'ENGAGED':'READY'; e.className='chip'+(F.engaged?' on':'');
+  // MAIN 亮但 OP 未啟動是個要知道的狀態：儀表看起來 ON，其實還要按一下才接管
+  e.textContent=F.engaged?'ENGAGED':(F.avail?'MAIN ON · 按鍵啟動':'MAIN OFF');
+  e.className='chip'+(F.engaged?' on':(F.avail?' wait':''));
   const nr=(F.leads||[]).filter(l=>l.radar).length;
   set('cRad', nr?`雷達確認 ${nr}`:'純視覺');
   drawBev(F);
@@ -760,6 +763,7 @@ function fromSSE(J){
   const F={
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed),
     engaged: !!(ss.enabled||ss.active),
+    avail: !!cs.cruiseAvailable,   // 儀表 MAIN 亮著（但 OP 可能還沒按啟動）
     road: lm.roadName||'—',
     src: ct.reason||ct.src||'cruise',
     // 速限：圓標用原始值，offset 另外標；前方變化用 liveMapDataSP
