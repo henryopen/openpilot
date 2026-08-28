@@ -231,16 +231,34 @@ def _next_speed_limit(mem_params):
     return 0., 0.
 
 
-def _sp_shapes(params, mem_params, cs, cc, ss):
+# Settings change when someone changes them, not at 20 Hz. The map values live in shared
+# memory and mapd only rewrites them a couple of times a second, so both are read on a
+# slow tick rather than every frame.
+_SETTINGS_EVERY = 100   # 5 s at 20 Hz
+_MAP_EVERY = 10         # 0.5 s, matching how often mapd writes
+_settings = {"offset": 0., "mode": 0, "aol": False}
+_map = {"limit": 0., "road": "", "ahead": 0., "ahead_dist": 0.}
+
+
+def _sp_shapes(params, mem_params, cs, cc, ss, frame):
   """Rebuild what sunnypilot used to publish, so the page does not have to change."""
-  speed_limit = float(mem_params.get("MapSpeedLimit") or 0.)
-  offset = params.get("SpeedLimitValueOffset", return_default=True) * KPH_TO_MS
-  assisting = params.get("SpeedLimitMode", return_default=True) == 3 and speed_limit > 0.
-  ahead, ahead_dist = _next_speed_limit(mem_params)
+  if frame % _SETTINGS_EVERY == 0:
+    _settings["offset"] = params.get("SpeedLimitValueOffset", return_default=True) * KPH_TO_MS
+    _settings["mode"] = params.get("SpeedLimitMode", return_default=True)
+    _settings["aol"] = params.get_bool("AlwaysOnLateral")
+  if frame % _MAP_EVERY == 0:
+    _map["limit"] = float(mem_params.get("MapSpeedLimit") or 0.)
+    _map["road"] = mem_params.get("RoadName") or ""
+    _map["ahead"], _map["ahead_dist"] = _next_speed_limit(mem_params)
+
+  speed_limit = _map["limit"]
+  offset = _settings["offset"]
+  assisting = _settings["mode"] == 3 and speed_limit > 0.
+  ahead, ahead_dist = _map["ahead"], _map["ahead_dist"]
 
   return {
     "liveMapDataSP": {
-      "roadName": mem_params.get("RoadName") or "",
+      "roadName": _map["road"],
       "speedLimitValid": speed_limit > 0.,
       "speedLimit": speed_limit,
       "speedLimitAheadValid": ahead > 0. and ahead_dist > 0.,
@@ -266,7 +284,7 @@ def _sp_shapes(params, mem_params, cs, cc, ss):
         },
       },
       "mads": {
-        "available": params.get_bool("AlwaysOnLateral"),
+        "available": _settings["aol"],
         "active": bool(cc.latActive),
         "enabled": bool(cc.latActive),
         "state": "enabled" if cc.latActive else "disabled",
@@ -321,7 +339,8 @@ def poll_loop():
                                  "rightLaneChangeEdgeBlock": edges.right_edge_detected}
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
-        data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"], sm["selfdriveState"]))
+        data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
+                               sm["selfdriveState"], _frame))
       except Exception as e:
         data["error"] = str(e)
     if not onroad:
