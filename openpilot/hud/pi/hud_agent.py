@@ -18,6 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 PORT = 8080
 SP_HUD_PORT = 8902
@@ -30,8 +31,8 @@ _ssid: str = ""
 _lock = threading.Lock()
 _reconnect_lock = threading.Lock()
 
-# 車上熱點優先，家裡 AP 其次；密碼都已存在 NM keyfile，這裡只負責叫起來
-KNOWN_WIFI = ["MotowayapC", "Motowayap"]
+# C4 熱點 > 手機熱點 > 家/辦公室；密碼都已存在 NM keyfile，這裡只負責叫起來
+KNOWN_WIFI = ["weedle-94cc", "MotowayapC", "Motowayap"]
 
 
 def own_ip() -> str:
@@ -154,6 +155,35 @@ def net_reconnect() -> dict:
   return {"ok": False, "ssid": "", "tried": tried, "error": last_err}
 
 
+def net_list() -> dict:
+  """已存網路清單＋現在連哪個＋掃描有沒有看到（用 NM 的快取掃描結果，不主動觸發掃描）。"""
+  visible: set[str] = set()
+  try:
+    out = subprocess.check_output(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list"],
+                                  text=True, timeout=8, stderr=subprocess.DEVNULL)
+    visible = {line.strip() for line in out.splitlines() if line.strip()}
+  except Exception:
+    pass
+  cur = read_ssid()
+  return {"current": cur,
+          "known": [{"name": n, "visible": n in visible, "current": n == cur} for n in KNOWN_WIFI]}
+
+
+def net_connect(name: str) -> dict:
+  """切到指定的已存網路。這是使用者在螢幕上明確按的，允許斷開現有連線。"""
+  if name not in KNOWN_WIFI:
+    return {"ok": False, "error": "unknown network"}
+  try:
+    r = subprocess.run(["nmcli", "-w", "20", "con", "up", name],
+                       capture_output=True, text=True, timeout=30)
+    if r.returncode == 0:
+      return {"ok": True, "ssid": read_ssid()}
+    err = (r.stderr or r.stdout).strip()
+    return {"ok": False, "error": err.splitlines()[-1] if err else ""}
+  except Exception as e:
+    return {"ok": False, "error": str(e)}
+
+
 class Handler(SimpleHTTPRequestHandler):
   def __init__(self, *args, **kwargs):
     super().__init__(*args, directory=str(HUD_DIR), **kwargs)
@@ -171,6 +201,19 @@ class Handler(SimpleHTTPRequestHandler):
     self.wfile.write(body)
 
   def do_GET(self):
+    if self.path.startswith("/net/list"):
+      self._json(net_list())
+      return
+    if self.path.startswith("/net/connect"):
+      name = parse_qs(urlparse(self.path).query).get("name", [""])[0]
+      if not _reconnect_lock.acquire(blocking=False):
+        self._json({"ok": False, "error": "busy"})
+        return
+      try:
+        self._json(net_connect(name))
+      finally:
+        _reconnect_lock.release()
+      return
     if self.path.startswith("/net/reconnect"):
       if not _reconnect_lock.acquire(blocking=False):
         self._json({"ok": False, "error": "busy"})

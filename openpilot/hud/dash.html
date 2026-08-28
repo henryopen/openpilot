@@ -108,13 +108,19 @@
   /* 待機畫面：openpilot 沒在跑時蓋住儀表，樣式沿用舊版 index.html */
   #standby { position:fixed; inset:0; z-index:50; background:var(--bg,#0b0f14);
              display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; }
-  #clock { font-size:130px; font-weight:800; letter-spacing:-3px; font-variant-numeric:tabular-nums; color:#e8eef4; }
+  #clock { font-size:96px; font-weight:800; letter-spacing:-3px; font-variant-numeric:tabular-nums; color:#e8eef4; }
   #standby-msg { font-size:24px; color:#5a6b7c; }
   #standby-msg .ok { color:#3fb96b; }
   #standby-net { font-size:26px; font-weight:700; color:#7fb4e8; letter-spacing:1px; font-variant-numeric:tabular-nums; }
-  #reconnBtn { margin-top:20px; font-size:23px; font-weight:700; color:#cfe3f5; background:#16222e;
-    border:1px solid #2c465c; border-radius:14px; padding:16px 46px; letter-spacing:1px; }
+  #netRow { margin-top:10px; display:flex; gap:14px; align-items:center; }
+  #reconnBtn { font-size:20px; font-weight:700; color:#cfe3f5; background:#16222e;
+    border:1px solid #2c465c; border-radius:12px; padding:13px 30px; letter-spacing:1px; }
   #reconnBtn:disabled { opacity:.45 }
+  #apRow { display:flex; gap:12px; }
+  .apbtn { font-size:18px; font-weight:700; color:#9fb4c8; background:#101922;
+    border:1px solid #24384a; border-radius:10px; padding:13px 20px; }
+  .apbtn.cur { color:#7ee2a0; border-color:#2e6b45; }
+  .apbtn:disabled { opacity:.45 }
 
   /* 俯視雷達圖。透視圖在這種 3.2:1 的長條屏上，垂直和水平不可能同時是正確比例，
      所以目標的精確位置看這裡，路面那張只管路況與跟車。 */
@@ -129,7 +135,10 @@
   <div id="clock">--:--</div>
   <div id="standby-msg">連線中…</div>
   <div id="standby-net"></div>
-  <button id="reconnBtn">重新連線 WiFi</button>
+  <div id="netRow">
+    <button id="reconnBtn">重新連線 WiFi</button>
+    <div id="apRow"></div>
+  </div>
 </div>
 
 <div id="dash">
@@ -848,6 +857,34 @@ if(rb) rb.addEventListener('click', async ()=>{
   }catch(e){ rb.textContent='失敗：'+(e&&e.message||e); }
   setTimeout(()=>{ rb.textContent=old; rb.disabled=false; }, 5000);
 });
+
+// AP 切換列：列出已存的網路，按了直接切過去（會斷開目前連線 — 這是使用者明確按的）
+async function refreshApRow(){
+  const row=document.getElementById('apRow'); if(!row) return;
+  try{
+    const r=await fetch('/net/list',{cache:'no-store'}); const j=await r.json();
+    row.innerHTML='';
+    (j.known||[]).forEach(k=>{
+      const b=document.createElement('button');
+      b.className='apbtn'+(k.current?' cur':'');
+      b.textContent=(k.current?'✓ ':'')+k.name;
+      b.addEventListener('click', async ()=>{
+        if(k.current) return;
+        [...row.children].forEach(x=>x.disabled=true); b.textContent='連線中…';
+        try{
+          const c=new AbortController(); const t=setTimeout(()=>c.abort(),35000);
+          const rr=await fetch('/net/connect?name='+encodeURIComponent(k.name),{cache:'no-store',signal:c.signal});
+          clearTimeout(t);
+          const jj=await rr.json();
+          if(!jj.ok) b.textContent='失敗：'+(jj.error||'').slice(0,30);
+        }catch(e){ b.textContent='失敗'; }
+        setTimeout(()=>{ refreshApRow(); updateNet(); }, 2500);
+      });
+      row.appendChild(b);
+    });
+  }catch(e){}
+}
+refreshApRow(); setInterval(refreshApRow, 20000);
 
 /* ═════ 回放 ═════ */
 if(new URLSearchParams(location.search).has('play')){
