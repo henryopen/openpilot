@@ -24,6 +24,12 @@ _TURNING_LAT_ACC_TH = 1.6              # actual lat acc that means we are in the
 _LEAVING_LAT_ACC_TH = 1.3              # falling below this means the corner is opening up
 _FINISH_LAT_ACC_TH = 1.1               # and below this it is over
 _A_LAT_REG_MAX = 2.                    # most lateral acceleration we are willing to pull
+# ...but how much that is depends on the speed. 3 m/s2 is an ordinary turn into a junction
+# and an unpleasant one on a sweeper, so every lateral-acceleration threshold below is
+# scaled by this rather than fixed: 1.5x under 36 km/h, tapering to unchanged from 72 km/h
+# up, so nothing about high speed cornering moves.
+_LAT_TOL_BP = [0., 10., 20.]           # m/s
+_LAT_TOL_V = [1.5, 1.25, 1.0]
 
 # Smooth deceleration on the way in, by how sharp the corner ahead looks
 _ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]
@@ -85,9 +91,14 @@ class CurveSpeedControl:
     v_ego = max(self.v_ego, 0.1)
     max_curve = self.max_pred_lat_acc / (v_ego ** 2)
     if max_curve > 0:
-      self.v_target = (_A_LAT_REG_MAX / max_curve) ** 0.5
+      self.v_target = (_A_LAT_REG_MAX * self._lat_tol() / max_curve) ** 0.5
+
+  def _lat_tol(self) -> float:
+    """How much the lateral-acceleration thresholds are relaxed at this speed."""
+    return float(np.interp(self.v_ego, _LAT_TOL_BP, _LAT_TOL_V))
 
   def _update_state_machine(self) -> bool:
+    tol = self._lat_tol()
     if self.state != CurveState.disabled:
       # losing longitudinal control or the toggle always wins
       if not self.long_enabled or not self.enabled:
@@ -96,7 +107,7 @@ class CurveSpeedControl:
         self.state = CurveState.overriding
 
       elif self.state == CurveState.enabled:
-        if self.v_ego > MIN_V and self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH:
+        if self.v_ego > MIN_V and self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH * tol:
           self.state = CurveState.entering
 
       elif self.state == CurveState.overriding:
@@ -104,19 +115,19 @@ class CurveSpeedControl:
           self.state = CurveState.enabled
 
       elif self.state == CurveState.entering:
-        if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
+        if self.current_lat_acc >= _TURNING_LAT_ACC_TH * tol:
           self.state = CurveState.turning
-        elif self.max_pred_lat_acc < _ABORT_ENTERING_PRED_LAT_ACC_TH:
+        elif self.max_pred_lat_acc < _ABORT_ENTERING_PRED_LAT_ACC_TH * tol:
           self.state = CurveState.enabled
 
       elif self.state == CurveState.turning:
-        if self.current_lat_acc <= _LEAVING_LAT_ACC_TH:
+        if self.current_lat_acc <= _LEAVING_LAT_ACC_TH * tol:
           self.state = CurveState.leaving
 
       elif self.state == CurveState.leaving:
-        if self.current_lat_acc >= _TURNING_LAT_ACC_TH:
+        if self.current_lat_acc >= _TURNING_LAT_ACC_TH * tol:
           self.state = CurveState.turning
-        elif self.current_lat_acc < _FINISH_LAT_ACC_TH:
+        elif self.current_lat_acc < _FINISH_LAT_ACC_TH * tol:
           self.state = CurveState.enabled
 
     elif self.long_enabled and self.enabled:
@@ -125,12 +136,13 @@ class CurveSpeedControl:
     return self.state in ACTIVE_STATES
 
   def _update_solution(self) -> float:
+    tol = self._lat_tol()
     if self.state not in ACTIVE_STATES:
       return self.a_ego
     if self.state == CurveState.entering:
-      return float(np.interp(self.max_pred_lat_acc, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V))
+      return float(np.interp(self.max_pred_lat_acc / tol, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V))
     if self.state == CurveState.turning:
-      return float(np.interp(self.current_lat_acc, _TURNING_ACC_BP, _TURNING_ACC_V))
+      return float(np.interp(self.current_lat_acc / tol, _TURNING_ACC_BP, _TURNING_ACC_V))
     return _LEAVING_ACC   # leaving
 
   def update(self, sm, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float) -> None:
