@@ -10,6 +10,13 @@ LANE_CHANGE_SPEED_MIN = 30 * CV.KPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 LANE_CHANGE_START_TIME = 0.5
 
+# Turning at a junction, as opposed to changing lanes. Below the lane change threshold a
+# blinker does not mean "move over", it means "we are about to turn", and the model drives
+# a junction very differently once it is told so. Ported from sunnypilot's
+# LaneTurnController, which caps the same way: the two are complementary, so a blinker
+# under this speed is a turn and over it is a lane change, with no gap between them.
+LANE_TURN_SPEED_MAX = 20 * CV.KPH_TO_MS
+
 class DesireHelper:
   def __init__(self):
     self.lane_change_state = LaneChangeState.off
@@ -86,3 +93,10 @@ class DesireHelper:
         self.desire = log.Desire.laneChangeLeft
       elif self.lane_change_direction == LaneChangeDirection.right:
         self.desire = log.Desire.laneChangeRight
+    elif lateral_active and one_blinker and v_ego < LANE_TURN_SPEED_MAX:
+      # A blind spot here is a car alongside in the junction, so hold the desire back the
+      # same way a lane change would be held back
+      if carstate.leftBlinker and not (carstate.leftBlindspot or left_edge_detected):
+        self.desire = log.Desire.turnLeft
+      elif carstate.rightBlinker and not (carstate.rightBlindspot or right_edge_detected):
+        self.desire = log.Desire.turnRight
