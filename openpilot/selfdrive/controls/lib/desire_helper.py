@@ -12,10 +12,11 @@ LANE_CHANGE_START_TIME = 0.5
 
 # Turning at a junction, as opposed to changing lanes. Below the lane change threshold a
 # blinker does not mean "move over", it means "we are about to turn", and the model drives
-# a junction very differently once it is told so. Ported from sunnypilot's
-# LaneTurnController, which caps the same way: the two are complementary, so a blinker
-# under this speed is a turn and over it is a lane change, with no gap between them.
-LANE_TURN_SPEED_MAX = 20 * CV.KPH_TO_MS
+# a junction very differently once it is told so. Tied to the lane change threshold rather
+# than given its own number, the way sunnypilot's LaneTurnController caps itself: the two
+# are complementary, so a blinker under this speed is a turn and over it is a lane change,
+# with no band in between where neither applies.
+LANE_TURN_SPEED_MAX = LANE_CHANGE_SPEED_MIN
 
 class DesireHelper:
   def __init__(self):
