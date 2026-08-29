@@ -18,8 +18,16 @@ from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights
 from openpilot.common.swaglog import cloudlog
 
-A_CRUISE_MAX_VALS = [1.2, 1.1, 0.8, 0.6]
-A_CRUISE_MAX_BP = [0., 10.0, 25., 40.]
+# Eco from 18 km/h up, ours below it. open251021's eco curve pulls harder than stock off
+# the line (1.6 against 1.2) and much softer everywhere above walking pace; the request was
+# for the soft half only, so the first two points hold the values this car already had and
+# the rest are eco's, whose 5 m/s breakpoint is exactly the 18 km/h asked for.
+#                     0    10km/h  18    36    54    72    90   144
+A_CRUISE_MAX_BP =   [0.,   2.8,   5.,   10.,  15.,  20.,  25., 40.]
+A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.5,  0.5,  0.5,  0.3, 0.2]
+# Jerk keeps its own breakpoints. It shares the acceleration curve's in stock, and adding
+# points there would silently make the two arrays different lengths.
+J_CRUISE_BP = [0., 10.0, 25., 40.]
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MIN = -1.2
 # Comfort jerk for tracking the set speed. A plain proportional law on the speed error
@@ -104,7 +112,7 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
     speed_error -= math.copysign(V_CRUISE_DEADZONE, speed_error)
   comfort_accel = min(abs(speed_error), math.sqrt(2. * J_CRUISE_COMFORT * abs(speed_error)))
   target_accel = np.clip(math.copysign(comfort_accel, speed_error), A_CRUISE_MIN, max_accel)
-  j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
+  j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
   target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
   return target_accel
