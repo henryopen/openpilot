@@ -15,7 +15,8 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
-MIN_V = 20 * CV.KPH_TO_MS   # sunnypilot's value; this port had dropped it to 15
+MIN_V = 20 * CV.KPH_TO_MS   # below this, do not start slowing for a corner at all
+V_FLOOR = 15 * CV.KPH_TO_MS  # ...but once slowing, this is as far down as it goes
 PARAMS_UPDATE_PERIOD = 3.   # seconds
 
 _ENTERING_PRED_LAT_ACC_TH = 1.3        # predicted lat acc that starts the entering state
@@ -156,13 +157,15 @@ class CurveSpeedControl:
     self.is_active = self._update_state_machine()
     self.a_target = self._update_solution()
 
-    # sunnypilot's controller returns a speed and floors it at MIN_V: max(v_target, MIN_V).
-    # This port returns an acceleration instead, and the floor did not come with it, so
-    # nothing stopped it slowing all the way down - it only exits the corner when
-    # current_lat_acc falls under _LEAVING_LAT_ACC_TH, and since that is v^2 * curvature, a
-    # junction has to get down to about 10 km/h before it lets go. The equivalent of the
-    # floor here is to stop asking for deceleration once we are at the floor speed.
-    if self.v_ego <= MIN_V:
+    # sunnypilot's controller returns a speed and floors it: max(v_target, MIN_V). This
+    # port returns an acceleration instead, and the floor did not come with it, so nothing
+    # stopped it slowing all the way down - it only exits the corner when current_lat_acc
+    # falls under _LEAVING_LAT_ACC_TH, and since that is v^2 * curvature, a junction had to
+    # get down to about 10 km/h before it let go. The equivalent here is to stop asking for
+    # deceleration at the floor. Kept separate from the entry threshold: starting to slow
+    # and refusing to slow further are different questions, and tying them together would
+    # add braking between 15 and 20 km/h that was never there.
+    if self.v_ego <= V_FLOOR:
       self.a_target = max(self.a_target, 0.0)
 
     self.frame += 1
