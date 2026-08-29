@@ -62,6 +62,16 @@ def dash_to_true(v_target: float) -> float:
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
+# Ease off when the set speed itself is low. Pulling the full 1.2 m/s2 away from a stop
+# feels abrupt when the target is 40 km/h, in a way the same acceleration toward 100 km/h
+# does not - the car is asking for most of its authority to cover a small gap. Ported from
+# FrogPilot's get_max_accel_low_speeds; its CITY_SPEED_LIMIT is 15 m/s.
+_LOW_SET_SPEED_BP = [0., 7.5, 15.]
+
+
+def scale_for_set_speed(max_accel, v_cruise):
+  return float(np.interp(v_cruise, _LOW_SET_SPEED_BP, [max_accel / 4, max_accel / 2, max_accel]))
+
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
@@ -69,6 +79,7 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego)
 
   if not e2e:
+    max_accel = scale_for_set_speed(max_accel, v_cruise)
     a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
     a_y = v_ego ** 2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
     a_x_allowed = math.sqrt(max(a_total_max ** 2 - a_y ** 2, 0.))
