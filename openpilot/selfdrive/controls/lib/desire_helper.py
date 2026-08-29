@@ -17,6 +17,9 @@ LANE_CHANGE_START_TIME = 0.5
 # are complementary, so a blinker under this speed is a turn and over it is a lane change,
 # with no band in between where neither applies.
 LANE_TURN_SPEED_MAX = LANE_CHANGE_SPEED_MIN
+# Below this a blinker is more likely to be pulling over, parking, or crawling in traffic
+# than taking a junction, and handing the model a turn desire there would be inventing one.
+LANE_TURN_SPEED_MIN = 15 * CV.KPH_TO_MS
 
 class DesireHelper:
   def __init__(self):
@@ -94,7 +97,7 @@ class DesireHelper:
         self.desire = log.Desire.laneChangeLeft
       elif self.lane_change_direction == LaneChangeDirection.right:
         self.desire = log.Desire.laneChangeRight
-    elif lateral_active and one_blinker and v_ego < LANE_TURN_SPEED_MAX:
+    elif lateral_active and one_blinker and LANE_TURN_SPEED_MIN <= v_ego < LANE_TURN_SPEED_MAX:
       # A blind spot here is a car alongside in the junction, so hold the desire back the
       # same way a lane change would be held back
       if carstate.leftBlinker and not (carstate.leftBlindspot or left_edge_detected):

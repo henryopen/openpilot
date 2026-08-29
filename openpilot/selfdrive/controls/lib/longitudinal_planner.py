@@ -29,6 +29,10 @@ A_CRUISE_MIN = -1.2
 # directions. This only limits the cruise candidate; MPC braking for a lead is unaffected
 # because the candidates are resolved with min().
 J_CRUISE_COMFORT = 0.16
+# Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
+# the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
+# that swing while leaving any steady-state offset under 1 km/h.
+V_CRUISE_DEADZONE = 0.25
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 PlanReason = custom.LongitudinalPlanSP.Reason
 PLAN_REASONS = {LongitudinalPlanSource.cruise: PlanReason.cruise,
@@ -89,7 +93,15 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
       coast_limit = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [max_accel, clipped_accel_coast])
       max_accel = min(max_accel, coast_limit)
 
+  # Ignore the last fraction of a km/h. The law above is proportional all the way to zero
+  # error, so holding a set speed means commanding acceleration continuously in one
+  # direction and then the other, which is felt as 50 -> 51 -> 49 -> 51. Subtracting the
+  # deadzone rather than zeroing inside it keeps the response continuous at the edge.
   speed_error = v_cruise - v_ego
+  if abs(speed_error) <= V_CRUISE_DEADZONE:
+    speed_error = 0.0
+  else:
+    speed_error -= math.copysign(V_CRUISE_DEADZONE, speed_error)
   comfort_accel = min(abs(speed_error), math.sqrt(2. * J_CRUISE_COMFORT * abs(speed_error)))
   target_accel = np.clip(math.copysign(comfort_accel, speed_error), A_CRUISE_MIN, max_accel)
   j_cruise = np.interp(v_ego, A_CRUISE_MAX_BP, J_CRUISE_VALS)
