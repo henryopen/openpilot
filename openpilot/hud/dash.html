@@ -127,12 +127,6 @@
   .apbtn.cur { color:#7ee2a0; border-color:#2e6b45; }
   .apbtn:disabled { opacity:.45 }
 
-  /* 俯視雷達圖。透視圖在這種 3.2:1 的長條屏上，垂直和水平不可能同時是正確比例，
-     所以目標的精確位置看這裡，路面那張只管路況與跟車。 */
-  .bev{position:absolute;left:944px;top:150px;z-index:5;border-radius:9px;
-       background:rgba(9,13,19,.74);border:1px solid rgba(90,107,124,.30)}
-  .bevcap{position:absolute;left:952px;top:157px;z-index:6;font-size:9.5px;font-weight:700;
-          letter-spacing:1.2px;color:var(--dim)}
 </style>
 </head>
 <body>
@@ -184,8 +178,6 @@
 
   <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
 
-  <canvas class="bev" id="bev" width="240" height="166"></canvas>
-  <div class="bevcap">俯視 · 雷達</div>
 
   <div class="bar">
     <div class="m"><div class="k">相對速度</div><div class="v" id="m1">—</div></div>
@@ -235,6 +227,19 @@ function proj(d){ const t=Math.min(Math.max(d,0)/DMAX,1);
   return { y: EGO_Y-(EGO_Y-VP_Y)*Math.pow(t,0.55), s: 1-0.72*Math.pow(t,0.46) }; }
 function px(d,y){ const p=proj(d); return { x: W/2 + y*MPP*p.s, y:p.y, s:p.s }; }  // device frame: 右為正
 
+// 取樣點只有 10 個、遠處間距 15~20 m，直線連起來轉彎處就是折角。用「相鄰點中點當節點、
+// 原取樣點當控制點」的二次貝茲把同一批點連成平滑曲線 —— 不編造資料，只改連法。
+function smoothTo(pts, cont){
+  if(!pts.length) return;
+  if(cont) cx.lineTo(pts[0].x,pts[0].y); else cx.moveTo(pts[0].x,pts[0].y);
+  if(pts.length<3){ for(let i=1;i<pts.length;i++) cx.lineTo(pts[i].x,pts[i].y); return; }
+  for(let i=1;i<pts.length-1;i++){
+    const mx=(pts[i].x+pts[i+1].x)/2, my=(pts[i].y+pts[i+1].y)/2;
+    cx.quadraticCurveTo(pts[i].x,pts[i].y,mx,my);
+  }
+  const e=pts[pts.length-1]; cx.lineTo(e.x,e.y);
+}
+
 // 把一條線畫成「有寬度的多邊形」——OP 的做法，寬度隨信心
 function ribbon(ys, halfW, style){
   const A=[],B=[];
@@ -246,8 +251,8 @@ function ribbon(ys, halfW, style){
   }
   if(A.length<2) return;
   cx.beginPath();
-  A.forEach((p,i)=> i?cx.lineTo(p.x,p.y):cx.moveTo(p.x,p.y));
-  for(let i=B.length-1;i>=0;i--) cx.lineTo(B[i].x,B[i].y);
+  smoothTo(A,false);
+  smoothTo(B.slice().reverse(),true);
   cx.closePath(); cx.fillStyle=style; cx.fill();
 }
 function band(y1,y2,fill){
@@ -258,8 +263,8 @@ function band(y1,y2,fill){
   }
   if(A.length<2) return;
   cx.beginPath();
-  A.forEach((p,i)=> i?cx.lineTo(p.x,p.y):cx.moveTo(p.x,p.y));
-  for(let i=B.length-1;i>=0;i--) cx.lineTo(B[i].x,B[i].y);
+  smoothTo(A,false);
+  smoothTo(B.slice().reverse(),true);
   cx.closePath(); cx.fillStyle=fill; cx.fill();
 }
 
@@ -377,7 +382,8 @@ function drawRoad(F){
             : L.v< 1.5 ? [214,234,250]    // 同速
             :            [47,212,90];     // 遠離
     const RGB=`${c[0]},${c[1]},${c[2]}`;
-    const a0 = (L.main?1:0.62) * (L.coast?0.45:1) * (L.onc?0.7:1);   // 掉格保持中的淡一點，對向的再淡一點
+    // 掉格保持中的淡一點，對向的再淡一點；橫向位置已不可靠的（25 m 外的旁車）畫得更淡
+    const a0 = (L.main?1:0.62) * (L.coast?0.45:1) * (L.onc?0.7:1) * (L.dim?0.5:1);
     const sz = Math.max(13, Math.min(30, 900/(L.d+18))) * (L.main?1.2:0.85);
     // V 形箭標（有厚度，不是實心大三角）
     const dir = L.onc ? 1 : -1;           // 對向來車的箭頭倒過來指向我們
@@ -420,6 +426,154 @@ function drawRoad(F){
       cx.beginPath(); cx.moveTo(p.x-sz*0.9, by+5); cx.lineTo(p.x+sz*0.9, by+5); cx.stroke();
     }
   });
+
+  drawYolo(F);
+}
+
+/* ═════ YOLO 視覺辨識疊加（車機 :8903）═════ */
+// yolod 只回傳公尺座標，不回傳畫面：一趟下來是幾百 KB，不是幾百 MB。
+// 距離是單目估的（框底當接地點），對照雷達實測中位偏差約 ±10~20%，遠處只能算「大概位置」，
+// 所以圖示照距離擺、但不標到小數點。
+let YOLO=null, YOLO_T=0, YPEND=null, YTRK=[];
+const YCLR={0:'#ff6b6b', 1:'#ffd93d', 2:'#8fb4d6', 3:'#ffa726', 5:'#b39ddb', 7:'#9fd6a7'};
+const YNAME={0:'人', 1:'單車', 2:'車', 3:'機車', 5:'公車', 7:'卡車'};
+const YCN={person:'人', bicycle:'單車', car:'車', motorcycle:'機車', bus:'公車',
+           truck:'卡車', 'traffic light':'號誌', 'stop sign':'停牌'};
+const YVRU=new Set([0,1,3]);   // 行人、單車、機車：模型最弱、也最該讓駕駛知道的
+const YLIGHT={red:['#ff2f2f','紅燈'], amber:['#ffbe00','黃燈'], green:['#00d977','綠燈']};
+
+let YHOST=null;
+async function yoloHost(){
+  if(window.__esHost) return window.__esHost;      // SSE 已連上的就是車機
+  if(YHOST) return YHOST;
+  try{ const j=await (await fetch('/host.json',{cache:'no-store'})).json();
+       YHOST=(j.hosts||[]).filter(Boolean)[0]||null; }catch(e){}
+  return YHOST;                                     // 回放驗證時也連得到
+}
+let YSTAT='—';
+async function pollYolo(){
+  const h=await yoloHost();
+  if(!h){ YOLO=null; YSTAT='無車機'; return; }
+  try{
+    const c=new AbortController(), t=setTimeout(()=>c.abort(),1200);
+    const r=await fetch(`http://${h}:8903/det.json`,{cache:'no-store',signal:c.signal});
+    clearTimeout(t);
+    const j=await r.json();
+    if(j.ok){ YOLO=j; YOLO_T=Date.now(); YPEND=j.dets||[]; YSTAT=''; }
+    else { YOLO=null; YSTAT=j.reason==='waiting for camerad'?'待相機':(j.reason||'未就緒'); }
+  }catch(e){ YOLO=null; YSTAT='連不上'; }
+}
+setInterval(pollYolo, 700);
+
+// 偵測是一幀一幀各自算的，一秒又只有 0.8 次，照著畫就是一閃一閃、位置一格一格跳。
+// 這裡把同一個目標接起來（跟 matchLeads 對前車做的同一件事），估出它自己的地面速度，
+// 兩次偵測之間用本車速度把位置補到「現在」；短暫漏看沿用推算值並淡出，不直接消失。
+const YGATE=6;          // 匹配門檻（公尺）
+const YHOLD=2.4;        // 漏看多久才放棄（秒）
+function ypos(t, ve, now){ return Math.max(1, t.dObs - (ve-(t.vObj||0))*(now-t.tObs)/1000); }
+
+function yoloTrack(dets, ve){
+  const now=Date.now(), used=new Set();
+  dets.forEach(d=>{
+    if(d.d==null) return;
+    let best=-1, bd=YGATE;
+    YTRK.forEach((t,i)=>{
+      if(used.has(i) || t.cls!==d.cls) return;
+      const dd=Math.hypot(ypos(t,ve,now)-d.d, (t.lat-d.lat)*2);   // 橫向抖動加倍看待
+      if(dd<bd){ bd=dd; best=i; }
+    });
+    if(best<0){ YTRK.push({cls:d.cls, conf:d.conf, dObs:d.d, lat:d.lat, tObs:now, vObj:null}); return; }
+    used.add(best);
+    const t=YTRK[best], dt=(now-t.tObs)/1000;
+    if(dt>0.3){
+      // 距離縮短的速率就是「本車速 − 目標速」，反推目標自己多快，下一段才推得準
+      const vObj=Math.max(-3, Math.min(ve+8, ve-(t.dObs-d.d)/dt));
+      t.vObj = t.vObj==null ? vObj : t.vObj*0.6+vObj*0.4;
+    }
+    t.dObs=d.d; t.lat+=(d.lat-t.lat)*0.6; t.conf=d.conf; t.tObs=now;
+  });
+  YTRK=YTRK.filter(t=>(now-t.tObs)/1000 < YHOLD);
+}
+
+// 正後方視角的簡筆圖示：立姿的畫人形，車輛畫車尾方塊
+function yIcon(x, y, s, cls){
+  const col=YCLR[cls]||'#9fb4c8';
+  cx.fillStyle=col; cx.strokeStyle=col;
+  if(YVRU.has(cls)){
+    cx.beginPath(); cx.arc(x, y-s*1.30, s*0.26, 0, 6.283); cx.fill();          // 頭／安全帽
+    cx.beginPath();                                                            // 軀幹
+    cx.moveTo(x-s*0.30, y-s*0.10); cx.lineTo(x-s*0.24, y-s*1.00);
+    cx.lineTo(x+s*0.24, y-s*1.00); cx.lineTo(x+s*0.30, y-s*0.10); cx.closePath(); cx.fill();
+    if(cls!==0){                                                               // 機車／單車：輪＋把手
+      cx.lineWidth=Math.max(1.4, s*0.13); cx.lineCap='round';
+      cx.beginPath(); cx.moveTo(x-s*0.62, y-s*0.72); cx.lineTo(x+s*0.62, y-s*0.72); cx.stroke();
+      cx.beginPath(); cx.moveTo(x, y-s*0.10); cx.lineTo(x, y); cx.stroke();
+      cx.lineCap='butt';
+    }
+  }else{
+    const hw=(cls===7||cls===5)? s*0.86 : s*0.66, ht=(cls===7||cls===5)? s*1.15 : s*0.78;
+    cx.beginPath();
+    if(cx.roundRect) cx.roundRect(x-hw, y-ht, hw*2, ht, Math.min(4, s*0.2));
+    else cx.rect(x-hw, y-ht, hw*2, ht);
+    cx.fill();
+  }
+}
+
+function drawYolo(F){
+  const live = YOLO && Date.now()-YOLO_T<4000;
+  // 小小的狀態燈：辨識沒在跑的時候，畫面上沒有圖示跟「真的沒東西」長得一樣
+  cx.save();
+  cx.font='700 12px system-ui'; cx.textAlign='right';
+  cx.fillStyle = live ? 'rgba(47,212,90,.75)' : 'rgba(130,150,170,.5)';
+  const tally = live ? Object.entries(YOLO.counts||{}).sort((a,b)=>b[1]-a[1])
+                             .map(([k,v])=>`${YCN[k]||k}${v}`).join(' ') : YSTAT;
+  cx.fillText(`YOLO ${tally||'—'}`, W-14, H-86);
+  cx.restore();
+  if(!live){ YTRK=[]; return; }
+
+  const ve=Math.max(0,(F.vEgo||0))/3.6;      // F.vEgo 是 km/h，外推要用 m/s
+  if(YPEND){ yoloTrack(YPEND, ve); YPEND=null; }
+  const now=Date.now();
+
+  // 遠的先畫，近的疊在上面
+  YTRK.map(t=>({t, d:ypos(t,ve,now)})).sort((a,b)=>b.d-a.d).forEach(({t,d})=>{
+    const p=px(d, t.lat||0);
+    if(p.x<-40 || p.x>W+40) return;
+    const s=Math.max(9, Math.min(34, 620/(d+16)));
+    const vru=YVRU.has(t.cls);
+    const held=(now-t.tObs)/1000;
+    const fade=held<1.0 ? 1 : Math.max(0, 1-(held-1.0)/(YHOLD-1.0));   // 漏看就淡出，不是瞬間消失
+    cx.save();
+    // 車輛畫淡：openpilot 自己的前車已經有箭標和距離，這裡只是「YOLO 也看到」
+    cx.globalAlpha=(vru?0.95:0.55)*Math.min(1,(t.conf||0.4)+0.35)*fade;
+    if(vru){ cx.shadowColor=YCLR[t.cls]; cx.shadowBlur=14; }
+    yIcon(p.x, p.y, s, t.cls);
+    cx.restore();
+    if(vru && d<70){                        // 只有行人／二輪標距離，不跟前車大字搶
+      cx.save();
+      cx.globalAlpha=0.95*fade; cx.textAlign='center';
+      cx.font=`800 ${Math.max(12, s*0.62)}px system-ui`;
+      cx.lineWidth=Math.max(2.5, s*0.2); cx.strokeStyle='rgba(4,7,10,.92)'; cx.lineJoin='round';
+      const label=`${YNAME[t.cls]||''} ${d.toFixed(0)}`;
+      cx.strokeText(label, p.x, p.y+Math.max(13, s*0.72));
+      cx.fillStyle=YCLR[t.cls]; cx.fillText(label, p.x, p.y+Math.max(13, s*0.72));
+      cx.restore();
+    }
+  });
+
+  // 紅綠燈：燈懸在空中不在地面，投影到路面沒有意義，改用固定的燈號牌
+  const lit=(YOLO.lights||[])[0];
+  if(lit && YLIGHT[lit]){
+    const [col,txt]=YLIGHT[lit], bx=W/2, by=44;
+    cx.save();
+    cx.fillStyle=col; cx.shadowColor=col; cx.shadowBlur=22;
+    cx.beginPath(); cx.arc(bx-46, by, 13, 0, 6.283); cx.fill();
+    cx.shadowBlur=0;
+    cx.font='800 26px system-ui'; cx.textAlign='left'; cx.fillStyle=col;
+    cx.lineWidth=5; cx.strokeStyle='rgba(4,7,10,.9)'; cx.lineJoin='round';
+    cx.strokeText(txt, bx-26, by+9); cx.fillText(txt, bx-26, by+9);
+    cx.restore();
+  }
 }
 
 /* ═════ 縱向來源濾波（避免一直跳）═════ */
@@ -460,7 +614,6 @@ function render(F){
   e.className='chip'+(F.engaged?' on':(F.avail?' wait':''));
   const nr=(F.leads||[]).filter(l=>l.radar).length;
   set('cRad', nr?`雷達確認 ${nr}`:'純視覺');
-  drawBev(F);
   const src=filterSrc(F.src, !!F._demo);
   const isE2E = src==='e2e'||src==='stoplight'||src==='curve';
   F.e2e = isE2E;
@@ -587,76 +740,6 @@ if(!new URLSearchParams(location.search).has('play')){
   setConn('offline');
 }
 
-/* ═════ 俯視雷達圖 ═════
-   車用雷達的橫向精度是 R×Δθ：角度誤差 0.5°(正前) 到 2°(視野邊緣)，30 m 外橫向就有
-   一兩公尺的誤差，那是感測器的物理限制，不是資料解錯。透視圖沒辦法同時把垂直和水平
-   都畫成正確比例，這裡兩軸各自線性，看得出目標真正落在哪個車道。 */
-const BEV_W = 240, BEV_H = 166;
-const BEV_MAXD = 55, BEV_HALF = 9;          // 前方 55 m、左右各 9 m
-const BEV_PADT = 16, BEV_PADB = 14;
-
-function bevXY(d, y){                        // y 沿用畫面慣例：右為正
-  const usable = BEV_H - BEV_PADT - BEV_PADB;
-  return { x: BEV_W/2 + (y / BEV_HALF) * (BEV_W/2 - 8),
-           y: BEV_H - BEV_PADB - Math.min(d, BEV_MAXD) / BEV_MAXD * usable };
-}
-
-function drawBev(F){
-  const cv = document.getElementById('bev'); if(!cv) return;
-  const g = cv.getContext('2d');
-  g.clearRect(0, 0, BEV_W, BEV_H);
-
-  // 車道參考線：本車道邊 ±1.75 m、隔壁車道外緣 ±5.25 m
-  g.lineWidth = 1;
-  for(const [lat, style] of [[1.75,'rgba(200,220,240,.22)'], [5.25,'rgba(200,220,240,.11)']]){
-    for(const sgn of [-1, 1]){
-      const a = bevXY(0, lat*sgn), b = bevXY(BEV_MAXD, lat*sgn);
-      g.strokeStyle = style; g.setLineDash([4, 5]);
-      g.beginPath(); g.moveTo(a.x, a.y); g.lineTo(b.x, b.y); g.stroke();
-    }
-  }
-  // 距離刻度
-  g.setLineDash([2, 6]); g.font = '600 8.5px system-ui'; g.textAlign = 'left';
-  for(const d of [20, 40]){
-    const p = bevXY(d, 0);
-    g.strokeStyle = 'rgba(200,220,240,.13)';
-    g.beginPath(); g.moveTo(6, p.y); g.lineTo(BEV_W-6, p.y); g.stroke();
-    g.fillStyle = 'rgba(150,168,186,.75)'; g.fillText(d + ' m', 8, p.y - 3);
-  }
-  g.setLineDash([]);
-
-  // 本車
-  const me = bevXY(0, 0);
-  g.fillStyle = 'rgba(232,238,244,.9)';
-  g.beginPath();
-  g.moveTo(me.x, me.y - 9); g.lineTo(me.x + 5.5, me.y); g.lineTo(me.x - 5.5, me.y);
-  g.closePath(); g.fill();
-
-  for(const L of (F.leads || [])){
-    if(L.d > BEV_MAXD || Math.abs(L.y) > BEV_HALF) continue;
-    const p = bevXY(L.d, L.y);
-    const c = L.onc ? [122,146,184]
-            : L.v <= -10 ? [255,45,45]
-            : L.v <=  -3 ? [255,140,26]
-            : L.v <  1.5 ? [214,234,250]
-            :              [47,212,90];
-    const a = (L.coast ? 0.45 : 1) * (L.onc ? 0.75 : 1);
-    g.fillStyle = `rgba(${c[0]},${c[1]},${c[2]},${a})`;
-    if(L.onc){                                  // 對向來車畫成朝我們的小三角
-      g.beginPath(); g.moveTo(p.x, p.y + 5); g.lineTo(p.x + 4.5, p.y - 4); g.lineTo(p.x - 4.5, p.y - 4);
-      g.closePath(); g.fill();
-    } else {
-      g.beginPath(); g.arc(p.x, p.y, L.main ? 5 : 3.6, 0, 6.2832); g.fill();
-    }
-    if(L.main){                                 // 跟車目標：套個框，跟透視圖那邊一致
-      g.strokeStyle = 'rgba(255,255,255,.95)'; g.lineWidth = 1.6;
-      g.strokeRect(p.x - 8, p.y - 8, 16, 16);
-      g.fillStyle = 'rgba(255,255,255,.95)'; g.font = '800 10px system-ui'; g.textAlign = 'left';
-      g.fillText(Math.round(L.d) + ' m', p.x + 11, p.y + 3.5);
-    }
-  }
-}
-
 /* ═════ 顯示平滑：SSE 10 Hz 進來，畫面用 rAF 插值，目標才不會一格一格跳 ═════ */
 const SM_TAU = 0.13;        // 秒。越大越穩、跟得越慢
 const SM_GATE = 6;          // 公尺。兩幀之間距離差在這之內視為同一個目標
@@ -689,6 +772,9 @@ function matchLeads(prev, next, dt){
 }
 
 const LANE_W = 3.5;        // m, 與 radar_tracker 同一個值
+const SIDE_MAX_D = 100;    // 畫到畫面上限(DMAX)。舊值 40 是因為橫向被當角度解、誤差隨距離放大；
+                           // 改讀 LAT_DIST 後實測 6 點窗抖動：40-50 m 0.02 m、70-110 m 0.02 m(90%位 0.04)
+const SIDE_DIM_D = 60;     // 超過這裡才畫淡；橫向已穩定，畫淡只是提示距離遠
 const ROAD_TAU = 0.08;      // 秒。路面的平滑；停下來時模型輸出更吵，下面會再放寬
 function lerpArr(prev, next, a){
   if(!prev || !next || prev.length !== next.length) return next;
@@ -799,16 +885,15 @@ function fromSSE(J){
   (rs.leads||[]).forEach((L,i)=>{
     if(!L.status) return;
     if(i===1) return;                    // leadTwo 不是第二台車，是 leadOne 同一台的另一組估計
-    // 雷達的橫向量測會隨目標接近而往中間漂（52443582c 對視覺驗證過：漂移是量測特性，
-    // 不是換算錯）。遠處量測準、近處會漂，所以往車道中心的拉力隨距離增強：
-    // 40m 處只拉 0.35（跨線動作看得到），10m 內拉 0.85（旁車穩穩待在自己車道）。
-    let y = -(L.yRel || 0);
-    if(!L.oncoming && L.laneN != null){
-      const w = Math.min(.85, Math.max(.35, .85 - ((L.dRel || 0) - 8) * (0.5 / 32)));
-      y = y * (1 - w) + (-L.laneN * LANE_W) * w;
-    }
-    F.leads.push({d:L.dRel||0, y:y, v:kph(L.vRel), radar:!!L.radar,
+    // 量到什麼畫什麼。橫向量測對照視覺的實測誤差：15 m 內 0.06 m、25 m 內 0.56 m，
+    // 40 m 外 3.6 m —— 超過一個車道寬，車道判定只有 47% 對，比丟銅板好不了多少。
+    // 先前把目標往所屬車道中心拉是在編造那段不知道的資訊，正是旁車看起來滑向
+    // 畫面中央的原因（誤判成本車道就拉去 y=0）。遠的不畫，中距的畫淡，近的照實。
+    const dRel = L.dRel || 0;
+    if(i > 0 && dRel > SIDE_MAX_D) return;      // 主目標不受限，radard 挑過的照畫
+    F.leads.push({d:dRel, y:-(L.yRel || 0), v:kph(L.vRel), radar:!!L.radar,
                   coast:!!L.coast, onc:!!L.oncoming, lane:L.lane||'', main:i===0,
+                  dim: i > 0 && dRel > SIDE_DIM_D,   // 橫向位置開始不可靠
                   id:(L.id!=null?'r'+L.id:(i===0?'lead':null))});
   });
   F.stopA = (mv && mv.stopAhead) || 0;
