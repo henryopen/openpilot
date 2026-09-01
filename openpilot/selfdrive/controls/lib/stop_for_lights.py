@@ -39,19 +39,15 @@ logs, 30-45 m from a stop it never once had the standstill in its profile while 
 speed, and had it a third of the time while decelerating. Easing off early is what earns
 the better prediction that follows.
 """
-import numpy as np
-
 from openpilot.common.constants import CV
-from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
 MIN_SPEED = 15 * CV.KPH_TO_MS   # below this the ordinary planner is already stopping us
 VEL_STOPPED = 0.5               # predicted speed at or under this is a standstill
 VEL_TAIL = 1.0                  # and it has to stay stopped, not dip and recover
-STOP_WITHIN = 20.               # nothing nearer than this is worth reaching further for
-FILTER_TIME = 1.0               # a red light does not appear and vanish inside a second
-THRESHOLD = 1 - 1 / np.e        # ~0.63, the filter's value after one time constant
+WANTS_STOP = -1.0               # braking this hard is a stop being asked for, not a lift
+CONFIRM = 0.5                   # held this long, so one frame's opinion is not enough
 MAX_DECEL = -1.5                # gentle: arriving slowly beats being braked hard
 STOP_GAP = 4.0                  # where the car comes to rest short of the predicted point
 COMMITTED = 15 * CV.KPH_TO_MS   # below this the stop is happening, see it through
@@ -68,7 +64,7 @@ class StopForLights:
     self.params = Params()
     self.enabled = self.params.get_bool("StopForTrafficLights")
     self.frame = 0
-    self.filter = FirstOrderFilter(0., FILTER_TIME, DT_MDL)
+    self.wants_for = 0.
     self.is_active = False
     self.held_for = 0.
     self.stopped_for = 0.
@@ -81,18 +77,15 @@ class StopForLights:
       self.enabled = self.params.get_bool("StopForTrafficLights")
     self.frame += 1
 
-  def _predicts_a_stop(self, md, v_ego: float) -> bool:
-    """Does the model's speed profile come to a standstill, near enough to be this junction?
+  def _predicts_a_stop(self, md) -> bool:
+    """Does the model's speed profile come to a standstill?
 
-    Near enough means within braking distance from the speed we are doing, so the reach
-    grows with speed rather than being one number that suits one speed. It was 15 m, which
-    over this car's logs threw away every stop the model saw: it first has the standstill
-    in its profile at 25 m typically and as far out as 66 m, always further than 15. What
-    it cannot do is see a stop it is not yet close to in time, its profile only running ten
-    seconds ahead, and its distant calls flicker, so reaching past braking distance buys
-    nothing and only brakes for junctions we drive through.
+    No distance test. One was here, 15 m, and it threw away every stop the model saw: with
+    nothing in front the standstill appears in the profile at 10 to 20 m and the request to
+    brake for it comes earlier still. How hard the model is asking already carries how close
+    the stop is, so pairing that with this needs no number about where junctions are.
 
-    Leaves the distance to that standstill behind for limit() to brake against, and clears
+    Leaves the distance to the standstill behind for limit() to brake against, and clears
     it when there is none, so nothing brakes against a distance the model has moved on from.
     """
     self.stop_distance = 0.
@@ -108,10 +101,23 @@ class StopForLights:
       return False
 
     self.stop_distance = float(x[idx])
-    return self.stop_distance < max(STOP_WITHIN, v_ego * v_ego / (2. * -MAX_DECEL) + STOP_GAP)
+    return True
+
+  def _wants_a_stop(self, md) -> bool:
+    """Is the model asking for the braking a stop takes, for a stop it can see?
+
+    Its own published acceleration is the signal. Approaching a red light with nothing in
+    front it asks for -1.7 to -1.9 from a dozen metres out, while action.shouldStop still
+    reads go - over 2026-08-29 and 08-30 that flag was false at every one of the 52 times
+    the request passed -0.8, so it carries nothing. The request alone is not enough either:
+    it goes past -1.2 eleven times in three and a half hours where no stop follows, nine of
+    them with no standstill drawn anywhere in the profile. Together they had no false calls
+    at all, and fire 24 m out at 32 km/h rather than the old test's 13 m at 17 km/h.
+    """
+    return self._predicts_a_stop(md) and float(md.action.desiredAcceleration) <= WANTS_STOP
 
   def _reset(self) -> None:
-    self.filter.x = 0.
+    self.wants_for = 0.
     self.is_active = False
     self.held_for = 0.
     self.stopped_for = 0.
@@ -178,7 +184,7 @@ class StopForLights:
       elif v_ego < COMMITTED:
         # slow enough that the stop is happening; see it through. the distance still has
         # to be read every frame, since it is what the braking is worked out against.
-        self._predicts_a_stop(md, v_ego)
+        self._predicts_a_stop(md)
         self.stopped_for = 0.
         self.clear_for = 0.
         self.is_active = True
@@ -186,19 +192,22 @@ class StopForLights:
         # something to follow turned up: it brakes harder and better than this does
         self._reset()
       else:
-        # still quick: let the model take it back if it no longer sees a stop
-        self.filter.update(1. if self._predicts_a_stop(md, v_ego) else 0.)
-        self.is_active = self.filter.x > THRESHOLD
+        # still quick: hold the call while the model still draws the road stopping. not on
+        # what it is asking for - once we are braking it asks for less, which would drop
+        # the call, speed us back up and ask again.
+        self.is_active = self._predicts_a_stop(md)
+        if not self.is_active:
+          self._reset()
       return
 
     if v_ego < MIN_SPEED or (lead is not None and lead.status):
       # a car to follow is the whole answer: the planner already brakes for it and pulls
       # away with it, so there is nothing here worth adding and a wrong call to make.
-      self.filter.x = 0.
+      self.wants_for = 0.
       return
 
-    self.filter.update(1. if self._predicts_a_stop(md, v_ego) else 0.)
-    self.is_active = self.filter.x > THRESHOLD
+    self.wants_for = self.wants_for + DT_MDL if self._wants_a_stop(md) else 0.
+    self.is_active = self.wants_for > CONFIRM
     if self.is_active:
       self.held_for = 0.
 
