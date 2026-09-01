@@ -53,6 +53,9 @@ STOPPED = 0.5                   # standing still
 SETTLE = 1.5                    # the model needs a moment at a halt before it says so
 CLEAR_FOR = 1.0                 # and has to keep saying it: at a halt the flag flickers
 HOLD_MAX = 180.                 # no light is this long; let go rather than strand the car
+LEAD_GONE = 2.0                 # the car in front has opened this much of a gap
+LEAD_ROLLING = 0.8              # or is simply moving
+LEAD_FOR = 0.3                  # briefly, so one noisy frame cannot release the hold
 
 
 class StopForLights:
@@ -66,6 +69,8 @@ class StopForLights:
     self.stopped_for = 0.
     self.clear_for = 0.
     self.stop_distance = 0.
+    self.lead_closest = 0.
+    self.lead_gone_for = 0.
 
   def update_params(self) -> None:
     if self.frame % 50 == 0:
@@ -108,8 +113,31 @@ class StopForLights:
     self.stopped_for = 0.
     self.clear_for = 0.
     self.stop_distance = 0.
+    self.lead_closest = 0.
+    self.lead_gone_for = 0.
 
-  def update(self, md, v_ego: float, gas_pressed: bool = False) -> None:
+  def _lead_has_gone(self, lead, dt: float) -> bool:
+    """Has the car we stopped behind pulled away?
+
+    Waiting on action.shouldStop alone leaves the car sitting there: at a halt the model
+    keeps saying stop long after the road is clear, and over these logs that cost 5 to 22
+    seconds three times with the car in front already gone, once until the driver used the
+    throttle. The car in front moving is the same evidence a driver goes on, and unlike
+    the model's predicted path it cannot fire early - if it has not moved, neither do we.
+    """
+    if lead is None or not lead.status:
+      self.lead_gone_for = 0.
+      return False
+
+    d_rel = float(lead.dRel)
+    self.lead_closest = d_rel if self.lead_closest == 0. else min(self.lead_closest, d_rel)
+    if d_rel - self.lead_closest > LEAD_GONE or float(lead.vLead) > LEAD_ROLLING:
+      self.lead_gone_for += dt
+    else:
+      self.lead_gone_for = 0.
+    return self.lead_gone_for > LEAD_FOR
+
+  def update(self, md, v_ego: float, gas_pressed: bool = False, lead=None) -> None:
     self.update_params()
 
     if not self.enabled or gas_pressed:
@@ -134,12 +162,13 @@ class StopForLights:
         # genuinely clearing a junction holds for the best part of a second. So the flag
         # has to keep saying go, not just say it once.
         self.stopped_for += DT_MDL
-        if md.action.shouldStop:
+        lead_gone = self._lead_has_gone(lead, DT_MDL)
+        if md.action.shouldStop and not lead_gone:
           self.clear_for = 0.
           self.is_active = True
         else:
           self.clear_for += DT_MDL
-          if self.stopped_for > SETTLE and self.clear_for > CLEAR_FOR:
+          if self.stopped_for > SETTLE and (self.clear_for > CLEAR_FOR or lead_gone):
             self.is_active = False
       elif v_ego < COMMITTED:
         # slow enough that the stop is happening; see it through. the distance still has
@@ -171,6 +200,8 @@ class StopForLights:
     if it wants to brake harder than the geometry needs, it has a reason to.
     """
     a_target = float(a_target_e2e)
-    if self.stop_distance > 0.:
+    if self.stop_distance > 0. and v_ego > STOPPED:
+      # only while there is speed to take off. at a halt this works out at zero, which
+      # would sit on the model's own request to pull away and never let the car move.
       a_target = min(a_target, -v_ego * v_ego / (2. * max(self.stop_distance - STOP_GAP, 1.)))
     return max(a_target, MAX_DECEL)
