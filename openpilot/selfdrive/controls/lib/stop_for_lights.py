@@ -52,8 +52,6 @@ STOPPED = 0.5                      # standing still
 SETTLE = 1.5                       # the model needs a moment at a halt before it says so
 CLEAR_FOR = 1.0                    # and has to keep saying it: at a halt the flag flickers
 HOLD_MAX = 180.                    # no light is this long; let go rather than strand the car
-LEAD_ROLLING = 0.8                 # a car that turned up in front of us is moving away
-LEAD_FOR = 0.3                     # briefly, so one noisy frame cannot release the hold
 NO_CAP = 1e9                       # no opinion about the set speed
 
 
@@ -71,7 +69,6 @@ class StopForLights:
     self.held_for = 0.
     self.stopped_for = 0.
     self.clear_for = 0.
-    self.lead_gone_for = 0.
 
   def update_params(self) -> None:
     if self.frame % 50 == 0:
@@ -88,7 +85,6 @@ class StopForLights:
     self.held_for = 0.
     self.stopped_for = 0.
     self.clear_for = 0.
-    self.lead_gone_for = 0.
 
   @staticmethod
   def _plan(md):
@@ -117,26 +113,7 @@ class StopForLights:
       self.receded_for = 0.
       self.held_still_for += DT_MDL
 
-  def _lead_has_gone(self, lead) -> bool:
-    """Has a car appeared in front of us and driven off?
-
-    We only hold where there was nothing to follow, so a car that turns up ahead and then
-    leaves has been through the junction: the light is green. Read from its own speed
-    rather than the gap opening up - leadOne changes its mind about which car it is
-    watching, and the distance jumps when it does, by more than two metres while the car
-    ahead sat still in 21 of 63 stops.
-    """
-    if lead is None or not lead.status:
-      self.lead_gone_for = 0.
-      return False
-
-    if float(lead.vLead) > LEAD_ROLLING:
-      self.lead_gone_for += DT_MDL
-    else:
-      self.lead_gone_for = 0.
-    return self.lead_gone_for > LEAD_FOR
-
-  def _hold_at_standstill(self, md, lead) -> None:
+  def _hold_at_standstill(self, md) -> None:
     """Stopped for this junction. Nothing else keeps us here - cruise wants the set speed
     back - so stay until the way is clear, which is also what lets us move off again.
 
@@ -147,12 +124,11 @@ class StopForLights:
     for the best part of a second. So it has to keep saying go, not just say it once.
     """
     self.stopped_for += DT_MDL
-    lead_gone = self._lead_has_gone(lead)
-    if md.action.shouldStop and not lead_gone:
+    if md.action.shouldStop:
       self.clear_for = 0.
     else:
       self.clear_for += DT_MDL
-      if self.stopped_for > SETTLE and (self.clear_for > CLEAR_FOR or lead_gone):
+      if self.stopped_for > SETTLE and self.clear_for > CLEAR_FOR:
         self.reset()
 
   def update(self, md, v_ego: float, v_cruise: float, gas_pressed: bool = False, lead=None) -> None:
@@ -172,7 +148,7 @@ class StopForLights:
         self.reset()
       else:
         self.v_cruise_cap = 0.
-        self._hold_at_standstill(md, lead)
+        self._hold_at_standstill(md)
       return
 
     if not self.armed:
