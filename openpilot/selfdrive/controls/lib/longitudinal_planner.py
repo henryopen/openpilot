@@ -220,7 +220,7 @@ class LongitudinalPlanner:
       # only while it says so. candidates are resolved by min(), so this cannot speed us up.
       self.stop_for_lights.update(sm['modelV2'], v_ego, sm['carState'].gasPressed)
       if self.stop_for_lights.is_active:
-        candidates.append((self.stop_for_lights.limit(output_a_target_e2e),
+        candidates.append((self.stop_for_lights.limit(output_a_target_e2e, v_ego),
                            LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])

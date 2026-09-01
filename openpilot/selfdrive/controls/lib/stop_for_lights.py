@@ -11,9 +11,27 @@ to be this junction rather than one further on, is what a red light looks like f
 here.
 
 The check is deliberately not trusted on its own. Even at its best it calls a stop
-that never happens about one time in five, so what it enables is capped: the model
-may ask for gentle braking and nothing more. A false call costs a light lift off the
-accelerator, which is the worst it is allowed to cost.
+that never happens about one time in five, so what it enables is capped: the braking
+it can ask for is firm at worst, never a stab at the brake.
+
+How hard to brake is worked out from the model's own predicted stop distance rather
+than taken from the acceleration it publishes. Over this car's logs the published
+value is about -1.4 where stopping at the distance the model itself predicts needs
+-2.3, and the planner resolves its candidates by min(), so that request loses to
+cruise or the lead car and the junction arrives with nothing having happened. Asking
+for what the geometry needs is what makes the difference: replayed over four trips it
+takes the module from braking in 3 of the 15 stops the old 15 m gate let it see to 16 of
+the 20 a reach that grows with speed sees, and from 8 km/h with 10 m left to 16 km/h with
+12 m, which is a lift and a long gentle wind-down rather than a late shove.
+
+Stopping in time is not what it is for. Held to a gentle deceleration it comes to rest
+short of the line about four times in five and rolls slowly past the rest, which is the
+right way round: the driver would sooner finish a stop himself than be braked hard by a
+call that is wrong one time in five. Being early matters more than being firm for another
+reason too. The model reads a junction far better while the car is slowing: over these
+logs, 30-45 m from a stop it never once had the standstill in its profile while holding
+speed, and had it a third of the time while decelerating. Easing off early is what earns
+the better prediction that follows.
 """
 import numpy as np
 
@@ -25,10 +43,11 @@ from openpilot.common.realtime import DT_MDL
 MIN_SPEED = 15 * CV.KPH_TO_MS   # below this the ordinary planner is already stopping us
 VEL_STOPPED = 0.5               # predicted speed at or under this is a standstill
 VEL_TAIL = 1.0                  # and it has to stay stopped, not dip and recover
-STOP_WITHIN = 15.               # the standstill has to be this junction, not a later one
+STOP_WITHIN = 20.               # nothing nearer than this is worth reaching further for
 FILTER_TIME = 1.0               # a red light does not appear and vanish inside a second
 THRESHOLD = 1 - 1 / np.e        # ~0.63, the filter's value after one time constant
-MAX_DECEL = -1.5                # the most a false call is allowed to cost
+MAX_DECEL = -1.5                # gentle: arriving slowly beats being braked hard
+STOP_GAP = 4.0                  # where the car comes to rest short of the predicted point
 COMMITTED = 15 * CV.KPH_TO_MS   # below this the stop is happening, see it through
 STOPPED = 0.5                   # standing still
 SETTLE = 1.5                    # the model needs a moment at a halt before it says so
@@ -53,8 +72,21 @@ class StopForLights:
       self.enabled = self.params.get_bool("StopForTrafficLights")
     self.frame += 1
 
-  def _predicts_a_stop(self, md) -> bool:
-    """Does the model's speed profile come to a standstill, near enough to be this junction?"""
+  def _predicts_a_stop(self, md, v_ego: float) -> bool:
+    """Does the model's speed profile come to a standstill, near enough to be this junction?
+
+    Near enough means within braking distance from the speed we are doing, so the reach
+    grows with speed rather than being one number that suits one speed. It was 15 m, which
+    over this car's logs threw away every stop the model saw: it first has the standstill
+    in its profile at 25 m typically and as far out as 66 m, always further than 15. What
+    it cannot do is see a stop it is not yet close to in time, its profile only running ten
+    seconds ahead, and its distant calls flicker, so reaching past braking distance buys
+    nothing and only brakes for junctions we drive through.
+
+    Leaves the distance to that standstill behind for limit() to brake against, and clears
+    it when there is none, so nothing brakes against a distance the model has moved on from.
+    """
+    self.stop_distance = 0.
     v, x = md.velocity.x, md.position.x
     if len(v) == 0 or len(x) != len(v):
       return False
@@ -67,7 +99,7 @@ class StopForLights:
       return False
 
     self.stop_distance = float(x[idx])
-    return self.stop_distance < STOP_WITHIN
+    return self.stop_distance < max(STOP_WITHIN, v_ego * v_ego / (2. * -MAX_DECEL) + STOP_GAP)
 
   def _reset(self) -> None:
     self.filter.x = 0.
@@ -110,13 +142,15 @@ class StopForLights:
           if self.stopped_for > SETTLE and self.clear_for > CLEAR_FOR:
             self.is_active = False
       elif v_ego < COMMITTED:
-        # slow enough that the stop is happening; see it through
+        # slow enough that the stop is happening; see it through. the distance still has
+        # to be read every frame, since it is what the braking is worked out against.
+        self._predicts_a_stop(md, v_ego)
         self.stopped_for = 0.
         self.clear_for = 0.
         self.is_active = True
       else:
         # still quick: let the model take it back if it no longer sees a stop
-        self.filter.update(1. if self._predicts_a_stop(md) else 0.)
+        self.filter.update(1. if self._predicts_a_stop(md, v_ego) else 0.)
         self.is_active = self.filter.x > THRESHOLD
       return
 
@@ -124,11 +158,19 @@ class StopForLights:
       self.filter.x = 0.
       return
 
-    self.filter.update(1. if self._predicts_a_stop(md) else 0.)
+    self.filter.update(1. if self._predicts_a_stop(md, v_ego) else 0.)
     self.is_active = self.filter.x > THRESHOLD
     if self.is_active:
       self.held_for = 0.
 
-  def limit(self, a_target_e2e: float) -> float:
-    """What the model is allowed to ask for. Gentle braking, never a stab at the brake."""
-    return max(float(a_target_e2e), MAX_DECEL)
+  def limit(self, a_target_e2e: float, v_ego: float) -> float:
+    """What it takes to stop where the model says the road does, within what is allowed.
+
+    Constant deceleration to a standstill a little short of the predicted point, since
+    that is where the car actually comes to rest. Never above what the model asked for -
+    if it wants to brake harder than the geometry needs, it has a reason to.
+    """
+    a_target = float(a_target_e2e)
+    if self.stop_distance > 0.:
+      a_target = min(a_target, -v_ego * v_ego / (2. * max(self.stop_distance - STOP_GAP, 1.)))
+    return max(a_target, MAX_DECEL)
