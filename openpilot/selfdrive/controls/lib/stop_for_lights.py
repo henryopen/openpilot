@@ -1,5 +1,11 @@
 """Let the model's own decision to stop reach the plan, without experimental mode.
 
+Only with nothing in front. A car to follow already answers both halves of a junction -
+the planner brakes for it and pulls away with it - so a second opinion about a light can
+only get in the way there. Measured over 2026-08-29 and 08-30, of the junction stops with
+a lead the planner handled every one; this module is for the other kind, where the road
+ahead is empty and nothing but the light says to stop.
+
 The model already works out that the road ahead comes to a stop, and modeld publishes
 that intent every frame. Master only feeds it to the planner in experimental mode, so
 on this car it is thrown away and nothing brakes for a red light.
@@ -53,8 +59,7 @@ STOPPED = 0.5                   # standing still
 SETTLE = 1.5                    # the model needs a moment at a halt before it says so
 CLEAR_FOR = 1.0                 # and has to keep saying it: at a halt the flag flickers
 HOLD_MAX = 180.                 # no light is this long; let go rather than strand the car
-LEAD_GONE = 2.0                 # the car in front has opened this much of a gap
-LEAD_ROLLING = 0.8              # or is simply moving
+LEAD_ROLLING = 0.8              # a car that turned up in front of us is moving away
 LEAD_FOR = 0.3                  # briefly, so one noisy frame cannot release the hold
 
 
@@ -69,7 +74,6 @@ class StopForLights:
     self.stopped_for = 0.
     self.clear_for = 0.
     self.stop_distance = 0.
-    self.lead_closest = 0.
     self.lead_gone_for = 0.
 
   def update_params(self) -> None:
@@ -113,25 +117,26 @@ class StopForLights:
     self.stopped_for = 0.
     self.clear_for = 0.
     self.stop_distance = 0.
-    self.lead_closest = 0.
     self.lead_gone_for = 0.
 
   def _lead_has_gone(self, lead, dt: float) -> bool:
-    """Has the car we stopped behind pulled away?
+    """Has a car appeared in front of us and driven off?
 
-    Waiting on action.shouldStop alone leaves the car sitting there: at a halt the model
-    keeps saying stop long after the road is clear, and over these logs that cost 5 to 22
-    seconds three times with the car in front already gone, once until the driver used the
-    throttle. The car in front moving is the same evidence a driver goes on, and unlike
-    the model's predicted path it cannot fire early - if it has not moved, neither do we.
+    We only hold where there was nothing to follow, so a car that turns up ahead and then
+    leaves has been through the junction: the light is green. Waiting on action.shouldStop
+    alone will not do it - at a halt the model keeps saying stop long after the road is
+    clear, on these drives never letting go at all in more than half the empty stops.
+
+    Read from the lead's own speed rather than the gap opening up. leadOne changes its mind
+    about which car it is watching, and when it does the distance jumps: over these stops it
+    moved more than two metres while the car ahead sat still in 21 of 63. Firing on the gap
+    would have released 7 stops within seconds of arriving at them, the speed only one.
     """
     if lead is None or not lead.status:
       self.lead_gone_for = 0.
       return False
 
-    d_rel = float(lead.dRel)
-    self.lead_closest = d_rel if self.lead_closest == 0. else min(self.lead_closest, d_rel)
-    if d_rel - self.lead_closest > LEAD_GONE or float(lead.vLead) > LEAD_ROLLING:
+    if float(lead.vLead) > LEAD_ROLLING:
       self.lead_gone_for += dt
     else:
       self.lead_gone_for = 0.
@@ -177,13 +182,18 @@ class StopForLights:
         self.stopped_for = 0.
         self.clear_for = 0.
         self.is_active = True
+      elif lead is not None and lead.status:
+        # something to follow turned up: it brakes harder and better than this does
+        self._reset()
       else:
         # still quick: let the model take it back if it no longer sees a stop
         self.filter.update(1. if self._predicts_a_stop(md, v_ego) else 0.)
         self.is_active = self.filter.x > THRESHOLD
       return
 
-    if v_ego < MIN_SPEED:
+    if v_ego < MIN_SPEED or (lead is not None and lead.status):
+      # a car to follow is the whole answer: the planner already brakes for it and pulls
+      # away with it, so there is nothing here worth adding and a wrong call to make.
       self.filter.x = 0.
       return
 
