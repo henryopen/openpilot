@@ -129,7 +129,18 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   # our own lane, and at 25% the gate is 28 m wide when vision is looking 110 m out, so the
   # rail gets accepted over the real car. Tightening this to 7% cut that from 56% of frames
   # to 4% while the stock ACC's own target still matched on 99%.
-  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0])
+  #
+  # That gate is a test of vision's distance, and vision's distance is the thing that
+  # degrades: over 2026-08-29's two drives it missed by more than the gate on 26% of frames
+  # by day and 52% at night, so the radar was thrown away exactly where it was worth most.
+  # Speed and lateral position say 'same object' without asking vision how far away it is -
+  # this radar reports each track's own speed over the ground - and the guardrail the gate
+  # was tightened for sits a lane's width off centre rather than on it. Among the frames the
+  # gate rejects, the lateral disagreement is 0.3 m at the median; letting those through
+  # raises accepted frames from 77.9% to 91.7% by day and from 57.9% to 79.7% at night, and
+  # what it admits disagrees on distance by 3.9 m at the median while agreeing on speed.
+  same_object = abs(track.vRel + v_ego - lead.v[0]) < 1.5 and abs(track.yRel + lead.y[0]) < 2.0
+  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0]) or same_object
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
     return track
