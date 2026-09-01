@@ -150,6 +150,16 @@ class LongitudinalPlanner:
     if sm['controlsState'].forceDecel:
       v_cruise = 0.0
 
+    # the junction stop asks for speed off the set point before cruise works from it, so
+    # it runs here rather than down with the candidates. in experimental mode the model
+    # already brakes for junctions itself and this has nothing to add.
+    if sm['selfdriveState'].experimentalMode:
+      self.stop_for_lights.reset()
+    else:
+      self.stop_for_lights.update(sm['modelV2'], v_ego, v_cruise, sm['carState'].gasPressed,
+                                  sm['radarState'].leadOne)
+      v_cruise = min(v_cruise, self.stop_for_lights.v_cruise_cap)
+
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
 
     # Reset current state when not engaged, or user is controlling the speed
@@ -216,11 +226,10 @@ class LongitudinalPlanner:
     if sm['selfdriveState'].experimentalMode:
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
     else:
-      # the model can see this junction coming to a stop; let it brake for it, gently, and
-      # only while it says so. candidates are resolved by min(), so this cannot speed us up.
-      self.stop_for_lights.update(sm['modelV2'], v_ego, sm['carState'].gasPressed, sm['radarState'].leadOne)
+      # committed to a junction stop: brake for it. candidates are resolved by min(), so
+      # this can only slow us down, and it is capped at a firm slow rather than a stab.
       if self.stop_for_lights.is_active:
-        candidates.append((self.stop_for_lights.limit(output_a_target_e2e, v_ego),
+        candidates.append((self.stop_for_lights.a_target(output_a_target_e2e, v_ego),
                            LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])

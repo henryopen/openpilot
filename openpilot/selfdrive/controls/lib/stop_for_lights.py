@@ -1,62 +1,60 @@
-"""Let the model's own decision to stop reach the plan, without experimental mode.
+"""Stop for a junction the model can see, on an empty road, without experimental mode.
 
 Only with nothing in front. A car to follow already answers both halves of a junction -
-the planner brakes for it and pulls away with it - so a second opinion about a light can
-only get in the way there. Measured over 2026-08-29 and 08-30, of the junction stops with
-a lead the planner handled every one; this module is for the other kind, where the road
-ahead is empty and nothing but the light says to stop.
+the planner brakes for it and pulls away with it - and over 2026-08-29 and 08-30 it did so
+at every one of the stops with a lead. This is for the other kind, where the road ahead is
+empty and nothing but the light says to stop.
 
-The model already works out that the road ahead comes to a stop, and modeld publishes
-that intent every frame. Master only feeds it to the planner in experimental mode, so
-on this car it is thrown away and nothing brakes for a red light.
+The model does not know about traffic lights. What it publishes is a plan: how far it
+intends to travel over the next ten seconds and how fast it expects to be going by then.
+A junction it has decided to stop at shows up as a plan that ends near us and ends slow.
+That is a hint, not a fact - over these drives it is wrong about four times an hour.
 
-This watches the model's predicted speed profile rather than its stop flag: the flag
-only goes true once we are already stopped, which is too late to be of any use. A
-profile that falls to a standstill and stays there, with the standstill close enough
-to be this junction rather than one further on, is what a red light looks like from
-here.
+So the answer to a hint is a hint back, which is how the driver does it himself: take a
+little speed off and see whether the road keeps agreeing. What separates a real stop from
+a phantom in the seconds that follow is not how hard the model asks to brake - that reads
+the same for both, -0.3 either way - but whether the stop point holds still. A real line
+does not move: drive ten metres and the plan should end ten metres nearer. A phantom grows
+back, by 8 m in the first second against a real stop's -1.4.
 
-The check is deliberately not trusted on its own. Even at its best it calls a stop
-that never happens about one time in five, so what it enables is capped: the braking
-it can ask for is firm at worst, never a stab at the brake.
+  arm       the plan ends within 45 m and below 2 m/s: take 5 km/h off the set speed
+  confirm   the point has held still for a second and the plan now ends at a standstill
+  commit    brake for it along a 0.65 m/s2 curve, which from 30 m is a wind down to 20 km/h
+  hand off  inside 6 m ask for the stop itself, and hold the car once it is stopped
+  let go    the model says the road runs well past where we think it stops - give the speed
+            back and forget it. So does the accelerator, which suppresses it outright.
 
-How hard to brake is worked out from the model's own predicted stop distance rather
-than taken from the acceleration it publishes. Over this car's logs the published
-value is about -1.4 where stopping at the distance the model itself predicts needs
--2.3, and the planner resolves its candidates by min(), so that request loses to
-cruise or the lead car and the junction arrives with nothing having happened. Asking
-for what the geometry needs is what makes the difference: replayed over four trips it
-takes the module from braking in 3 of the 15 stops the old 15 m gate let it see to 16 of
-the 20 a reach that grows with speed sees, and from 8 km/h with 10 m left to 16 km/h with
-12 m, which is a lift and a long gentle wind-down rather than a late shove.
-
-Stopping in time is not what it is for. Held to a gentle deceleration it comes to rest
-short of the line about four times in five and rolls slowly past the rest, which is the
-right way round: the driver would sooner finish a stop himself than be braked hard by a
-call that is wrong one time in five. Being early matters more than being firm for another
-reason too. The model reads a junction far better while the car is slowing: over these
-logs, 30-45 m from a stop it never once had the standstill in its profile while holding
-speed, and had it a third of the time while decelerating. Easing off early is what earns
-the better prediction that follows.
+The distance is tracked by dead reckoning rather than read fresh each frame, because the
+model's view flickers: it counts down with the wheels, is pulled in whenever the model sees
+something nearer, and is never pushed out. Over these drives that lands within +2 m of
+where the car really stopped, inside 40 m. Beyond that there is nothing to track - the plan
+is only ten seconds long, so at town speeds its length is the horizon rather than a stop -
+which is why arming waits for the plan to end near us.
 """
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
-MIN_SPEED = 15 * CV.KPH_TO_MS   # below this the ordinary planner is already stopping us
-VEL_STOPPED = 0.5               # predicted speed at or under this is a standstill
-VEL_TAIL = 1.0                  # and it has to stay stopped, not dip and recover
-WANTS_STOP = -1.0               # braking this hard is a stop being asked for, not a lift
-CONFIRM = 0.5                   # held this long, so one frame's opinion is not enough
-MAX_DECEL = -1.5                # gentle: arriving slowly beats being braked hard
-STOP_GAP = 4.0                  # where the car comes to rest short of the predicted point
-COMMITTED = 15 * CV.KPH_TO_MS   # below this the stop is happening, see it through
-STOPPED = 0.5                   # standing still
-SETTLE = 1.5                    # the model needs a moment at a halt before it says so
-CLEAR_FOR = 1.0                 # and has to keep saying it: at a halt the flag flickers
-HOLD_MAX = 180.                 # no light is this long; let go rather than strand the car
-LEAD_ROLLING = 0.8              # a car that turned up in front of us is moving away
-LEAD_FOR = 0.3                  # briefly, so one noisy frame cannot release the hold
+MIN_SPEED = 15 * CV.KPH_TO_MS      # below this the ordinary planner is already stopping us
+ARM_LENGTH = 45.                   # the plan ends this near, so its length is a stop
+ARM_END_SPEED = 2.0                # and ends this slow, so it is a stop and not a crawl
+ARM_SPEED_DROP = 5 * CV.KPH_TO_MS  # what the hint costs while it proves itself
+COMMIT_END_SPEED = 1.0             # committing wants the plan ending at a standstill
+COMMIT_HOLD = 1.0                  # and the point holding still for this long
+SLACK = 6.0                        # the model may say the road runs this much further
+RECEDE_FOR = 0.7                   # for this long before we believe it and let go
+HANDOFF = 6.0                      # inside this, ask for the stop rather than a speed
+APPROACH_DECEL = 0.65              # the curve the wind down is built on
+STOP_GAP = 4.0                     # where the car comes to rest short of the plan's end
+MAX_DECEL = -1.5                   # gentle: arriving slowly beats being braked hard
+COMMITTED = 15 * CV.KPH_TO_MS      # below this the stop is happening, see it through
+STOPPED = 0.5                      # standing still
+SETTLE = 1.5                       # the model needs a moment at a halt before it says so
+CLEAR_FOR = 1.0                    # and has to keep saying it: at a halt the flag flickers
+HOLD_MAX = 180.                    # no light is this long; let go rather than strand the car
+LEAD_ROLLING = 0.8                 # a car that turned up in front of us is moving away
+LEAD_FOR = 0.3                     # briefly, so one noisy frame cannot release the hold
+NO_CAP = 1e9                       # no opinion about the set speed
 
 
 class StopForLights:
@@ -64,12 +62,15 @@ class StopForLights:
     self.params = Params()
     self.enabled = self.params.get_bool("StopForTrafficLights")
     self.frame = 0
-    self.wants_for = 0.
-    self.is_active = False
+    self.armed = False
+    self.is_active = False          # committed to the stop, or holding one we made
+    self.v_cruise_cap = NO_CAP
+    self.stop_distance = 0.
+    self.held_still_for = 0.
+    self.receded_for = 0.
     self.held_for = 0.
     self.stopped_for = 0.
     self.clear_for = 0.
-    self.stop_distance = 0.
     self.lead_gone_for = 0.
 
   def update_params(self) -> None:
@@ -77,150 +78,156 @@ class StopForLights:
       self.enabled = self.params.get_bool("StopForTrafficLights")
     self.frame += 1
 
-  def _predicts_a_stop(self, md) -> bool:
-    """Does the model's speed profile come to a standstill?
-
-    No distance test. One was here, 15 m, and it threw away every stop the model saw: with
-    nothing in front the standstill appears in the profile at 10 to 20 m and the request to
-    brake for it comes earlier still. How hard the model is asking already carries how close
-    the stop is, so pairing that with this needs no number about where junctions are.
-
-    Leaves the distance to the standstill behind for limit() to brake against, and clears
-    it when there is none, so nothing brakes against a distance the model has moved on from.
-    """
-    self.stop_distance = 0.
-    v, x = md.velocity.x, md.position.x
-    if len(v) == 0 or len(x) != len(v):
-      return False
-
-    idx = next((i for i, u in enumerate(v) if u < VEL_STOPPED), None)
-    if idx is None:
-      return False
-    # capnp lists index but do not slice, so walk it
-    if any(v[i] > VEL_TAIL for i in range(idx, len(v))):   # dips and recovers: traffic, not a light
-      return False
-
-    self.stop_distance = float(x[idx])
-    return True
-
-  def _wants_a_stop(self, md) -> bool:
-    """Is the model asking for the braking a stop takes, for a stop it can see?
-
-    Its own published acceleration is the signal. Approaching a red light with nothing in
-    front it asks for -1.7 to -1.9 from a dozen metres out, while action.shouldStop still
-    reads go - over 2026-08-29 and 08-30 that flag was false at every one of the 52 times
-    the request passed -0.8, so it carries nothing. The request alone is not enough either:
-    it goes past -1.2 eleven times in three and a half hours where no stop follows, nine of
-    them with no standstill drawn anywhere in the profile. Together they had no false calls
-    at all, and fire 24 m out at 32 km/h rather than the old test's 13 m at 17 km/h.
-    """
-    return self._predicts_a_stop(md) and float(md.action.desiredAcceleration) <= WANTS_STOP
-
-  def _reset(self) -> None:
-    self.wants_for = 0.
+  def reset(self) -> None:
+    self.armed = False
     self.is_active = False
+    self.v_cruise_cap = NO_CAP
+    self.stop_distance = 0.
+    self.held_still_for = 0.
+    self.receded_for = 0.
     self.held_for = 0.
     self.stopped_for = 0.
     self.clear_for = 0.
-    self.stop_distance = 0.
     self.lead_gone_for = 0.
 
-  def _lead_has_gone(self, lead, dt: float) -> bool:
+  @staticmethod
+  def _plan(md):
+    """How far the model plans to travel, and how fast it expects to be by then."""
+    x, v = md.position.x, md.velocity.x
+    if len(x) == 0 or len(v) == 0:
+      return NO_CAP, NO_CAP
+    return float(x[-1]), float(v[-1])
+
+  def _track(self, plan_length: float, v_ego: float) -> None:
+    """Where the stop is now, counting down with the wheels.
+
+    Pulled in whenever the model sees something nearer and never pushed out, so a frame
+    that loses sight of the junction cannot move the line away from us. The model saying
+    the road runs well past it, and keeping that up, is what ends the call instead.
+    """
+    self.stop_distance = max(self.stop_distance - v_ego * DT_MDL, 0.)
+    if plan_length < self.stop_distance:
+      self.stop_distance = plan_length
+      self.receded_for = 0.
+      self.held_still_for += DT_MDL
+    elif plan_length > self.stop_distance + SLACK:
+      self.receded_for += DT_MDL
+      self.held_still_for = 0.
+    else:
+      self.receded_for = 0.
+      self.held_still_for += DT_MDL
+
+  def _lead_has_gone(self, lead) -> bool:
     """Has a car appeared in front of us and driven off?
 
     We only hold where there was nothing to follow, so a car that turns up ahead and then
-    leaves has been through the junction: the light is green. Waiting on action.shouldStop
-    alone will not do it - at a halt the model keeps saying stop long after the road is
-    clear, on these drives never letting go at all in more than half the empty stops.
-
-    Read from the lead's own speed rather than the gap opening up. leadOne changes its mind
-    about which car it is watching, and when it does the distance jumps: over these stops it
-    moved more than two metres while the car ahead sat still in 21 of 63. Firing on the gap
-    would have released 7 stops within seconds of arriving at them, the speed only one.
+    leaves has been through the junction: the light is green. Read from its own speed
+    rather than the gap opening up - leadOne changes its mind about which car it is
+    watching, and the distance jumps when it does, by more than two metres while the car
+    ahead sat still in 21 of 63 stops.
     """
     if lead is None or not lead.status:
       self.lead_gone_for = 0.
       return False
 
     if float(lead.vLead) > LEAD_ROLLING:
-      self.lead_gone_for += dt
+      self.lead_gone_for += DT_MDL
     else:
       self.lead_gone_for = 0.
     return self.lead_gone_for > LEAD_FOR
 
-  def update(self, md, v_ego: float, gas_pressed: bool = False, lead=None) -> None:
+  def _hold_at_standstill(self, md, lead) -> None:
+    """Stopped for this junction. Nothing else keeps us here - cruise wants the set speed
+    back - so stay until the way is clear, which is also what lets us move off again.
+
+    The model only calls a stop once we are at one, so give it a moment to catch up before
+    reading anything into its silence. And once at a halt the flag flickers: anything
+    moving nearby has the model briefly draw a path forward again, 442 times across these
+    stops, half of them lasting a single frame, while genuinely clearing a junction holds
+    for the best part of a second. So it has to keep saying go, not just say it once.
+    """
+    self.stopped_for += DT_MDL
+    lead_gone = self._lead_has_gone(lead)
+    if md.action.shouldStop and not lead_gone:
+      self.clear_for = 0.
+    else:
+      self.clear_for += DT_MDL
+      if self.stopped_for > SETTLE and (self.clear_for > CLEAR_FOR or lead_gone):
+        self.reset()
+
+  def update(self, md, v_ego: float, v_cruise: float, gas_pressed: bool = False, lead=None) -> None:
     self.update_params()
 
     if not self.enabled or gas_pressed:
-      self._reset()
+      self.reset()
       return
 
-    if self.is_active:
+    plan_length, plan_end_speed = self._plan(md)
+    has_lead = lead is not None and lead.status
+
+    if self.is_active and v_ego < STOPPED:
       self.held_for += DT_MDL
       if self.held_for > HOLD_MAX:
         # something is wrong with the call: it has kept us here far longer than a light
-        self._reset()
-      elif v_ego < STOPPED:
-        # Stopped for this junction. Nothing else keeps us here - the e2e branch is what
-        # holds standstill, and cruise wants the set speed back - so stay until the model
-        # says the way is clear. That is also what lets us move off when it changes.
-        # The model only calls a stop once we are actually at one, so give it a moment
-        # to catch up before reading anything into its silence.
-        #
-        # And once at a halt the flag flickers - anything moving nearby is enough to have
-        # the model briefly draw a path forward again. Over this car's logs that happens
-        # 442 times across the stops, half of them lasting a single frame, while the model
-        # genuinely clearing a junction holds for the best part of a second. So the flag
-        # has to keep saying go, not just say it once.
-        self.stopped_for += DT_MDL
-        lead_gone = self._lead_has_gone(lead, DT_MDL)
-        if md.action.shouldStop and not lead_gone:
-          self.clear_for = 0.
-          self.is_active = True
-        else:
-          self.clear_for += DT_MDL
-          if self.stopped_for > SETTLE and (self.clear_for > CLEAR_FOR or lead_gone):
-            self.is_active = False
-      elif v_ego < COMMITTED:
-        # slow enough that the stop is happening; see it through. the distance still has
-        # to be read every frame, since it is what the braking is worked out against.
-        self._predicts_a_stop(md)
-        self.stopped_for = 0.
-        self.clear_for = 0.
-        self.is_active = True
-      elif lead is not None and lead.status:
-        # something to follow turned up: it brakes harder and better than this does
-        self._reset()
+        self.reset()
       else:
-        # still quick: hold the call while the model still draws the road stopping. not on
-        # what it is asking for - once we are braking it asks for less, which would drop
-        # the call, speed us back up and ask again.
-        self.is_active = self._predicts_a_stop(md)
-        if not self.is_active:
-          self._reset()
+        self.v_cruise_cap = 0.
+        self._hold_at_standstill(md, lead)
       return
 
-    if v_ego < MIN_SPEED or (lead is not None and lead.status):
-      # a car to follow is the whole answer: the planner already brakes for it and pulls
-      # away with it, so there is nothing here worth adding and a wrong call to make.
-      self.wants_for = 0.
-      return
-
-    self.wants_for = self.wants_for + DT_MDL if self._wants_a_stop(md) else 0.
-    self.is_active = self.wants_for > CONFIRM
-    if self.is_active:
+    if not self.armed:
+      # a car to follow is the whole answer, and below MIN_SPEED the planner is already
+      # stopping us. otherwise a plan that ends near us and ends slow is worth a look.
+      if has_lead or v_ego < MIN_SPEED or plan_length >= ARM_LENGTH or plan_end_speed >= ARM_END_SPEED:
+        self.reset()
+        return
+      self.armed = True
+      self.stop_distance = plan_length
+      self.held_still_for = 0.
+      self.receded_for = 0.
       self.held_for = 0.
+      self.v_cruise_cap = max(v_cruise - ARM_SPEED_DROP, 0.)
+      return
 
-  def limit(self, a_target_e2e: float, v_ego: float) -> float:
-    """What it takes to stop where the model says the road does, within what is allowed.
+    if has_lead:
+      # something to follow turned up: it brakes harder and better than this does
+      self.reset()
+      return
 
-    Constant deceleration to a standstill a little short of the predicted point, since
-    that is where the car actually comes to rest. Never above what the model asked for -
-    if it wants to brake harder than the geometry needs, it has a reason to.
+    self._track(plan_length, v_ego)
+    if self.receded_for > RECEDE_FOR:
+      # the road runs on well past where we thought it stopped. give the speed back.
+      self.reset()
+      return
+
+    if v_ego < COMMITTED:
+      # slow enough that the stop is happening either way; see it through
+      self.is_active = True
+    elif not self.is_active:
+      self.is_active = self.held_still_for > COMMIT_HOLD and plan_end_speed < COMMIT_END_SPEED
+
+    if not self.is_active:
+      # still only a hint: hold the 5 km/h off and keep watching
+      self.v_cruise_cap = max(v_cruise - ARM_SPEED_DROP, 0.)
+      return
+
+    self.held_for = 0.
+    if self.stop_distance <= HANDOFF:
+      self.v_cruise_cap = 0.
+    else:
+      self.v_cruise_cap = (2. * APPROACH_DECEL * (self.stop_distance - HANDOFF)) ** 0.5
+
+  def a_target(self, a_target_e2e: float, v_ego: float) -> float:
+    """What it takes to stop where the junction is, within what is allowed.
+
+    Constant deceleration to a standstill a little short of the tracked point, since that
+    is where the car actually comes to rest. Never above what the model asked for - if it
+    wants to brake harder than the geometry needs, it has a reason to - and never below
+    MAX_DECEL, so a call that turns out to be wrong is a firm slow down at worst.
     """
-    a_target = float(a_target_e2e)
+    a = float(a_target_e2e)
     if self.stop_distance > 0. and v_ego > STOPPED:
       # only while there is speed to take off. at a halt this works out at zero, which
       # would sit on the model's own request to pull away and never let the car move.
-      a_target = min(a_target, -v_ego * v_ego / (2. * max(self.stop_distance - STOP_GAP, 1.)))
-    return max(a_target, MAX_DECEL)
+      a = min(a, -v_ego * v_ego / (2. * max(self.stop_distance - STOP_GAP, 1.)))
+    return max(a, MAX_DECEL)
