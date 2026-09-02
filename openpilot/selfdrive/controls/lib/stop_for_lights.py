@@ -139,7 +139,7 @@ class StopForLights:
       return
 
     plan_length, plan_end_speed = self._plan(md)
-    has_lead = lead is not None and lead.status
+    has_lead = lead is not None and lead.present
 
     if self.is_active and v_ego < STOPPED:
       self.held_for += DT_MDL
