@@ -56,7 +56,7 @@ def main():
             msgs.append((e.logMonoTime, w, e.as_builder().to_bytes()))
     if not msgs:
         raise SystemExit('這段沒有 HUD 需要的訊息')
-    print(f'{len(msgs)} 筆訊息，{len(set(m[1] for m in msgs))} 種服務', flush=True)
+    print(f'{len(msgs)} 筆訊息，{len({m[1] for m in msgs})} 種服務', flush=True)
 
     pm = messaging.PubMaster(SERVICES)
     for loop in range(args.loops):
