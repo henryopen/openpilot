@@ -41,8 +41,12 @@ spec.loader.exec_module(sfl_mod)
 
 capnp.remove_import_hook()
 import os
-os.chdir(r'F:/openpilot-rlog-viewer')
-log = capnp.load('log.capnp')
+# The car's own schema. The 2025-11 viewer copy loads too, but it predates selfdriveState
+# and still calls leadOne.present "status", so every frame here raised and the check passed
+# on nothing at all.
+SCHEMA = r'F:/c4sunny/schema_hcop'
+os.chdir(SCHEMA)
+log = capnp.load('log.capnp', imports=[SCHEMA])
 
 SEGS = []
 for base in [r'F:/c4sunny/rlog20260830F/day', r'F:/c4sunny/rlog20260829F/night']:

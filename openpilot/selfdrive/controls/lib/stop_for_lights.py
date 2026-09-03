@@ -17,8 +17,9 @@ the same for both, -0.3 either way - but whether the stop point holds still. A r
 does not move: drive ten metres and the plan should end ten metres nearer. A phantom grows
 back, by 8 m in the first second against a real stop's -1.4.
 
-  arm       the plan ends within 45 m and below 2 m/s: take 5 km/h off the set speed
-  confirm   the point has held still for a second and the plan now ends at a standstill
+  arm       the plan comes to rest somewhere in it: take 5 km/h off the set speed
+  confirm   there is a point to stop at, it has held still for a second, and the plan now
+            ends at a standstill
   commit    put a car at the line and let the MPC brake for it
   hand off  inside 6 m ask for the stop itself, and hold the car once it is stopped
   let go    the model says the road runs well past where we think it stops - give the speed
@@ -37,6 +38,16 @@ What is given up by not writing the curve is the model's own braking request, wh
 be taken whenever it was firmer than the geometry needed. Over these drives it asks for
 -0.3 either way, at a real stop and at a phantom alike, so there was little in it.
 
+Arming used to also require the plan to end within 45 m, and that gate is why the driver
+kept getting to the junction first. The reasoning behind it was sound - x[-1] beyond 40 m
+is the horizon rather than a stop, so it is no good as a distance - but it was applied as a
+trigger, and "this number is not a distance" is not the same as "nothing is happening".
+Over the seven stops with nothing in front, the low point of the model's own speed profile
+falls below 2 m/s at 42.5-81.4 m and does so at all seven; the old gate fired at 21.8-69.8 m
+and missed one. What the distance test was really for is knowing where to stop, which only
+matters once we are going to brake, so it now sits on the commitment instead: the plan has
+to come to rest at a point we can name before anything is handed to the MPC.
+
 The distance is tracked by dead reckoning rather than read fresh each frame, because the
 model's view flickers: it counts down with the wheels, is pulled in whenever the model sees
 something nearer, and is never pushed out. Over these drives that lands within +2 m of
@@ -49,8 +60,8 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
 MIN_SPEED = 15 * CV.KPH_TO_MS      # below this the ordinary planner is already stopping us
-ARM_LENGTH = 45.                   # the plan ends this near, so its length is a stop
-ARM_END_SPEED = 2.0                # and ends this slow, so it is a stop and not a crawl
+ARM_FLOOR_SPEED = 2.0              # the plan's own speed comes down to this: it plans to stop
+REST_SPEED = 1.0                   # a plan is at rest below this, and has recovered above it
 ARM_SPEED_DROP = 5 * CV.KPH_TO_MS  # what the hint costs while it proves itself
 COMMIT_END_SPEED = 1.0             # committing wants the plan ending at a standstill
 COMMIT_HOLD = 1.0                  # and the point holding still for this long
@@ -100,22 +111,37 @@ class StopForLights:
 
   @staticmethod
   def _plan(md):
-    """How far the model plans to travel, and how fast it expects to be by then."""
-    x, v = md.position.x, md.velocity.x
-    if len(x) == 0 or len(v) == 0:
-      return NO_CAP, NO_CAP
-    return float(x[-1]), float(v[-1])
+    """What the model's plan says: how far it runs, how it ends, and where it comes to rest.
 
-  def _track(self, plan_length: float, v_ego: float) -> None:
+    The floor of the speed profile is the earliest sign of a stop - it is below walking pace
+    long before the plan is short enough to read as one. Where it comes to rest is the only
+    honest distance: x[-1] out at the horizon is how far the model can see, not a junction.
+    A profile that dips and picks up again is traffic rather than a stop, and reports none.
+    """
+    x, v = md.position.x, md.velocity.x
+    if len(x) == 0 or len(v) == 0 or len(x) != len(v):
+      return NO_CAP, NO_CAP, NO_CAP, 0.
+    idx = next((i for i, s in enumerate(v) if s < REST_SPEED), None)
+    if idx is None or any(v[i] > REST_SPEED for i in range(idx, len(v))):
+      stop_ahead = 0.
+    else:
+      stop_ahead = float(x[idx])
+    return float(x[-1]), float(v[-1]), float(min(v)), stop_ahead
+
+  def _track(self, plan_length: float, stop_ahead: float, v_ego: float) -> None:
     """Where the stop is now, counting down with the wheels.
 
     Pulled in whenever the model sees something nearer and never pushed out, so a frame
-    that loses sight of the junction cannot move the line away from us. The model saying
-    the road runs well past it, and keeping that up, is what ends the call instead.
+    that loses sight of the junction cannot move the line away from us. Where the plan
+    comes to rest is what is used once there is one, since that is the junction rather
+    than the far end of what the model can see; before that there is only the plan's
+    length. The model saying the road runs well past it, and keeping that up, is what ends
+    the call instead - and that is the plan's length either way.
     """
     self.stop_distance = max(self.stop_distance - v_ego * DT_MDL, 0.)
-    if plan_length < self.stop_distance:
-      self.stop_distance = plan_length
+    nearest = stop_ahead if stop_ahead > 0. else plan_length
+    if nearest < self.stop_distance:
+      self.stop_distance = nearest
       self.receded_for = 0.
       self.held_still_for += DT_MDL
     elif plan_length > self.stop_distance + SLACK:
@@ -150,7 +176,7 @@ class StopForLights:
       self.reset()
       return
 
-    plan_length, plan_end_speed = self._plan(md)
+    plan_length, plan_end_speed, plan_floor, stop_ahead = self._plan(md)
     has_lead = lead is not None and lead.present
 
     if self.is_active and v_ego < STOPPED:
@@ -165,12 +191,13 @@ class StopForLights:
 
     if not self.armed:
       # a car to follow is the whole answer, and below MIN_SPEED the planner is already
-      # stopping us. otherwise a plan that ends near us and ends slow is worth a look.
-      if has_lead or v_ego < MIN_SPEED or plan_length >= ARM_LENGTH or plan_end_speed >= ARM_END_SPEED:
+      # stopping us. otherwise a plan whose own speed comes down to walking pace is worth
+      # a look, wherever in it that happens.
+      if has_lead or v_ego < MIN_SPEED or plan_floor >= ARM_FLOOR_SPEED:
         self.reset()
         return
       self.armed = True
-      self.stop_distance = plan_length
+      self.stop_distance = stop_ahead if stop_ahead > 0. else plan_length
       self.held_still_for = 0.
       self.receded_for = 0.
       self.held_for = 0.
@@ -182,17 +209,20 @@ class StopForLights:
       self.reset()
       return
 
-    self._track(plan_length, v_ego)
+    self._track(plan_length, stop_ahead, v_ego)
     if self.receded_for > RECEDE_FOR:
       # the road runs on well past where we thought it stopped. give the speed back.
       self.reset()
       return
 
-    if v_ego < COMMITTED:
-      # slow enough that the stop is happening either way; see it through
-      self.is_active = True
-    elif not self.is_active:
-      self.is_active = self.held_still_for > COMMIT_HOLD and plan_end_speed < COMMIT_END_SPEED
+    if not self.is_active and stop_ahead > 0.:
+      # the MPC is handed a point, so there has to be one. This is the distance test the
+      # arming gate used to carry, on the decision it was always for.
+      if v_ego < COMMITTED:
+        # slow enough that the stop is happening either way; see it through
+        self.is_active = True
+      else:
+        self.is_active = self.held_still_for > COMMIT_HOLD and plan_end_speed < COMMIT_END_SPEED
 
     if not self.is_active:
       # still only a hint: hold the 5 km/h off and keep watching
