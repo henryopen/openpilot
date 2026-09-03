@@ -60,6 +60,7 @@ from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
 MIN_SPEED = 15 * CV.KPH_TO_MS      # below this the ordinary planner is already stopping us
+LEAD_IS_THE_ANSWER = 1e9           # a lead nearer than this is what we would stop for anyway
 ARM_FLOOR_SPEED = 2.0              # the plan's own speed comes down to this: it plans to stop
 REST_SPEED = 1.0                   # a plan is at rest below this, and has recovered above it
 ARM_SPEED_DROP = 5 * CV.KPH_TO_MS  # what the hint costs while it proves itself
@@ -177,7 +178,10 @@ class StopForLights:
       return
 
     plan_length, plan_end_speed, plan_floor, stop_ahead = self._plan(md)
-    has_lead = lead is not None and lead.present
+    # A car in front is only the answer to the junction if it is near enough to be the
+    # thing we would stop behind. One a long way up the road is not, and treating it as one
+    # is why the module stood down at junctions the driver then had to handle himself.
+    has_lead = lead is not None and lead.present and lead.dRel < LEAD_IS_THE_ANSWER
 
     if self.is_active and v_ego < STOPPED:
       self.held_for += DT_MDL
