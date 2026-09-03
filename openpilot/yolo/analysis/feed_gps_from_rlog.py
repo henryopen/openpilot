@@ -100,20 +100,17 @@ def main():
                       f"下一個={ahead}  {read('RoadName')}", flush=True)
             time.sleep(period)
 
-    print(f'
-餵完 {n} 個位置，經過 {len(roads)} 條路')
+    print(f'\n' + f'餵完 {n} 個位置，經過 {len(roads)} 條路')
     if args.summary and roads:
         have = [(r, v) for r, v in roads.items() if v[1] > 0]
         none = [(r, v) for r, v in roads.items() if v[1] == 0]
         tot = sum(v[0] for v in roads.values())
         hit = sum(v[0] for _, v in have)
         print(f'有速限資料的取樣點：{hit}/{tot} ({hit / max(tot, 1) * 100:.1f}%)')
-        print(f'
-=== 查得到速限的路（{len(have)} 條）===')
+        print(f'\n' + f'=== 查得到速限的路（{len(have)} 條）===')
         for r, v in sorted(have, key=lambda x: -x[1][0])[:12]:
             print(f'  {r:24} {v[2]:5.0f} km/h   取樣 {v[0]}')
-        print(f'
-=== 查不到速限的路（{len(none)} 條）===')
+        print(f'\n' + f'=== 查不到速限的路（{len(none)} 條）===')
         for r, v in sorted(none, key=lambda x: -x[1][0])[:12]:
             print(f'  {r:24} 取樣 {v[0]}')
 
