@@ -1,24 +1,49 @@
 """Run the real get_lead over the real messages, with and without the preference, and count.
 
 The change is small but it sits in the loop that decides what to brake for, so it gets the
-same treatment as the planner changes: the actual function, fed actual capnp readers from
-the car's own schema, over the drives that showed the fault. Not a reimplementation.
+same treatment as the planner changes: the actual function, fed actual capnp readers, over
+the drives that showed the fault. Not a reimplementation.
 
 Every radar track is published (radarTracksSP), so the tracks dict radard builds can be
-rebuilt here and the same Track objects updated frame by frame. What is compared is how
-often the lead's source changes and how far its closing speed jumps when it does - the
-thing the MPC differentiates its plan from.
+rebuilt here and the same Track objects updated frame by frame. What is compared is how often
+the lead's source changes and how far its closing speed jumps when it does - the thing the
+MPC differentiates its plan from.
+
+Run it on the car:
+
+    PYTHONPATH=/data/openpilot /usr/local/venv/bin/python \
+        openpilot/yolo/analysis/verify_lead_hold.py --on-device --route 00000010--17de10767f \
+        --segments 8-21
+
+radard pulls in messaging and the car interface, so a laptop cannot import it; the car can.
+Reading logs off the laptop still works for everything that does not need radard - see the
+other scripts here - but this one is verification of code that will drive, so it belongs on
+the machine that will run it.
 """
+import argparse
 import glob
 import os
 import sys
 import types
 from collections import Counter
 
-import capnp
 import zstandard
 
-# radard imports the car interface and the params store; neither is needed for get_lead.
+DEVICE_ROOT = '/data/media/0/realdata'
+DEVICE_OPENPILOT = '/data/openpilot'
+LAPTOP_ROOT = r'F:/c4sunny/rlog20260902F'
+LAPTOP_OPENPILOT = r'E:/Documents/GitHub/openpilot-master'
+LAPTOP_SCHEMA = r'F:/c4sunny/schema_hcop'
+DT_MDL = 0.05
+
+ap = argparse.ArgumentParser()
+ap.add_argument('--on-device', action='store_true', help='run against the car\'s own tree and logs')
+ap.add_argument('--route', default='', help='limit to one route, e.g. 00000010--17de10767f')
+ap.add_argument('--segments', default='', help='limit to a segment range, e.g. 8-21')
+ap.add_argument('--root', default='', help='override where the segments live')
+args = ap.parse_args()
+
+# radard imports the params store; get_lead does not need it.
 _p = types.ModuleType('openpilot.common.params')
 
 
@@ -35,16 +60,20 @@ class _Params:
 
 _p.Params = _Params
 sys.modules['openpilot.common.params'] = _p
-sys.path.insert(0, r'E:/Documents/GitHub/openpilot-master')
+sys.path.insert(0, DEVICE_OPENPILOT if args.on_device else LAPTOP_OPENPILOT)
 
-from openpilot.selfdrive.controls.radard import Track, KalmanParams, get_lead  # noqa: E402
+from openpilot.selfdrive.controls.radard import Track, KalmanParams, get_lead
 
-SCHEMA = r'F:/c4sunny/schema_hcop'
-ROOT = r'F:/c4sunny/rlog20260902F'
-DT_MDL = 0.05
-capnp.remove_import_hook()
-os.chdir(SCHEMA)
-log = capnp.load('log.capnp', imports=[SCHEMA])
+if args.on_device:
+    # the schema openpilot itself loads - no second copy to get out of date
+    from openpilot.cereal import log
+else:
+    import capnp
+    capnp.remove_import_hook()
+    os.chdir(LAPTOP_SCHEMA)
+    log = capnp.load('log.capnp', imports=[LAPTOP_SCHEMA])
+
+ROOT = args.root or (DEVICE_ROOT if args.on_device else LAPTOP_ROOT)
 
 
 def run(seg, use_preferred):
@@ -78,9 +107,8 @@ def run(seg, use_preferred):
             lv = e.modelV2.leadsV3
             leads_v3 = lv if len(lv) > 1 else None
         elif w == 'radarTracksSP':
-            pts = e.radarTracksSP.points
             ids = set()
-            for pt in pts:
+            for pt in e.radarTracksSP.points:
                 i = int(pt.trackId)
                 ids.add(i)
                 v_lead = float(pt.vRel) + v_ego
@@ -120,16 +148,28 @@ def score(frames):
     return g, jumps
 
 
-def main():
+def segments():
+    if args.route and args.segments:
+        lo, hi = (int(v) for v in args.segments.split('-'))
+        want = [os.path.join(ROOT, f'{args.route}--{n}') for n in range(lo, hi + 1)]
+        return [s for s in want if os.path.exists(os.path.join(s, 'rlog.zst'))]
+    pattern = f'{args.route}--*' if args.route else '*--*'
     segs = []
     for route in sorted({os.path.basename(d).rsplit('--', 1)[0]
-                         for d in glob.glob(os.path.join(ROOT, '*--*'))}):
+                         for d in glob.glob(os.path.join(ROOT, pattern))}):
         segs += sorted(glob.glob(os.path.join(ROOT, route + '--*')),
                        key=lambda p: int(p.rsplit('--', 1)[1]))
-    print(f"重放 {len(segs)} 段，hold = {LEAD_HOLD_FRAMES} 幀（{LEAD_HOLD_FRAMES * 0.05:.1f} 秒）\n")
+    return [s for s in segs if os.path.exists(os.path.join(s, 'rlog.zst'))]
+
+
+def main():
+    segs = segments()
+    print(f'重放 {len(segs)} 段（{"車機" if args.on_device else "本機"}）')
+    print()
 
     results = {}
-    for label, use_pref in (('改前（每幀重新決定）', False), ('改後（失配時對原 track 放寬再驗）', True)):
+    labels = ('改前（每幀重新決定）', '改後（失配時對原 track 放寬再驗）')
+    for label, use_pref in zip(labels, (False, True), strict=True):
         allf = []
         for seg in segs:
             try:
@@ -139,21 +179,18 @@ def main():
         g, jumps = score(allf)
         results[label] = (g, jumps)
         lf = max(g['lead_frames'], 1)
-        print(f"{label}")
-        print(f"  有前車的幀 {g['lead_frames']}   雷達 {g['radar'] / lf * 100:.1f}%   "
-              f"視覺 {g['vision'] / lf * 100:.1f}%")
-        print(f"  來源切換 {g['flips']} 次")
+        print(label)
+        print(f'  有前車的幀 {g["lead_frames"]}   雷達 {g["radar"] / lf * 100:.1f}%   視覺 {g["vision"] / lf * 100:.1f}%')
+        print(f'  來源切換 {g["flips"]} 次')
         if jumps:
-            print(f"  切換時相對速跳幅：中位 {jumps[len(jumps) // 2]:.1f} km/h   "
-                  f"最大 {jumps[-1]:.1f} km/h")
+            print(f'  切換時相對速跳幅：中位 {jumps[len(jumps) // 2]:.1f} km/h   最大 {jumps[-1]:.1f} km/h')
         print()
 
-    (a, _), (b, _) = results['改前（每幀重新決定）'], results['改後（失配時對原 track 放寬再驗）']
+    (a, _), (b, _) = results[labels[0]], results[labels[1]]
     if a['flips']:
-        print(f"切換次數 {a['flips']} → {b['flips']}"
-              f"（少了 {(a['flips'] - b['flips']) / a['flips'] * 100:.0f}%）")
+        print(f'切換次數 {a["flips"]} → {b["flips"]}（少了 {(a["flips"] - b["flips"]) / a["flips"] * 100:.0f}%）')
     lf_a, lf_b = max(a['lead_frames'], 1), max(b['lead_frames'], 1)
-    print(f"雷達佔比 {a['radar'] / lf_a * 100:.1f}% → {b['radar'] / lf_b * 100:.1f}%")
+    print(f'雷達佔比 {a["radar"] / lf_a * 100:.1f}% → {b["radar"] / lf_b * 100:.1f}%')
 
 
 if __name__ == '__main__':
