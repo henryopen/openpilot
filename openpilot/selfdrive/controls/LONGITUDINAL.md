@@ -43,11 +43,11 @@ HUD server 已經在送給 pi。要診斷「為什麼減速」不需要重放，
 | 子系統 | 在哪 | 狀態 | 已驗證的數據 |
 |---|---|---|---|
 | 定速加減速 | `longitudinal_planner.py` | 已調 | eco 曲線、舒適律、死區 0.25（解決 50→51→49 擺盪） |
-| 跟車 | upstream MPC + `radard.py` | **有 bug** | 見 3.1 |
+| 跟車 | upstream MPC + `radard.py` | 已修兩處，見 [`RADAR.md`](RADAR.md) | 見 3.1 |
 | 彎道限速 | `curve_speed.py` | 已調 | 佔 engaged 時間 1.4%、7 次減速、掉速中位 8 km/h |
 | 紅綠燈停車 | `stop_for_lights.py` | **有設計缺陷** | 見 3.2 |
 | 速限 | `cruise.py` + mapd | **鏈路斷了** | 見 3.3 |
-| 靜止前車 / 快速接近 | MPC + `radard.py` | **未處理** | 見 3.4 |
+| 靜止前車 / 快速接近 | MPC + `radard.py` | **未處理**，資料已盤完見 [`RADAR.md`](RADAR.md) | 見 3.4 |
 
 ### engaged 時誰在管速度（2026-09-02，1.3 小時）
 
