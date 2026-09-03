@@ -42,7 +42,7 @@
 「等速保持在前方一個車道寬處的車」**，radard 會選它而不是真車，
 量出來**比只用視覺更差**。門檻從 25% 收到 7% 才把誤選從 56% 壓到 4%。
 
-其他過濾：`CUSTIN_MIN_RANGE 2.0`（保險桿雜訊）、`CUSTIN_MAX_ABS_Y 5.5`（本車道與兩側）、
+其他過濾：`CUSTIN_MIN_RANGE 2.0`（保險桿雜訊，**`0x238` 例外用 `CUSTIN_PRIMARY_MIN_RANGE 0.5`，見下**）、`CUSTIN_MAX_ABS_Y 5.5`（本車道與兩側）、
 `CUSTIN_MIN_SCORE 30`（31 是飽和）、`CUSTIN_MIN_HITS 8`（連續good幀才送出）。
 **primary 不受 `MAX_ABS_Y` 限制**（那是車自己的選擇，不二次猜測）。
 
@@ -93,6 +93,35 @@ modelV2.leadsV3[0]（視覺）           radarTracksSP（雷達，只有 primary
 | engaged 且有前車 | 63.0 分鐘 |
 | 雷達確認 / 只有視覺 | **82.2% / 17.8%**（修正後 88.4%） |
 | 兩者對同一台車的 `vRel` 落差 | 中位 **6.4 km/h**，最大 **45.8 km/h** |
+
+### ⚠️ 2026-09-04 更正：停等時「雷達沒訊號」是我們自己丟掉的（`cff32f57`）
+
+9/3 實車：停在靜止車後約 3–4 m，車一直想往前拱、駕駛得踩煞車。
+用 `radar_raw.py` 直接解原始 CAN（手解 vs 車機自己的解碼，1960 幀對照，**距離差中位 0.04 m、p90 0.11 m**）：
+
+**`0x238` 整段停等都有回波：`LONG_DIST 1.3–1.6 m`、`LAT −0.05 m`、`SCORE 31`（滿分）。**
+被 `CUSTIN_MIN_RANGE = 2.0` 丟掉，所以 `radarTracks` 是空的，radard 只剩視覺，
+而視覺對 3–4 m 靜止車的距離在 **3.3 ↔ 14.8 m** 之間跳（旁邊機車經過時更糟）→
+每次跳遠 MPC 就看到空隙 → `aTarget` 最高 **+0.55**。
+
+那道門檻對其他九槽是必要的（全 10 槽有 1099 幀「score 31 但 dist=0」的空槽、還有 lat 2.4–2.7 的近場雜訊），
+**但 `0x238` 完全沒有這問題**（6 分鐘 11999 幀）：
+
+| `0x238` | |
+|---|---|
+| 0 < dist < 2，被丟掉 | 507 |
+| └ 車速 < 3 km/h | 506（99.8%） |
+| └ 正前方 \|lat\| < 1.5 | 506（全部） |
+| └ 車速 ≥ 30 km/h | 1（lat 2.52，偏一邊） |
+| score ≥ 30 卻 dist = 0 | **0** |
+
+→ 只對 primary 槽把門檻降到 0.5 m。空槽仍讀 0、`SCORE` 閘仍擋、單幀雜訊仍過不了 `CUSTIN_MIN_HITS = 8`。
+用 `replay_radar.py` 在車機上以真 `RadarInterface` 驗證：同一段停等從 `(no point)` 變成
+**持續輸出 `d=1.5 m, y=+0.05`**。
+
+**教訓**：下面「靜止目標」那節原本的假設是「雷達有靜止目標但被 `lead_prob>0.5` 擋掉」。
+那對**行進間**成立，但**停等時的近距離靜止車是被我們自己的距離門檻丟掉的**，跟視覺閘無關。
+分析時看 `radarTracksSP` 說「沒有目標」是不夠的——那已經是四道過濾之後的結果，要回去看原始 CAN。
 
 ### 靜止目標
 
@@ -150,6 +179,8 @@ modelV2.leadsV3[0]（視覺）           radarTracksSP（雷達，只有 primary
 | `verify_lead_hold.py --on-device` | 用真 `get_lead` 重放，比較改前後 |
 | `verify_slot_swap.py` | 用真 `RadarInterface` 從 CAN 重解，驗證換人偵測 |
 | `stationary_and_bikes_20260902.py` | 靜止目標的可見性 |
+| `radar_raw.py` | **直接解原始 CAN**，看四道過濾之前雷達到底說了什麼（本機可跑） |
+| `replay_radar.py` | 把錄下的 CAN 餵進真 `RadarInterface`，看 radard 會收到什麼（車機） |
 | `lead_range_jumps_20260902.py` | 距離變化與相對速矛不矛盾 |
 
 **讀 rlog 用車機自己的 schema**：`F:/c4sunny/schema_hcop/`（含 `include/c++.capnp`）。
