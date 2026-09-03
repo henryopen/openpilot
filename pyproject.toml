@@ -112,6 +112,11 @@ skip = "*.po, uv.lock, *.onnx, *.pem, */c_generated_code/*, docs/assets/*, openp
 # https://docs.astral.sh/ruff/configuration/#using-pyprojecttoml
 [tool.ruff]
 indent-width = 2
+# Offline analysis scripts: they read logs on a laptop and print tables for a person to look
+# at, and never run on the car. The rules here are shaped for code that does - the multi-line
+# string concatenation ban in particular exists so that control code reads cleanly - and
+# applying them to a throwaway report format only distorts the report.
+extend-exclude = ["openpilot/yolo/analysis"]
 lint.select = [
   "E", "F", "W", "PIE", "C4", "ISC", "A", "B",
   "NPY", # numpy
