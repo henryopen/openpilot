@@ -1,4 +1,6 @@
 import math
+import time
+
 import numpy as np
 
 from opendbc.car.structs import car
@@ -163,6 +165,10 @@ class VCruiseHelper:
 
     self.speed_limit_kph = limit_kph
     self.v_cruise_kph = target
+    # The driver's buttons and this both land in carState.vCruise, so the set speed moving
+    # on its own looks the same either way. Record it, so the display can say which it was.
+    self.mem_params.put("SpeedLimitAssistSet",
+                        {"limit": limit_kph, "target": target, "t": time.monotonic()})
 
   def update_button_timers(self, CS, enabled):
     # increment timer for buttons still pressed

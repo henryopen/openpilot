@@ -77,6 +77,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"StopForTrafficLights", {PERSISTENT, BOOL, "1"}},
     {"SpeedLimitMode", {PERSISTENT, INT, "3"}},
     {"SpeedLimitValueOffset", {PERSISTENT, INT, "10"}},
+    {"SpeedLimitAssistSet", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"MapTargetVelocities", {CLEAR_ON_ONROAD_TRANSITION, STRING}},
     {"NextMapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"OSMDownloadBounds", {PERSISTENT, STRING}},

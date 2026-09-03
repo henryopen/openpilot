@@ -27,8 +27,11 @@ import zstandard
 import openpilot.cereal.messaging as messaging
 from openpilot.cereal import log
 
+# gpsLocationExternal is here so the server can tell a road with no posted limit from no
+# fix at all; it is also what mapd reads, so replaying it puts mapd on the recorded road.
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2",
-            "carControl", "longitudinalPlan", "longitudinalPlanSP", "controlsState"]
+            "carControl", "longitudinalPlan", "longitudinalPlanSP", "controlsState",
+            "gpsLocationExternal"]
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--route', required=True)

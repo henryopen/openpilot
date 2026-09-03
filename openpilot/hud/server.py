@@ -25,12 +25,13 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from openpilot.cereal import custom, messaging
 from openpilot.common.params import Params
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
+from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.hud.radar_tracker import TargetTracker, relevant
 
 PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
-            "longitudinalPlan", "longitudinalPlanSP", "controlsState"]
+            "longitudinalPlan", "longitudinalPlanSP", "controlsState", "gpsLocationExternal"]
 
 # what the planner says set the accel; the page shows these instead of the raw plan source
 # Keyed on the enum's raw value: a constant stringifies to its number while a value read
@@ -223,12 +224,29 @@ def _radar_state(rs):
 
 
 def _next_speed_limit(mem_params):
-  """mapd writes the limit coming up as JSON: speedlimit in m/s, distance in metres."""
+  """mapd writes the limit coming up as JSON: speedlimit in m/s, distance in metres.
+
+  The key is declared JSON, so Params.get parses it: loading it again threw every time
+  there was actually a limit ahead, and the except quietly turned that into "none".
+  """
   try:
-    j = json.loads(mem_params.get("NextMapSpeedLimit") or "{}")
+    j = mem_params.get("NextMapSpeedLimit") or {}
     return float(j.get("speedlimit") or 0.), float(j.get("distance") or 0.)
   except Exception:
     return 0., 0.
+
+
+def _assist_set(mem_params):
+  """The last set speed the speed limit assist moved by itself, written by VCruiseHelper.
+
+  Nothing else can tell the two of us apart: the driver's buttons and the assist both land
+  in carState.vCruise. The one place that knows is the code that does it, so it records it.
+  """
+  try:
+    j = mem_params.get("SpeedLimitAssistSet") or {}
+    return float(j.get("limit") or 0.), float(j.get("target") or 0.), float(j.get("t") or 0.)
+  except Exception:
+    return 0., 0., 0.
 
 
 # Settings change when someone changes them, not at 20 Hz. The map values live in shared
@@ -238,9 +256,10 @@ _SETTINGS_EVERY = 100   # 5 s at 20 Hz
 _MAP_EVERY = 10         # 0.5 s, matching how often mapd writes
 _settings = {"offset": 0., "mode": 0, "aol": False}
 _map = {"limit": 0., "road": "", "ahead": 0., "ahead_dist": 0.}
+_assist = {"limit": 0., "target": 0., "t": 0.}
 
 
-def _sp_shapes(params, mem_params, cs, cc, ss, frame):
+def _sp_shapes(params, mem_params, cs, cc, ss, frame, gps_ok):
   """Rebuild what sunnypilot used to publish, so the page does not have to change."""
   if frame % _SETTINGS_EVERY == 0:
     _settings["offset"] = params.get("SpeedLimitValueOffset", return_default=True) * KPH_TO_MS
@@ -250,15 +269,22 @@ def _sp_shapes(params, mem_params, cs, cc, ss, frame):
     _map["limit"] = float(mem_params.get("MapSpeedLimit") or 0.)
     _map["road"] = mem_params.get("RoadName") or ""
     _map["ahead"], _map["ahead_dist"] = _next_speed_limit(mem_params)
+    _assist["limit"], _assist["target"], _assist["t"] = _assist_set(mem_params)
 
   speed_limit = _map["limit"]
   offset = _settings["offset"]
   assisting = _settings["mode"] == 3 and speed_limit > 0.
   ahead, ahead_dist = _map["ahead"], _map["ahead_dist"]
+  # written on the device's monotonic clock, which restarts with it: a stamp from before
+  # this boot reads as far in the future or absurdly old, and either way is not this drive
+  age = time.monotonic() - _assist["t"]
+  if not 0. <= age < 3600.:
+    age = -1.
 
   return {
     "liveMapDataSP": {
       "roadName": _map["road"],
+      "gpsValid": gps_ok,
       "speedLimitValid": speed_limit > 0.,
       "speedLimit": speed_limit,
       "speedLimitAheadValid": ahead > 0. and ahead_dist > 0.,
@@ -272,7 +298,9 @@ def _sp_shapes(params, mem_params, cs, cc, ss, frame):
           "speedLimitFinal": speed_limit + offset if speed_limit > 0. else 0.,
           "speedLimitValid": speed_limit > 0.,
         },
-        "assist": {"state": "active" if assisting else "inactive"},
+        "assist": {"state": "active" if assisting else "inactive",
+                   "lastLimit": _assist["limit"], "lastTarget": _assist["target"],
+                   "lastAge": age},
       },
     },
     "selfdriveStateSP": {
@@ -307,6 +335,9 @@ def poll_loop():
     onroad = sm.alive["carState"]
 
     now = time.monotonic()
+    gps = sm["gpsLocationExternal"]
+    gps_ok = (bool(sm.alive["gpsLocationExternal"]) and gps.horizontalAccuracy < MIN_ACCURACY
+              and not (gps.latitude == 0 and gps.longitude == 0))
     radar_points = [{"dRel": float(p.dRel), "yRel": float(p.yRel), "vRel": float(p.vRel)}
                     for p in sm["radarTracksSP"].points]
     data["standby"] = not onroad
@@ -340,7 +371,7 @@ def poll_loop():
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
-                               sm["selfdriveState"], _frame))
+                               sm["selfdriveState"], _frame, gps_ok))
       except Exception as e:
         data["error"] = str(e)
     if not onroad:

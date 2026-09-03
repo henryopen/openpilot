@@ -40,6 +40,7 @@
     display:flex;align-items:center;justify-content:center;font-size:27px;font-weight:800;
     color:#0c0c0c;text-shadow:none;box-shadow:0 4px 22px rgba(0,0,0,.85)}
   .sl.off{filter:grayscale(1) brightness(.4)}
+  .sl.txt{font-size:16px;letter-spacing:-.5px;filter:grayscale(1) brightness(.72)}
   .slside{display:flex;flex-direction:column;gap:4px;font-weight:700;align-items:flex-end}
   .slofs{font-size:19px;color:var(--dim2);letter-spacing:.3px}
   .slnx{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:18px;color:var(--amber);opacity:0}
@@ -169,6 +170,7 @@
     <span class="chip on" id="cEng">ENGAGED</span>
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip src" id="cSrc">定速</span>
+    <span class="chip wait" id="cSLA" style="display:none"></span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -337,7 +339,7 @@ function drawRoad(F){
     if(F.bsdR) cx.fillRect(W/2+62, EGO_Y-80, 88, 110);
   }
   // 停止線：模型預見（琥珀）或確定要停（紅）
-  const stopLineD = F.stop ? F.stopD : ((F.stopA>2 && F.stopA<DMAX) ? F.stopA : 0);
+  const stopLineD = (F.stopA>2 && F.stopA<DMAX) ? F.stopA : (F.stop ? F.stopD : 0);
   if(stopLineD>2 && stopLineD<DMAX){
     const p=px(stopLineD,0), hw=Math.max(44, 3.8*MPP*p.s);
     cx.strokeStyle=F.stop?'rgba(255,45,45,.9)':'rgba(255,140,26,.85)'; cx.lineWidth=Math.max(3,9*p.s);
@@ -598,7 +600,10 @@ function render(F){
   // 速限：圓標永遠顯示「原始法定速限」；offset 與生效值只用小字附註
   const slRaw = (F.slRaw!==undefined && F.slRaw!==null) ? F.slRaw : F.sl;
   const sl=$('sl');
-  sl.textContent = slRaw>0?slRaw:'--'; sl.className='sl'+(slRaw>0?'':' off');
+  // 圈裡空白會被當成「壞了」。分得出來的兩種沒有就講出來：這條路沒標，還是收不到定位
+  const slText = slRaw>0 ? slRaw : (F.slState==='nofix' ? '無定位' : F.slState==='nodata' ? '無圖資' : '--');
+  sl.textContent = slText;
+  sl.className = 'sl' + (slRaw>0 ? '' : (typeof slText==='string' && slText.length>2 ? ' off txt' : ' off'));
   const nx=$('slNx');
   if(F.slNext>0){
     nx.className='slnx on'; set('slNxV', F.slNext);
@@ -622,6 +627,10 @@ function render(F){
   sc.style.display = F.engaged ? '' : 'none';
   sc.textContent = SRC[src] || src;
   sc.className = 'chip ' + (isE2E ? 'e2e' : src.startsWith('lead') ? 'lead' : 'cruise');
+  const sla=$('cSLA');
+  if(F.slaAge>=0 && F.slaAge<8 && F.slaTarget>0){
+    sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
+  } else sla.style.display='none';
   // 警示／事件訊息（selfdriveState.alertText1/2 就是 openpilot event 轉出來的文字）
   const ab=$('alertBox');
   const t1=(F.alert1||'').trim(), t2=(F.alert2||'').trim();
@@ -635,10 +644,14 @@ function render(F){
   // 模型的預測會閃，亮過就保持 1 秒，距離用 EMA 壓抖。
   const nowT=Date.now();
   if(F.stopA>2 && F.stopA<80){ __stopSeen=nowT; __stopEma = __stopEma?__stopEma*.7+F.stopA*.3:F.stopA; }
-  const soon = !F.stop && (nowT-__stopSeen<1000);
+  const stopFresh = nowT-__stopSeen<1000;
+  const soon = !F.stop && stopFresh;
   sb.className='ov stop'+((F.stop||soon)?' on':'')+(soon?' soon':'');
-  set('stopD', F.stop&&F.stopD?`${F.stopD.toFixed(0)} m`:(soon?`${__stopEma.toFixed(0)} m`:'—'));
-  if(!F.stop && !soon) __stopEma=0;
+  // 距離用模型自己的速度曲線（stopAhead）：stopDistance 只積分計畫的 2.5 秒，
+  // 所以真的在煞停時它永遠停在十幾公尺，看起來像停止線一直跟著車走
+  const stopShow = stopFresh ? __stopEma : (F.stop ? F.stopD : 0);
+  set('stopD', stopShow>2?`${stopShow.toFixed(0)} m`:'—');
+  if(!stopFresh) __stopEma=0;
 
   const m=(F.leads||[]).find(l=>l.main);
   const m1=$('m1');
@@ -728,7 +741,7 @@ function showIdle(){
           alert1:'', alert2:'', alertStatus:'normal',
           stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[]});
 }
-window.render=render; window.DEMOS=DEMOS;
+window.render=render; window.DEMOS=DEMOS; window.fromSSE=fromSSE;   // 給離線驗證用
 
 // 待機標示：接上 SSE 之前告訴看的人「這不是即時資料」
 if(!new URLSearchParams(location.search).has('play')){
@@ -859,6 +872,7 @@ function fromSSE(J){
   const cs=J.carState, ss=J.selfdriveState||{}, rs=J.radarState||{};
   const rv=(((J.selfdriveStateSP||{}).speedLimit)||{}).resolver||{};
   const lm=J.liveMapDataSP||{}, mv=J.modelV2, msp=J.modelDataV2SP||{}, ct=J.control||{};
+  const as=(((J.longitudinalPlanSP||{}).speedLimit)||{}).assist||{};
   const v=cs.vEgoCluster||cs.vEgo||0;
   const kph=x=>Math.round((x||0)*KPH);
   const F={
@@ -872,6 +886,12 @@ function fromSSE(J){
     slOfs: kph(rv.speedLimitOffset),
     slNext: lm.speedLimitAheadValid ? kph(lm.speedLimitAhead) : 0,
     slNextD: lm.speedLimitAheadDistance||0,
+    // 沒有速限時，分得出來是這條路沒標（nodata）還是根本沒定位（nofix）。
+    // 舊版 server 不送 gpsValid，那就什麼都別斷言，維持原本的 --
+    slState: (rv.speedLimitValid||lm.speedLimitValid || lm.gpsValid===undefined) ? ''
+             : (lm.gpsValid ? 'nodata' : 'nofix'),
+    slaLimit: as.lastLimit||0, slaTarget: as.lastTarget||0,
+    slaAge: (as.lastAge==null ? -1 : as.lastAge),
     // 盲點 / 換道封鎖（OP 自己的判斷）/ 方向燈
     bsdL: !!cs.leftBlindspot,  bsdR: !!cs.rightBlindspot,
     blkL: !!msp.leftLaneChangeEdgeBlock, blkR: !!msp.rightLaneChangeEdgeBlock,
