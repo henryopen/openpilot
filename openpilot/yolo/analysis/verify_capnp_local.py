@@ -27,8 +27,14 @@ mod_params = types.ModuleType('openpilot.common.params')
 mod_params.Params = Params
 mod_rt = types.ModuleType('openpilot.common.realtime')
 mod_rt.DT_MDL = 0.05
-for name, m in [('openpilot', types.ModuleType('openpilot')),
-                ('openpilot.common', types.ModuleType('openpilot.common')),
+ROOT = r'E:/Documents/GitHub/openpilot-master'
+mod_op = types.ModuleType('openpilot')
+mod_op.__path__ = [ROOT + '/openpilot']
+mod_common = types.ModuleType('openpilot.common')
+# a package, so the modules that are not stubbed here - filter_simple - load for real
+mod_common.__path__ = [ROOT + '/openpilot/common']
+for name, m in [('openpilot', mod_op),
+                ('openpilot.common', mod_common),
                 ('openpilot.common.constants', mod_const),
                 ('openpilot.common.params', mod_params),
                 ('openpilot.common.realtime', mod_rt)]:

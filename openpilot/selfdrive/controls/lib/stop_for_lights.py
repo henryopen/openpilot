@@ -18,8 +18,8 @@ does not move: drive ten metres and the plan should end ten metres nearer. A pha
 back, by 8 m in the first second against a real stop's -1.4.
 
   arm       the plan comes to rest somewhere in it: take 5 km/h off the set speed
-  confirm   there is a point to stop at, it has held still for a second, and the plan now
-            ends at a standstill
+  confirm   there is a point to stop at, the plan has kept agreeing it is there, and it
+            now ends at a standstill
   commit    put a car at the line and let the MPC brake for it
   hand off  inside 6 m ask for the stop itself, and hold the car once it is stopped
   let go    the model says the road runs well past where we think it stops - give the speed
@@ -56,18 +56,20 @@ is only ten seconds long, so at town speeds its length is the horizon rather tha
 which is why arming waits for the plan to end near us.
 """
 from openpilot.common.constants import CV
+from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
 MIN_SPEED = 15 * CV.KPH_TO_MS      # below this the ordinary planner is already stopping us
-LEAD_IS_THE_ANSWER = 1e9           # a lead nearer than this is what we would stop for anyway
+LEAD_PAST_THE_LINE = 10.           # a lead this much further than the stop is a different stop
 ARM_FLOOR_SPEED = 2.0              # the plan's own speed comes down to this: it plans to stop
 REST_SPEED = 1.0                   # a plan is at rest below this, and has recovered above it
 ARM_SPEED_DROP = 5 * CV.KPH_TO_MS  # what the hint costs while it proves itself
 COMMIT_END_SPEED = 1.0             # committing wants the plan ending at a standstill
-COMMIT_HOLD = 1.0                  # and the point holding still for this long
-SLACK = 6.0                        # the model may say the road runs this much further
-RECEDE_FOR = 0.7                   # for this long before we believe it and let go
+SLACK = 6.0                        # a resting point this much beyond is a different stop
+AGREE_TAU = 0.5                    # how long the plan has to keep agreeing to be believed
+COMMIT_AGREE = 0.65                # and how much of that agreement commitment needs
+LET_GO_AGREE = 0.15                # below this the junction is gone
 HANDOFF = 6.0                      # inside this, ask for the stop rather than a speed
 STOP_GAP = 4.0                     # where the car comes to rest short of the plan's end
 MAX_DECEL = -1.5                   # the firmest the MPC may brake for a call that is a guess
@@ -88,8 +90,10 @@ class StopForLights:
     self.is_active = False          # committed to the stop, or holding one we made
     self.v_cruise_cap = NO_CAP
     self.stop_distance = 0.
-    self.held_still_for = 0.
-    self.receded_for = 0.
+    # how much of the last while the plan has agreed there is a stop, and that it is the
+    # one being tracked. A filter rather than a run of good frames: the plan flickers, and
+    # counting runs meant one bad frame threw away the evidence commitment needs.
+    self.agree = FirstOrderFilter(0., AGREE_TAU, DT_MDL)
     self.held_for = 0.
     self.stopped_for = 0.
     self.clear_for = 0.
@@ -104,8 +108,7 @@ class StopForLights:
     self.is_active = False
     self.v_cruise_cap = NO_CAP
     self.stop_distance = 0.
-    self.held_still_for = 0.
-    self.receded_for = 0.
+    self.agree.x = 0.
     self.held_for = 0.
     self.stopped_for = 0.
     self.clear_for = 0.
@@ -129,28 +132,46 @@ class StopForLights:
       stop_ahead = float(x[idx])
     return float(x[-1]), float(v[-1]), float(min(v)), stop_ahead
 
-  def _track(self, plan_length: float, stop_ahead: float, v_ego: float) -> None:
-    """Where the stop is now, counting down with the wheels.
+  def _track(self, stop_ahead: float, v_ego: float) -> None:
+    """Where the stop is now, counting down with the wheels, and how much the plan agrees.
 
     Pulled in whenever the model sees something nearer and never pushed out, so a frame
-    that loses sight of the junction cannot move the line away from us. Where the plan
-    comes to rest is what is used once there is one, since that is the junction rather
-    than the far end of what the model can see; before that there is only the plan's
-    length. The model saying the road runs well past it, and keeping that up, is what ends
-    the call instead - and that is the plan's length either way.
+    that loses sight of the junction cannot move the line away from us. Nothing here reads
+    the plan's length: out past 40 m that is the horizon rather than a junction, and on the
+    frames where the plan flickers and reports no stop at all, a horizon at 50 m against a
+    point tracked at 28 m read as the road running on.
+
+    Agreement is filtered rather than counted. Approaching a red light on 2026-09-03 the
+    plan reported a resting point on most frames and nothing on the rest, so a run of good
+    frames never reached the second commitment asked for - it went 0.10, 0.25, 0.30, 0.25,
+    0.00 all the way in while the driver braked. Filtering asks the question the flicker
+    cannot spoil: over the last half second, how much of the time was the stop there?
     """
     self.stop_distance = max(self.stop_distance - v_ego * DT_MDL, 0.)
-    nearest = stop_ahead if stop_ahead > 0. else plan_length
-    if nearest < self.stop_distance:
-      self.stop_distance = nearest
-      self.receded_for = 0.
-      self.held_still_for += DT_MDL
-    elif plan_length > self.stop_distance + SLACK:
-      self.receded_for += DT_MDL
-      self.held_still_for = 0.
-    else:
-      self.receded_for = 0.
-      self.held_still_for += DT_MDL
+    agrees = 0. < stop_ahead <= self.stop_distance + SLACK
+    if agrees and stop_ahead < self.stop_distance:
+      self.stop_distance = stop_ahead
+    self.agree.update(1. if agrees else 0.)
+
+  def _lead_is_the_answer(self, lead, stop_ahead: float) -> bool:
+    """Is the car in front the reason we would be stopping, or is it a different stop?
+
+    Standing down for a lead at any range is what kept this from acting: approaching a red
+    light on 2026-09-03 at 32 km/h the model planned to stop 22 m ahead while radard was
+    reporting a lead at 48 m - the queue at the next junction, not ours. Any fixed distance
+    gets that wrong too, because 48 m is a perfectly ordinary distance to be following at.
+
+    What separates them is not how far the lead is but where it is relative to the stop. A
+    car at the line is what we would be stopping behind and the planner handles it better
+    than this does. One well past the line is a different junction and has no bearing here.
+    With no stop in the plan there is nothing to compare against, so a lead is a lead.
+    """
+    if lead is None or not lead.present:
+      return False
+    line = self.stop_distance if self.armed else stop_ahead
+    if line <= 0.:
+      return True
+    return float(lead.dRel) < line + LEAD_PAST_THE_LINE
 
   def _hold_at_standstill(self, md) -> None:
     """Stopped for this junction. Nothing else keeps us here - cruise wants the set speed
@@ -178,10 +199,7 @@ class StopForLights:
       return
 
     plan_length, plan_end_speed, plan_floor, stop_ahead = self._plan(md)
-    # A car in front is only the answer to the junction if it is near enough to be the
-    # thing we would stop behind. One a long way up the road is not, and treating it as one
-    # is why the module stood down at junctions the driver then had to handle himself.
-    has_lead = lead is not None and lead.present and lead.dRel < LEAD_IS_THE_ANSWER
+    has_lead = self._lead_is_the_answer(lead, stop_ahead)
 
     if self.is_active and v_ego < STOPPED:
       self.held_for += DT_MDL
@@ -202,8 +220,7 @@ class StopForLights:
         return
       self.armed = True
       self.stop_distance = stop_ahead if stop_ahead > 0. else plan_length
-      self.held_still_for = 0.
-      self.receded_for = 0.
+      self.agree.x = 1.      # we armed because the plan said stop; it decays if it stops saying so
       self.held_for = 0.
       self.v_cruise_cap = max(v_cruise - ARM_SPEED_DROP, 0.)
       return
@@ -213,9 +230,9 @@ class StopForLights:
       self.reset()
       return
 
-    self._track(plan_length, stop_ahead, v_ego)
-    if self.receded_for > RECEDE_FOR:
-      # the road runs on well past where we thought it stopped. give the speed back.
+    self._track(stop_ahead, v_ego)
+    if self.agree.x < LET_GO_AGREE:
+      # the plan has stopped saying there is a stop here. give the speed back.
       self.reset()
       return
 
@@ -226,7 +243,7 @@ class StopForLights:
         # slow enough that the stop is happening either way; see it through
         self.is_active = True
       else:
-        self.is_active = self.held_still_for > COMMIT_HOLD and plan_end_speed < COMMIT_END_SPEED
+        self.is_active = self.agree.x > COMMIT_AGREE and plan_end_speed < COMMIT_END_SPEED
 
     if not self.is_active:
       # still only a hint: hold the 5 km/h off and keep watching

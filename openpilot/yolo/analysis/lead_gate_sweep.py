@@ -50,7 +50,26 @@ DAYS = [('9/2', r'F:/c4sunny/rlog20260902F'), ('9/3', r'F:/c4sunny/rlog20260903'
 DT = 0.05
 LOOK_AHEAD = int(20. / DT)
 HALTED = 0.3
-THRESHOLDS = [1e9, 80., 50., 30., 15., 7.]
+
+# The rule that ships is relative: a lead counts only if it is at or before the stop. The
+# absolute distances are here to show what a fixed number would have done instead, and
+# "any" is what the module did before either.
+RELATIVE = object()
+GATES = [('任何前車（原本）', None), ('絕對 80 m', 80.), ('絕對 50 m', 50.),
+         ('絕對 30 m', 30.), ('絕對 15 m', 15.), ('相對：停止點之前', RELATIVE)]
+_real_gate = SFL.StopForLights._lead_is_the_answer
+
+
+def patch(kind):
+  if kind is RELATIVE:
+    SFL.StopForLights._lead_is_the_answer = _real_gate
+  elif kind is None:
+    SFL.StopForLights._lead_is_the_answer = (
+        lambda self, lead, stop_ahead: lead is not None and lead.present)
+  else:
+    SFL.StopForLights._lead_is_the_answer = (
+        lambda self, lead, stop_ahead, d=kind: lead is not None and lead.present
+        and float(lead.dRel) < d)
 
 
 def read(seg):
@@ -101,9 +120,9 @@ def load(root):
             yield route, frames
 
 
-def run(cached, limit):
-    """Replay the module at one threshold and score every firing."""
-    SFL.LEAD_IS_THE_ANSWER = limit
+def run(cached, kind):
+    """Replay the module under one gate and score every firing."""
+    patch(kind)
     out = {'arm': [], 'commit': []}
     for _route, frames in cached:
         sfl = SFL.StopForLights()
@@ -139,18 +158,17 @@ def main():
         frames = sum(len(f) for _, f in cached)
         print("")
         print(f'=== {label}  {frames} 幀（{frames * DT / 60:.1f} 分）===')
-        head = f"{'前車算數的距離':>14}{'武裝':>6}{'命中':>6}{'誤報':>6}"
+        head = f"{'前車何時算數':>18}{'武裝':>6}{'命中':>6}{'誤報':>6}"
         print(head + f"{'誤報秒(OP開)':>13}{'承諾':>6}{'命中':>6}{'誤報':>6}{'誤報秒(OP開)':>13}")
-        for limit in THRESHOLDS:
-            r = run(cached, limit)
+        for name, kind in GATES:
+            r = run(cached, kind)
             cells = []
             for key in ('arm', 'commit'):
                 got = r[key]
                 bad = [g for g in got if not g[2]]
                 bad_eng = [g[1] for g in bad if g[0]]
                 cells.append(f"{len(got):>6}{len(got) - len(bad):>6}{len(bad):>6}{sum(bad_eng):>13.1f}")
-            name = '不限（現行）' if limit > 1e8 else f'{limit:.0f} m'
-            print(f"{name:>14}" + "".join(cells))
+            print(f"{name:>18}" + "".join(cells))
 
 
 if __name__ == '__main__':
