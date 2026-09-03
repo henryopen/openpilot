@@ -32,7 +32,15 @@ ap = argparse.ArgumentParser()
 ap.add_argument('--route', required=True)
 ap.add_argument('--segments', required=True)
 ap.add_argument('--root', default='/data/media/0/realdata')
+ap.add_argument('--baseline', action='store_true',
+                help='suppress the new id on a swap, to measure what it was like before')
 args = ap.parse_args()
+
+if args.baseline:
+    # what the parser did before: notice the swap, reset the range history, keep the id
+    from opendbc.car.hyundai.radar_interface import CustinSlot
+    _real_update = CustinSlot.update
+    CustinSlot.update = lambda self, t, d, v: bool(_real_update(self, t, d, v)) and False
 
 DT = 1 / 33.
 MISMATCH = 2.0        # metres the reported speed cannot account for
@@ -106,7 +114,8 @@ def main():
                     del prev[t]
         g['frames'] += len(frames)
 
-    print(f'重放 {g["frames"]} 個雷達幀，同 trackId 的相鄰讀數 {g["pairs"]} 對')
+    print(f'{"改前（換人不換 id）" if args.baseline else "改後（換人發新 id）"}：'
+          f'重放 {g["frames"]} 個雷達幀，同 trackId 的相鄰讀數 {g["pairs"]} 對')
     print(f'距離變化超出相對速可解釋範圍（>{MISMATCH} m）：{g["unexplained"]} 次')
     if worst:
         print(f'\n{"路段":>22} {"trkId":>9} {"從m":>6} {"到m":>6} {"誤差m":>7} {"vRel kph":>9}')
