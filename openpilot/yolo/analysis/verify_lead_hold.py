@@ -1,4 +1,4 @@
-"""Run the real get_lead over the real messages, with and without the hold, and count.
+"""Run the real get_lead over the real messages, with and without the preference, and count.
 
 The change is small but it sits in the loop that decides what to brake for, so it gets the
 same treatment as the planner changes: the actual function, fed actual capnp readers from
@@ -78,7 +78,7 @@ def run(seg, use_preferred):
             lv = e.modelV2.leadsV3
             leads_v3 = lv if len(lv) > 1 else None
         elif w == 'radarTracksSP':
-            pts = e.radarTracksSP.radarTracks if hasattr(e.radarTracksSP, 'radarTracks') else []
+            pts = e.radarTracksSP.points
             ids = set()
             for pt in pts:
                 i = int(pt.trackId)
@@ -129,11 +129,11 @@ def main():
     print(f"重放 {len(segs)} 段，hold = {LEAD_HOLD_FRAMES} 幀（{LEAD_HOLD_FRAMES * 0.05:.1f} 秒）\n")
 
     results = {}
-    for label, use_hold in (('改前（每幀重新決定）', False), ('改後（失配時對原 track 放寬再驗）', True)):
+    for label, use_pref in (('改前（每幀重新決定）', False), ('改後（失配時對原 track 放寬再驗）', True)):
         allf = []
         for seg in segs:
             try:
-                allf += run(seg, use_hold)
+                allf += run(seg, use_pref)
             except Exception as exc:
                 print(f'  {os.path.basename(seg)} 失敗: {exc}')
         g, jumps = score(allf)
@@ -148,7 +148,7 @@ def main():
                   f"最大 {jumps[-1]:.1f} km/h")
         print()
 
-    (a, ja), (b, jb) = results['改前（每幀重新決定）'], results['改後（失配時對原 track 放寬再驗）']
+    (a, _), (b, _) = results['改前（每幀重新決定）'], results['改後（失配時對原 track 放寬再驗）']
     if a['flips']:
         print(f"切換次數 {a['flips']} → {b['flips']}"
               f"（少了 {(a['flips'] - b['flips']) / a['flips'] * 100:.0f}%）")
