@@ -165,13 +165,44 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
   }
 
 
+# How long to keep a radar track that has stopped matching vision. Over 2026-09-02's four
+# drives the lead fell from radar to vision 1905 times in 63 minutes; the track that came
+# back was the one that left on 95.1% of them, a median of 0.10 s later, with its range
+# 0.2 m from where it was. Nothing moved - the match blinked. 90% of the gaps close inside
+# 0.55 s, so half a second covers them without holding a track that has genuinely gone.
+LEAD_HOLD_FRAMES = 10
+
+
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
-             model_v_ego: float, lead_prob: float, low_speed_override: bool = True) -> dict[str, Any]:
+             model_v_ego: float, lead_prob: float, low_speed_override: bool = True,
+             hold: dict[str, float] | None = None) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_prob > .5:
     track = match_vision_to_track(v_ego, lead_msg, tracks)
   else:
     track = None
+
+  # Losing the match means falling back to vision's own estimate, and vision's closing speed
+  # differs from the radar's by a median 6.4 km/h and by as much as 45.8. The MPC brakes for
+  # that difference: 554 of these swaps were followed by a firm deceleration, costing up to
+  # 20.8 km/h with the driver's feet on nothing. While the track we were using is still being
+  # tracked, keep it rather than swapping to a different measurement of the same car.
+  if hold is not None:
+    if track is not None:
+      hold.update(tid=track.identifier, frames=0, dRel=track.dRel, vRel=track.vRel)
+    elif hold['tid'] in tracks and hold['frames'] < LEAD_HOLD_FRAMES:
+      # The id alone is not enough: the radar reuses ids, and holding one whose measurement
+      # has jumped puts a phantom in front of the car - replaying this over the drives, a
+      # bare id hold picked up tracks reporting 180 km/h of closing speed. Hold only
+      # something still where we left it.
+      cand = tracks[hold['tid']]
+      if abs(cand.dRel - hold['dRel']) < 5.0 and abs(cand.vRel - hold['vRel']) < 3.0:
+        track = cand
+        hold.update(frames=hold['frames'] + 1, dRel=cand.dRel, vRel=cand.vRel)
+      else:
+        hold.update(tid=-1, frames=0)
+    else:
+      hold.update(tid=-1, frames=0)
 
   lead_dict = {'present': False}
   if track is not None:
@@ -196,6 +227,8 @@ class RadarD:
     self.tracks: dict[int, Track] = {}
     self.kalman_params = KalmanParams(DT_MDL)
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, DT_MDL) for _ in range(2)]
+    self.lead_holds: list[dict[str, float]] = [{'tid': -1, 'frames': 0, 'dRel': 0., 'vRel': 0.}
+                                               for _ in range(2)]
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -253,8 +286,12 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego, self.lead_prob_filters[0].x, low_speed_override=True)
-      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego, self.lead_prob_filters[1].x, low_speed_override=False)
+      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                                          self.lead_prob_filters[0].x, low_speed_override=True,
+                                          hold=self.lead_holds[0])
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
+                                          self.lead_prob_filters[1].x, low_speed_override=False,
+                                          hold=self.lead_holds[1])
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
