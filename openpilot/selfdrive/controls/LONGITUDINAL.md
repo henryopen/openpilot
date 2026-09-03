@@ -108,8 +108,24 @@ commit `4093f3cff` 已經處理過「視覺只是距離不同意」的情形，�
 | **pi 實際顯示** | ❌ **駕駛說從來沒看到** |
 | `MapSpeedLimit` param | offroad 查是 `0.0`（正常，mapd 沒跑） |
 
-**待查（必須 onroad 時查）**：mapd 有沒有真的寫出 `MapSpeedLimit` / `NextSpeedLimit`，
-還是 pi 端沒畫。這是唯一還沒定位的一項。
+**2026-09-03 全鏈驗完：每一段都是好的**，端到端一路驗到 **pi 螢幕截圖顯示紅圈 50**。
+顯示不出來的時候，是那條路在 OSM 上沒有 `maxspeed`——9/2 那趟前 13 段覆蓋率 **58.8%**
+（高速公路 110、尖山路 50、三鶯大橋 50 有；巷弄、匝道、縣道沒有）。
+
+而 `carState.vCruise` 在那趟自己變了 **10 次**（40→60、90→120、50→60…全部符合速限+offset 10），
+所以控制層確實在動——駕駛感覺到「速度莫名其妙變」卻看不到原因，因為畫面上沒有「誰改了設定速度」。
+
+**驗這條鏈一定會踩的三個坑**：
+1. **mapd 讀走 `LastGPSPosition` 就清空**，只寫一次它讀完就不動了。要像 mapd_bridge 那樣 2 Hz 持續寫
+   → `openpilot/yolo/analysis/feed_gps_from_rlog.py`
+2. **offroad 時 HUD server 只送路名**（`if not onroad: data["liveMapDataSP"] = {"roadName": ...}`），
+   速限整段被蓋掉。`onroad = sm.alive["carState"]`，所以要重放 rlog
+   → `openpilot/hud/replay_to_hud.py`
+3. **`carState.cruiseState.speed` 是原廠 ACC 的設定速度**（整趟 0 變化），
+   OP LONG 下 openpilot 自己的是 **`carState.vCruise`**
+
+看 pi 螢幕不用到車上：`ssh henry@.201` → `ssh pi@192.168.2.151` →
+`XDG_RUNTIME_DIR=/run/user/$(id -u) WAYLAND_DISPLAY=wayland-0 grim /tmp/hud.png`，再 scp 回來。
 
 ### 3.4 靜止前車 / 快速接近前車：沒有專門處理
 
