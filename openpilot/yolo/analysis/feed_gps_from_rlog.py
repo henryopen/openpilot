@@ -32,6 +32,8 @@ ap.add_argument('--segments', required=True, help='e.g. 33-35')
 ap.add_argument('--root', default='/data/media/0/realdata')
 ap.add_argument('--rate', type=float, default=2.0, help='writes per second, as mapd_bridge does')
 ap.add_argument('--watch', action='store_true', help='print what mapd produces as we go')
+ap.add_argument('--summary', action='store_true',
+                help='tally which roads have a limit in the map data and which do not')
 args = ap.parse_args()
 
 
@@ -71,11 +73,21 @@ def main():
     lo, hi = (int(v) for v in args.segments.split('-'))
     period = 1.0 / args.rate
     n = 0
+    roads: dict[str, list] = {}
     for s in range(lo, hi + 1):
         seg = os.path.join(args.root, f'{args.route}--{s}')
         for pos in positions(seg):
             open(POS, 'w').write(json.dumps(pos))
             n += 1
+            if args.summary and n % 8 == 0:
+                road = read('RoadName')
+                if road:
+                    limit = float(read('MapSpeedLimit') or 0) * 3.6
+                    r = roads.setdefault(road, [0, 0, 0.])
+                    r[0] += 1
+                    if limit > 0:
+                        r[1] += 1
+                        r[2] = limit
             if args.watch and n % 4 == 0:
                 nxt = read('NextMapSpeedLimit')
                 try:
@@ -87,7 +99,23 @@ def main():
                       f"現在={float(read('MapSpeedLimit') or 0) * 3.6:.0f} km/h  "
                       f"下一個={ahead}  {read('RoadName')}", flush=True)
             time.sleep(period)
-    print(f'餵完 {n} 個位置', flush=True)
+
+    print(f'
+餵完 {n} 個位置，經過 {len(roads)} 條路')
+    if args.summary and roads:
+        have = [(r, v) for r, v in roads.items() if v[1] > 0]
+        none = [(r, v) for r, v in roads.items() if v[1] == 0]
+        tot = sum(v[0] for v in roads.values())
+        hit = sum(v[0] for _, v in have)
+        print(f'有速限資料的取樣點：{hit}/{tot} ({hit / max(tot, 1) * 100:.1f}%)')
+        print(f'
+=== 查得到速限的路（{len(have)} 條）===')
+        for r, v in sorted(have, key=lambda x: -x[1][0])[:12]:
+            print(f'  {r:24} {v[2]:5.0f} km/h   取樣 {v[0]}')
+        print(f'
+=== 查不到速限的路（{len(none)} 條）===')
+        for r, v in sorted(none, key=lambda x: -x[1][0])[:12]:
+            print(f'  {r:24} 取樣 {v[0]}')
 
 
 if __name__ == '__main__':
