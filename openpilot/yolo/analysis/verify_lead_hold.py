@@ -37,8 +37,7 @@ _p.Params = _Params
 sys.modules['openpilot.common.params'] = _p
 sys.path.insert(0, r'E:/Documents/GitHub/openpilot-master')
 
-from openpilot.selfdrive.controls.radard import (Track, KalmanParams, get_lead,  # noqa: E402
-                                                 LEAD_HOLD_FRAMES)
+from openpilot.selfdrive.controls.radard import Track, KalmanParams, get_lead  # noqa: E402
 
 SCHEMA = r'F:/c4sunny/schema_hcop'
 ROOT = r'F:/c4sunny/rlog20260902F'
@@ -48,14 +47,14 @@ os.chdir(SCHEMA)
 log = capnp.load('log.capnp', imports=[SCHEMA])
 
 
-def run(seg, use_hold):
+def run(seg, use_preferred):
     """Replay one segment through the real get_lead; return per-frame lead dicts."""
     data = zstandard.ZstdDecompressor().stream_reader(
         open(os.path.join(seg, 'rlog.zst'), 'rb')).read()
     pump = iter(log.Event.read_multiple_bytes(data))
     kp = KalmanParams(DT_MDL)
     tracks: dict[int, Track] = {}
-    hold = {'tid': -1, 'frames': 0} if use_hold else None
+    prev_tid = -1
     v_ego = 0.
     eng = False
     out = []
@@ -94,7 +93,9 @@ def run(seg, use_hold):
             if leads_v3 is None:
                 continue
             ld = get_lead(v_ego, True, tracks, leads_v3[0], v_ego, float(leads_v3[0].prob),
-                          low_speed_override=True, hold=hold)
+                          low_speed_override=True,
+                          preferred_track_id=prev_tid if use_preferred else -1)
+            prev_tid = int(ld.get('radarTrackId', -1))
             out.append({'eng': eng, 'present': ld.get('present', False),
                         'radar': ld.get('radar', False), 'vrel': ld.get('vRel', 0.),
                         'd': ld.get('dRel', 0.)})
@@ -128,7 +129,7 @@ def main():
     print(f"重放 {len(segs)} 段，hold = {LEAD_HOLD_FRAMES} 幀（{LEAD_HOLD_FRAMES * 0.05:.1f} 秒）\n")
 
     results = {}
-    for label, use_hold in (('改前（每幀重新決定）', False), ('改後（短暫失配抓住原 track）', True)):
+    for label, use_hold in (('改前（每幀重新決定）', False), ('改後（失配時對原 track 放寬再驗）', True)):
         allf = []
         for seg in segs:
             try:
@@ -147,7 +148,7 @@ def main():
                   f"最大 {jumps[-1]:.1f} km/h")
         print()
 
-    (a, ja), (b, jb) = results['改前（每幀重新決定）'], results['改後（短暫失配抓住原 track）']
+    (a, ja), (b, jb) = results['改前（每幀重新決定）'], results['改後（失配時對原 track 放寬再驗）']
     if a['flips']:
         print(f"切換次數 {a['flips']} → {b['flips']}"
               f"（少了 {(a['flips'] - b['flips']) / a['flips'] * 100:.0f}%）")

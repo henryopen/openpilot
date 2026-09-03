@@ -110,7 +110,8 @@ def laplacian_pdf(x: float, mu: float, b: float):
   return math.exp(-abs(x-mu)/b)
 
 
-def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track]):
+def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
+                          preferred_track_id: int = -1):
   offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
 
   def prob(c):
@@ -144,8 +145,26 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
     return track
-  else:
-    return None
+
+  # The gate is strict enough to blink: over 2026-09-02's drives the lead fell from radar to
+  # vision 1905 times in 63 minutes, and 95.1% of the time the track that came back was the
+  # one that left, a median of 0.10 s later with its range 0.2 m from where it was. Nothing
+  # moved - one frame of camera noise failed the test. Each swap hands the planner a
+  # different measurement of the same car, disagreeing on closing speed by a median 6.4 km/h
+  # and by as much as 45.8, and the MPC brakes for the difference.
+  #
+  # So give the track we were already using a second, looser look, the way StarPilot does
+  # (selfdrive/controls/radard.py, preferred_track_id): still measured against this frame's
+  # vision lead rather than sustained on its own, so a track that has genuinely diverged is
+  # still dropped. cnt >= 3 keeps a track that has only just appeared from being preferred.
+  preferred = tracks.get(preferred_track_id)
+  if preferred is not None and preferred.cnt >= 3:
+    pref_same = abs(preferred.vRel + v_ego - lead.v[0]) < 2.5 and abs(preferred.yRel + lead.y[0]) < 3.0
+    pref_dist = abs(preferred.dRel - offset_vision_dist) < max([(offset_vision_dist)*.12, 4.0]) or pref_same
+    pref_vel = (abs(preferred.vRel + v_ego - lead.v[0]) < 13) or (v_ego + preferred.vRel > 3)
+    if pref_dist and pref_vel:
+      return preferred
+  return None
 
 
 def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float, lead_prob: float):
@@ -165,44 +184,14 @@ def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: floa
   }
 
 
-# How long to keep a radar track that has stopped matching vision. Over 2026-09-02's four
-# drives the lead fell from radar to vision 1905 times in 63 minutes; the track that came
-# back was the one that left on 95.1% of them, a median of 0.10 s later, with its range
-# 0.2 m from where it was. Nothing moved - the match blinked. 90% of the gaps close inside
-# 0.55 s, so half a second covers them without holding a track that has genuinely gone.
-LEAD_HOLD_FRAMES = 10
-
-
 def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
              model_v_ego: float, lead_prob: float, low_speed_override: bool = True,
-             hold: dict[str, float] | None = None) -> dict[str, Any]:
+             preferred_track_id: int = -1) -> dict[str, Any]:
   # Determine leads, this is where the essential logic happens
   if len(tracks) > 0 and ready and lead_prob > .5:
-    track = match_vision_to_track(v_ego, lead_msg, tracks)
+    track = match_vision_to_track(v_ego, lead_msg, tracks, preferred_track_id)
   else:
     track = None
-
-  # Losing the match means falling back to vision's own estimate, and vision's closing speed
-  # differs from the radar's by a median 6.4 km/h and by as much as 45.8. The MPC brakes for
-  # that difference: 554 of these swaps were followed by a firm deceleration, costing up to
-  # 20.8 km/h with the driver's feet on nothing. While the track we were using is still being
-  # tracked, keep it rather than swapping to a different measurement of the same car.
-  if hold is not None:
-    if track is not None:
-      hold.update(tid=track.identifier, frames=0, dRel=track.dRel, vRel=track.vRel)
-    elif hold['tid'] in tracks and hold['frames'] < LEAD_HOLD_FRAMES:
-      # The id alone is not enough: the radar reuses ids, and holding one whose measurement
-      # has jumped puts a phantom in front of the car - replaying this over the drives, a
-      # bare id hold picked up tracks reporting 180 km/h of closing speed. Hold only
-      # something still where we left it.
-      cand = tracks[hold['tid']]
-      if abs(cand.dRel - hold['dRel']) < 5.0 and abs(cand.vRel - hold['vRel']) < 3.0:
-        track = cand
-        hold.update(frames=hold['frames'] + 1, dRel=cand.dRel, vRel=cand.vRel)
-      else:
-        hold.update(tid=-1, frames=0)
-    else:
-      hold.update(tid=-1, frames=0)
 
   lead_dict = {'present': False}
   if track is not None:
@@ -227,8 +216,7 @@ class RadarD:
     self.tracks: dict[int, Track] = {}
     self.kalman_params = KalmanParams(DT_MDL)
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, DT_MDL) for _ in range(2)]
-    self.lead_holds: list[dict[str, float]] = [{'tid': -1, 'frames': 0, 'dRel': 0., 'vRel': 0.}
-                                               for _ in range(2)]
+    self.prev_lead_track_ids = [-1, -1]
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -288,10 +276,12 @@ class RadarD:
 
       self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
                                           self.lead_prob_filters[0].x, low_speed_override=True,
-                                          hold=self.lead_holds[0])
+                                          preferred_track_id=self.prev_lead_track_ids[0])
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
                                           self.lead_prob_filters[1].x, low_speed_override=False,
-                                          hold=self.lead_holds[1])
+                                          preferred_track_id=self.prev_lead_track_ids[1])
+      self.prev_lead_track_ids = [int(self.radar_state.leadOne.radarTrackId),
+                                  int(self.radar_state.leadTwo.radarTrackId)]
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
