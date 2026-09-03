@@ -81,7 +81,7 @@ for p in SEGS:
           arm += 1
         if sfl.is_active:
           act += 1
-          sfl.a_target(float(e.modelV2.action.desiredAcceleration), v_ego)
+          sfl.obstacle_x(6.0)   # the junction now reaches the MPC as an obstacle, not a curve
       except Exception as ex:
         errs.append(f'{type(ex).__name__}: {ex}')
         if len(errs) > 3:

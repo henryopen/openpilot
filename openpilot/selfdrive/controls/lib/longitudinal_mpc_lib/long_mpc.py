@@ -23,7 +23,11 @@ EXPORT_DIR = os.path.join(LONG_MPC_DIR, "c_generated_code")
 JSON_FILE = os.path.join(LONG_MPC_DIR, "acados_ocp_long.json")
 
 LongitudinalPlanSource = log.LongitudinalPlan.LongitudinalPlanSource
-MPC_SOURCES = (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1)
+# A junction the model wants to stop at is handed to the solver as a third obstacle, one
+# that is standing still. It reports as e2e, which is the slot the planner already reads as
+# the junction stop outside experimental mode.
+MPC_SOURCES = (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1,
+               LongitudinalPlanSource.e2e)
 
 X_DIM = 3
 U_DIM = 1
@@ -307,7 +311,16 @@ class LongitudinalMpc:
     lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
     return lead_xv
 
-  def update(self, radarstate, personality=log.LongitudinalPersonality.standard):
+  def update(self, radarstate, personality=log.LongitudinalPersonality.standard,
+             stop_x=None, a_min=ACCEL_MIN):
+    """stop_x puts a standing obstacle in the road, for a junction with nothing at it.
+
+    Stopping is a question about where, and this solver is the one part of the chain that
+    is asked where: its cost is the error against the distance it wants to keep from an
+    obstacle. So a junction stop is not a second control law, it is a stopped car that
+    happens to be imaginary. a_min is how hard it may brake for one - the call is a guess,
+    so the worst a wrong one can do is a firm slow down rather than a stab at the pedal.
+    """
     t_follow = get_T_FOLLOW(personality)
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
@@ -319,7 +332,16 @@ class LongitudinalMpc:
     lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
     lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
 
-    x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle])
+    if stop_x is None:
+      stop_obstacle = np.full(N+1, 1e9)
+    else:
+      # standing still, so no stopped-equivalence to add. Held no nearer than we could
+      # still brake for, the same guard process_lead puts on a lead, or the solver is
+      # asked for something impossible and stops converging.
+      v_ego = self.x0[1]
+      stop_obstacle = np.full(N+1, max(stop_x, MIN_X_LEAD_FACTOR * v_ego ** 2 / (-a_min * 2)))
+
+    x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, stop_obstacle])
     self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
 
     self.yref[:,:] = 0.0
@@ -327,7 +349,7 @@ class LongitudinalMpc:
       self.solver.set(i, "yref", self.yref[i])
     self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
 
-    self.params[:,0] = ACCEL_MIN
+    self.params[:,0] = a_min
     self.params[:,1] = ACCEL_MAX
     self.params[:,2] = np.min(x_obstacles, axis=1)
     self.params[:,3] = np.copy(self.a_prev)

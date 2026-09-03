@@ -19,10 +19,23 @@ back, by 8 m in the first second against a real stop's -1.4.
 
   arm       the plan ends within 45 m and below 2 m/s: take 5 km/h off the set speed
   confirm   the point has held still for a second and the plan now ends at a standstill
-  commit    brake for it along a 0.65 m/s2 curve, which from 30 m is a wind down to 20 km/h
+  commit    put a car at the line and let the MPC brake for it
   hand off  inside 6 m ask for the stop itself, and hold the car once it is stopped
   let go    the model says the road runs well past where we think it stops - give the speed
             back and forget it. So does the accelerator, which suppresses it outright.
+
+Committing writes no deceleration of its own. Stopping is a question about where, and the
+one part of this chain that is asked where is the MPC: its cost is the error against the
+distance it wants to keep from an obstacle. Behind a lead that is what stops the car, at
+every junction with a car at it, smoothly and in the right place. So this hands it the same
+problem in the same terms - a stopped car at the line - rather than writing a second
+deceleration curve beside it. Taking the set speed off instead was measured and does not
+work: the cruise law only knows the speed error, so it eases off as the error closes and
+36 of 36 stops ran past the line, 8.6 m past at the median.
+
+What is given up by not writing the curve is the model's own braking request, which used to
+be taken whenever it was firmer than the geometry needed. Over these drives it asks for
+-0.3 either way, at a real stop and at a phantom alike, so there was little in it.
 
 The distance is tracked by dead reckoning rather than read fresh each frame, because the
 model's view flickers: it counts down with the wheels, is pulled in whenever the model sees
@@ -44,9 +57,8 @@ COMMIT_HOLD = 1.0                  # and the point holding still for this long
 SLACK = 6.0                        # the model may say the road runs this much further
 RECEDE_FOR = 0.7                   # for this long before we believe it and let go
 HANDOFF = 6.0                      # inside this, ask for the stop rather than a speed
-APPROACH_DECEL = 0.65              # the curve the wind down is built on
 STOP_GAP = 4.0                     # where the car comes to rest short of the plan's end
-MAX_DECEL = -1.5                   # gentle: arriving slowly beats being braked hard
+MAX_DECEL = -1.5                   # the firmest the MPC may brake for a call that is a guess
 COMMITTED = 15 * CV.KPH_TO_MS      # below this the stop is happening, see it through
 STOPPED = 0.5                      # standing still
 SETTLE = 1.5                       # the model needs a moment at a halt before it says so
@@ -188,22 +200,16 @@ class StopForLights:
       return
 
     self.held_for = 0.
-    if self.stop_distance <= HANDOFF:
-      self.v_cruise_cap = 0.
-    else:
-      self.v_cruise_cap = (2. * APPROACH_DECEL * (self.stop_distance - HANDOFF)) ** 0.5
+    # the approach is the MPC's from here, so cruise has no opinion to offer. Inside the
+    # handoff the set speed goes to zero as well, so nothing tries to pull away from a
+    # stop we are in the middle of making.
+    self.v_cruise_cap = 0. if self.stop_distance <= HANDOFF else NO_CAP
 
-  def a_target(self, a_target_e2e: float, v_ego: float) -> float:
-    """What it takes to stop where the junction is, within what is allowed.
+  def obstacle_x(self, mpc_stop_distance: float) -> float:
+    """Where to stand the imaginary car so we come to rest at the line.
 
-    Constant deceleration to a standstill a little short of the tracked point, since that
-    is where the car actually comes to rest. Never above what the model asked for - if it
-    wants to brake harder than the geometry needs, it has a reason to - and never below
-    MAX_DECEL, so a call that turns out to be wrong is a firm slow down at worst.
+    The MPC settles that much short of whatever obstacle it is given, and the car should
+    end up STOP_GAP short of the tracked point, which is where it actually came to rest
+    over these drives. So the obstacle goes the difference further out.
     """
-    a = float(a_target_e2e)
-    if self.stop_distance > 0. and v_ego > STOPPED:
-      # only while there is speed to take off. at a halt this works out at zero, which
-      # would sit on the model's own request to pull away and never let the car move.
-      a = min(a, -v_ego * v_ego / (2. * max(self.stop_distance - STOP_GAP, 1.)))
-    return max(a, MAX_DECEL)
+    return self.stop_distance - STOP_GAP + mpc_stop_distance

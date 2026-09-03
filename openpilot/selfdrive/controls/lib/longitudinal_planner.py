@@ -12,10 +12,11 @@ from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE as MPC_STOP_DISTANCE
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
-from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights
+from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
 from openpilot.common.swaglog import cloudlog
 
 # Eco from 18 km/h up, ours below it. open251021's eco curve pulls harder than stock off
@@ -185,9 +186,14 @@ class LongitudinalPlanner:
     # No change cost when user is controlling the speed, or when standstill
     prev_accel_constraint = not (reset_state or sm['carState'].standstill)
 
+    # committed to a junction stop: give the solver a car standing at the line, so the same
+    # thing that stops us behind a lead stops us here. It is only ever another obstacle, and
+    # the nearest one wins, so this cannot make the car go faster than it otherwise would.
+    stop_x = self.stop_for_lights.obstacle_x(MPC_STOP_DISTANCE) if self.stop_for_lights.is_active else None
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
-    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality)
+    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
+                    stop_x=stop_x, a_min=STOP_MAX_DECEL if stop_x is not None else ACCEL_MIN)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -225,17 +231,11 @@ class LongitudinalPlanner:
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
     if sm['selfdriveState'].experimentalMode:
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
-    else:
-      # committed to a junction stop: brake for it. candidates are resolved by min(), so
-      # this can only slow us down, and it is capped at a firm slow rather than a stab.
-      if self.stop_for_lights.is_active:
-        candidates.append((self.stop_for_lights.a_target(output_a_target_e2e, v_ego),
-                           LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
 
-    # name what set this accel, so the display can say so: stop_for_lights borrows the
-    # e2e slot outside experimental mode, and the curve limiter hides inside cruise
+    # name what set this accel, so the display can say so: the junction stop reports as the
+    # mpc's e2e obstacle outside experimental mode, and the curve limiter hides inside cruise
     reason = PLAN_REASONS.get(self.mpc.source, PlanReason.cruise)
     if reason == PlanReason.cruise and curve_limited:
       reason = PlanReason.curve
