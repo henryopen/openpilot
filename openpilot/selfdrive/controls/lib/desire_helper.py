@@ -6,7 +6,11 @@ from openpilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeCont
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
-LANE_CHANGE_SPEED_MIN = 30 * CV.KPH_TO_MS
+# 40 rather than openpilot's 30, at the driver's call: on these roads a blinker below that
+# is more often a turn than a move over. The turn threshold below is tied to this one, so
+# raising it moves both and no speed is left being neither or both. The cost is accepted
+# rather than overlooked - automatic lane change no longer runs between 30 and 40 km/h.
+LANE_CHANGE_SPEED_MIN = 40 * CV.KPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 LANE_CHANGE_START_TIME = 0.5
 
