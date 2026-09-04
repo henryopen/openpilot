@@ -41,20 +41,20 @@
   .off .num{color:#5d7183}
 
   /* 速限：原始值大、offset 與下一個速限小字 */
-  .slbox{top:190px;right:20px;display:flex;flex-direction:row-reverse;align-items:center;gap:18px}
-  .sl{width:62px;height:62px;border-radius:50%;background:#fbfbfb;border:6px solid #dd1f27;
-    display:flex;align-items:center;justify-content:center;font-size:27px;font-weight:800;
+  .slbox{top:182px;right:20px;display:flex;flex-direction:row-reverse;align-items:center;gap:18px}
+  .sl{width:80px;height:80px;border-radius:50%;background:#fbfbfb;border:7px solid #dd1f27;
+    display:flex;align-items:center;justify-content:center;font-size:35px;font-weight:800;
     color:#0c0c0c;text-shadow:none;box-shadow:0 4px 22px rgba(0,0,0,.85)}
   .sl.off{filter:grayscale(1) brightness(.4)}
-  .sl.txt{font-size:16px;letter-spacing:-.5px;filter:grayscale(1) brightness(.72)}
+  .sl.txt{font-size:20px;letter-spacing:-.5px;filter:grayscale(1) brightness(.72)}
   .slside{display:flex;flex-direction:column;gap:4px;font-weight:700;align-items:flex-end}
   .slofs{font-size:19px;color:var(--dim2);letter-spacing:.3px}
-  .slnx{display:none;flex-direction:column;align-items:center;gap:2px;font-size:18px;color:var(--amber)}
+  .slnx{display:none;flex-direction:column;align-items:center;gap:2px;font-size:22px;color:var(--amber)}
   .slnx.on{display:flex}
-  .slnx .nxt{font-size:12px;font-weight:800;letter-spacing:1.5px;opacity:.8}
-  .slnx .v{background:#fbfbfb;color:#0c0c0c;border:4px solid #dd1f27;border-radius:50%;
-    width:42px;height:42px;display:flex;align-items:center;justify-content:center;
-    font-size:20px;font-weight:800;text-shadow:none}
+  .slnx .nxt{font-size:14px;font-weight:800;letter-spacing:1.5px;opacity:.8}
+  .slnx .v{background:#fbfbfb;color:#0c0c0c;border:5px solid #dd1f27;border-radius:50%;
+    width:56px;height:56px;display:flex;align-items:center;justify-content:center;
+    font-size:26px;font-weight:800;text-shadow:none}
 
   /* 狀態 chips */
   .chips{top:132px;left:20px;display:flex;flex-direction:column;gap:7px;align-items:flex-start}
@@ -66,6 +66,18 @@
   .chip.lead{color:var(--green);border-color:rgba(47,212,90,.55);background:rgba(47,212,90,.13)}
   .chip.e2e{color:#fff;background:var(--amber);border-color:var(--amber)}
   .chip.wait{color:var(--amber);border-color:var(--amber)}
+
+  /* 實驗模式：模型接手是狀態改變不是狀態欄位，所以自己一條，擺在警示框正下方 */
+  .handoff{top:74px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:11px;
+    padding:8px 20px;border-radius:10px;background:rgba(255,140,26,.15);
+    border:1.5px solid rgba(255,140,26,.85);box-shadow:0 0 26px rgba(255,140,26,.30)}
+  .handoff.on{display:flex}
+  .handoff .dot{width:12px;height:12px;border-radius:50%;background:var(--amber);
+    box-shadow:0 0 15px var(--amber);animation:hfpulse 1.4s ease-in-out infinite}
+  .handoff .txt{font-size:22px;font-weight:800;color:var(--amber);letter-spacing:1.2px;
+    white-space:nowrap}
+  @keyframes hfpulse{0%,100%{opacity:1}50%{opacity:.35}}
+  @media (prefers-reduced-motion: reduce){ .handoff .dot{animation:none} }
 
   /* 號誌燈牌：跟 STOP 同一欄，各自一層，不再被警示框蓋住 */
   .lit{top:132px;right:196px;display:none;align-items:center;gap:9px;
@@ -192,7 +204,6 @@
 
   <div class="ov chips">
     <span class="chip on" id="cEng">ENGAGED</span>
-    <span class="chip e2e" id="cHandoff" style="display:none">路口交給模型</span>
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
@@ -202,6 +213,8 @@
     <div class="a1" id="alert1"></div>
     <div class="a2" id="alert2"></div>
   </div>
+
+  <div class="ov handoff" id="hfBox"><span class="dot"></span><span class="txt">實驗模式 · 路口交給模型</span></div>
 
   <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
 
@@ -681,8 +694,8 @@ function render(F){
   sc.textContent = SRC[src] || src;
   sc.className = 'chip ' + (isE2E ? 'e2e' : src.startsWith('lead') ? 'lead' : 'cruise');
   // 實驗模式（路口交接）開著就講，不管這一幀是不是模型在決定加速度
-  const hf=$('cHandoff');
-  if(hf) hf.style.display = (F.engaged && F.handoff) ? '' : 'none';
+  const hf=$('hfBox');
+  if(hf) hf.className='ov handoff'+((F.engaged && F.handoff)?' on':'');
   const sla=$('cSLA');
   if(F.slaAge>=0 && F.slaAge<8 && F.slaTarget>0){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
