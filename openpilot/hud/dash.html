@@ -615,12 +615,45 @@ function yIcon(x, y, s, cls){
       cx.lineCap='butt';
     }
   }else{
-    const hw=(cls===7||cls===5)? s*0.86 : s*0.66, ht=(cls===7||cls===5)? s*1.15 : s*0.78;
-    cx.beginPath();
-    if(cx.roundRect) cx.roundRect(x-hw, y-ht, hw*2, ht, Math.min(4, s*0.2));
-    else cx.rect(x-hw, y-ht, hw*2, ht);
-    cx.fill();
+    vehicle(x, y, s, cls);
   }
+}
+
+// 從後面看的車。轎車、卡車、公車差在車身高與車頂寬的比例 —— 那就是在路上分辨它們的方式，
+// 不是顏色。尾燈是紅的，因為看到的就是尾燈。
+const VEH={
+  2:{w:0.60, body:0.46, roof:0.34, roofW:0.72, lampW:0.24, lampH:0.12},  // 轎車：車身矮、車頂明顯
+  5:{w:0.82, body:1.20, roof:0.10, roofW:0.96, lampW:0.15, lampH:0.09},  // 公車：一整面高牆
+  7:{w:0.78, body:1.00, roof:0.14, roofW:0.90, lampW:0.18, lampH:0.10},  // 卡車：方廂，比公車矮一截
+};
+// 車漆而不是類別色：路上分辨轎車、卡車、公車靠的是輪廓高矮寬窄，塗成三種顏色反而像玩具。
+function vehicle(x, y, s, cls){
+  const K=VEH[cls]||VEH[2];
+  const hw=s*K.w, bh=s*K.body, rh=s*K.roof, rw=hw*K.roofW;
+  const rd=(a,b,c,d,r)=>{ cx.beginPath();
+    if(cx.roundRect) cx.roundRect(a,b,c,d,Math.min(r, Math.abs(d)/2, Math.abs(c)/2));
+    else cx.rect(a,b,c,d); };
+  // 落在路面上的影子，車才不會像浮著
+  cx.save();
+  cx.globalAlpha*=0.5; cx.fillStyle='#000';
+  cx.beginPath(); cx.ellipse(x, y+s*0.04, hw*1.02, s*0.12, 0, 0, 6.283); cx.fill();
+  cx.restore();
+  cx.lineWidth=Math.max(1, s*0.055); cx.strokeStyle='rgba(5,10,16,0.92)';
+  // 車頂比車身暗一階，看起來才是同一台車的兩個面
+  cx.fillStyle='#8593a1';
+  rd(x-rw, y-bh-rh, rw*2, rh, s*0.16); cx.fill(); cx.stroke();
+  cx.fillStyle='#b7c5d2';
+  rd(x-hw, y-bh, hw*2, bh, s*0.15); cx.fill(); cx.stroke();
+  // 後窗
+  if(rh > s*0.12){
+    cx.fillStyle='rgba(28,42,56,0.85)';
+    rd(x-rw*0.80, y-bh-rh+s*0.07, rw*1.60, Math.max(1.5, rh-s*0.13), s*0.10); cx.fill();
+  }
+  // 尾燈
+  cx.fillStyle='rgba(255,64,52,0.96)';
+  const ly=y-bh+s*0.09, lw=hw*K.lampW*2, lh=Math.max(1.5, s*K.lampH);
+  rd(x-hw+hw*0.13, ly, lw, lh, lh*0.4); cx.fill();
+  rd(x+hw-hw*0.13-lw, ly, lw, lh, lh*0.4); cx.fill();
 }
 
 function drawYolo(F){
@@ -643,13 +676,13 @@ function drawYolo(F){
   YTRK.map(t=>({t, d:ypos(t,ve,now)})).sort((a,b)=>b.d-a.d).forEach(({t,d})=>{
     const p=px(d, t.lat||0);
     if(p.x<-40 || p.x>W+40) return;
-    const s=Math.max(9, Math.min(34, 620/(d+16)));
+    const s=Math.max(11, Math.min(46, 900/(d+13)));
     const vru=YVRU.has(t.cls);
     const held=(now-t.tObs)/1000;
     const fade=held<1.0 ? 1 : Math.max(0, 1-(held-1.0)/(YHOLD-1.0));   // 漏看就淡出，不是瞬間消失
     cx.save();
-    // 車輛畫淡：openpilot 自己的前車已經有箭標和距離，這裡只是「YOLO 也看到」
-    cx.globalAlpha=(vru?0.95:0.55)*Math.min(1,(t.conf||0.4)+0.35)*fade;
+    // 車輛不再畫淡：形狀要說出是轎車、卡車還是公車，就得看得清楚才有意義
+    cx.globalAlpha=(vru?0.95:0.85)*Math.min(1,(t.conf||0.4)+0.35)*fade;
     if(vru){ cx.shadowColor=YCLR[t.cls]; cx.shadowBlur=14; }
     yIcon(p.x, p.y, s, t.cls);
     cx.restore();
