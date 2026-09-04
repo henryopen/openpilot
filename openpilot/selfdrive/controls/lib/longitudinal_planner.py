@@ -318,4 +318,5 @@ class LongitudinalPlanner:
     sp_send.valid = plan_send.valid
     sp_send.longitudinalPlanSP.reason = self.plan_reason
     sp_send.longitudinalPlanSP.vCruise = float(self.v_cruise_dash)
+    sp_send.longitudinalPlanSP.modelHandoff = bool(self.junction.active)
     pm.send('longitudinalPlanSP', sp_send)

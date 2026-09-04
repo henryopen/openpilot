@@ -373,6 +373,9 @@ def poll_loop():
         # what cruise is really working to, which is not the driver's MAX whenever something
         # has taken speed off it. m/s, already in dash units so the page can put it next to MAX
         data["control"]["vCruiseTarget"] = float(sm["longitudinalPlanSP"].vCruise)
+        # whether the model has been handed the junction, which the driver wants to see
+        # even on the frames where cruise is still the one setting the accel
+        data["control"]["modelHandoff"] = bool(sm["longitudinalPlanSP"].modelHandoff)
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
                                sm["selfdriveState"], _frame, gps_ok))
       except Exception as e:

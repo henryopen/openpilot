@@ -192,6 +192,7 @@
 
   <div class="ov chips">
     <span class="chip on" id="cEng">ENGAGED</span>
+    <span class="chip e2e" id="cHandoff" style="display:none">路口交給模型</span>
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
@@ -679,6 +680,9 @@ function render(F){
   sc.style.display = F.engaged ? '' : 'none';
   sc.textContent = SRC[src] || src;
   sc.className = 'chip ' + (isE2E ? 'e2e' : src.startsWith('lead') ? 'lead' : 'cruise');
+  // 實驗模式（路口交接）開著就講，不管這一幀是不是模型在決定加速度
+  const hf=$('cHandoff');
+  if(hf) hf.style.display = (F.engaged && F.handoff) ? '' : 'none';
   const sla=$('cSLA');
   if(F.slaAge>=0 && F.slaAge<8 && F.slaTarget>0){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
@@ -928,7 +932,7 @@ function fromSSE(J){
   const v=cs.vEgoCluster||cs.vEgo||0;
   const kph=x=>Math.round((x||0)*KPH);
   const F={
-    vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget),
+    vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff,
     engaged: !!(ss.enabled||ss.active),
     avail: !!cs.cruiseAvailable,   // 儀表 MAIN 亮著（但 OP 可能還沒按啟動）
     road: lm.roadName||'—',

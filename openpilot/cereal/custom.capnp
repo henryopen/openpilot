@@ -30,6 +30,11 @@ struct LongitudinalPlanSP @0xaedffd8f31e7b55d {
   # that pulls it down, in the units the dash shows so it can sit beside the driver's MAX.
   vCruise @1 :Float32;
 
+  # The model has been handed the junction and its plan is competing. Separate from reason:
+  # the handoff can be on while cruise is still the one setting the accel, and the driver
+  # asked to see that the model is in the loop, not only when it wins.
+  modelHandoff @2 :Bool;
+
   enum Reason {
     cruise @0;
     lead @1;
