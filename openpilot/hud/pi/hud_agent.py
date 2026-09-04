@@ -126,6 +126,13 @@ def discover_loop():
         pass
       time.sleep(10)
     else:
+      # Nothing answered on 8902. If that is because the Pi is on no network at all - which
+      # is what a boot in the car looks like, the Pi being ready long before the car is -
+      # then do what the standby screen's button does instead of waiting for
+      # NetworkManager's scan backoff, which stretches to two minutes. net_reconnect returns
+      # straight away when there is already a connection, so at home this costs nothing.
+      if not read_ssid():
+        net_reconnect()
       time.sleep(15)
 
 
