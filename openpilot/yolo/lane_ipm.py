@@ -15,8 +15,12 @@ calibration: f=1141.5 at 1344x760, pitch and height read from CalibrationParams.
 import argparse
 import math
 
-import cv2
 import numpy as np
+
+# cv2 is not on the device - yolo_core does everything with numpy, and adding a dependency
+# the driving stack would have to carry for a millisecond of work is the wrong trade. The
+# projection and the resampling below are numpy; cv2 is imported inside main() for reading
+# and writing files, which only happens off the car.
 
 # os04c10 narrow road camera, full resolution
 FOCAL = 1141.5
@@ -43,6 +47,61 @@ def ground_to_image(d, lat, pitch=PITCH, yaw=YAW, height=HEIGHT, scale=1.0):
   return u, v
 
 
+def perspective_transform(src, dst):
+  """The 3x3 taking the four src corners onto the four dst ones.
+
+  Eight unknowns - the ninth entry is fixed at 1, since the matrix only matters up to scale -
+  and each corner gives two equations.
+  """
+  rows, rhs = [], []
+  for (x, y), (u, v) in zip(src, dst, strict=True):
+    rows.append([x, y, 1, 0, 0, 0, -u * x, -u * y])
+    rhs.append(u)
+    rows.append([0, 0, 0, x, y, 1, -v * x, -v * y])
+    rhs.append(v)
+  h = np.linalg.solve(np.array(rows, np.float64), np.array(rhs, np.float64))
+  return np.append(h, 1.0).reshape(3, 3)
+
+
+def warp(img, M, w, h, rows=None):
+  """Resample img onto a w x h grid through M, bilinearly.
+
+  Runs backwards - each output pixel is asked where it came from - so the output has no gaps,
+  which is what forward mapping would leave wherever the road stretches.
+
+  rows limits the work to the output lines a caller is going to read; the rest comes back
+  black. Without cv2's SIMD behind it this is the difference between resampling the whole
+  4 to 34 m patch and only the few metres the markings are measured over.
+  """
+  r0, r1 = rows if rows else (0, h)
+  r0, r1 = max(0, int(r0)), min(h, int(r1))
+  ys, xs = np.mgrid[r0:r1, 0:w].astype(np.float64)
+  Mi = np.linalg.inv(M)
+  den = Mi[2, 0] * xs + Mi[2, 1] * ys + Mi[2, 2]
+  den[den == 0] = 1e-9
+  sx = (Mi[0, 0] * xs + Mi[0, 1] * ys + Mi[0, 2]) / den
+  sy = (Mi[1, 0] * xs + Mi[1, 1] * ys + Mi[1, 2]) / den
+
+  H, W = img.shape[:2]
+  x0 = np.floor(sx).astype(np.int32)
+  y0 = np.floor(sy).astype(np.int32)
+  inside = (x0 >= 0) & (x0 < W - 1) & (y0 >= 0) & (y0 < H - 1)
+  xc = np.clip(x0, 0, W - 2)
+  yc = np.clip(y0, 0, H - 2)
+  fx = (sx - x0)[..., None]
+  fy = (sy - y0)[..., None]
+  im = img.astype(np.float32)
+  top = im[yc, xc] * (1 - fx) + im[yc, xc + 1] * fx
+  bot = im[yc + 1, xc] * (1 - fx) + im[yc + 1, xc + 1] * fx
+  band = top * (1 - fy) + bot * fy
+  band[~inside] = 0
+  if rows is None:
+    return band.astype(np.uint8)
+  out = np.zeros((h, w, img.shape[2]), np.uint8)
+  out[r0:r1] = band.astype(np.uint8)
+  return out
+
+
 def homography(scale=1.0, calib=None):
   """Map the road patch to a top-down image."""
   pitch, yaw, height = calib if calib else (PITCH, YAW, HEIGHT)
@@ -53,16 +112,17 @@ def homography(scale=1.0, calib=None):
     src.append(ground_to_image(d, lat, pitch, yaw, height, scale))
     # top of the output is far away, left of it is negative lat
     dst.append(((lat + HALF_WIDTH) * PX_PER_M, (FAR - d) * PX_PER_M))
-  return cv2.getPerspectiveTransform(np.float32(src), np.float32(dst)), (w, h)
+  return perspective_transform(src, dst), (w, h)
 
 
-def flatten(img, calib=None):
+def flatten(img, calib=None, rows=None):
   """calib is this car's live (pitch, yaw, height); without it the values measured here."""
   M, (w, h) = homography(img.shape[1] / 1344, calib)
-  return cv2.warpPerspective(img, M, (w, h), flags=cv2.INTER_LINEAR)
+  return warp(img, M, w, h, rows)
 
 
 def main():
+  import cv2      # off-car only: reading and writing image files
   ap = argparse.ArgumentParser()
   ap.add_argument('image')
   ap.add_argument('--out', default=None)

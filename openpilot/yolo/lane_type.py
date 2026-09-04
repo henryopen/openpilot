@@ -18,7 +18,6 @@ import argparse
 import sys
 from pathlib import Path
 
-import cv2
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -38,12 +37,17 @@ DASH_GAP_MIN_M, DASH_GAP_MAX_M = 2.5, 12.0
 LANE_SEARCH_M = 0.7
 
 
+def _grey(bgr):
+  """Luma, the same weights cv2's BGR2GRAY uses. Not importing cv2 for one dot product."""
+  return bgr.astype(np.float32) @ np.array([0.114, 0.587, 0.299], np.float32)
+
+
 def _columns(top):
   """Brightness of each lateral position, over the near part of the view."""
   y0 = int((FAR - NEAR_BAND_M[1]) * PX_PER_M)
   y1 = int((FAR - NEAR_BAND_M[0]) * PX_PER_M)
   band = top[y0:y1]
-  grey = cv2.cvtColor(band, cv2.COLOR_BGR2GRAY).astype(np.float32)
+  grey = _grey(band)
   # paint is brighter than the asphalt around it, but the asphalt itself shades unevenly,
   # so measure each column against a local average a lane-marking-width wider than itself
   prof = grey.mean(axis=0)
@@ -100,7 +104,7 @@ def classify(top, x_px, w_px):
   b, g, r = (strip[..., i].astype(np.float32) for i in range(3))
   # yellow paint: red and green high, blue clearly lower. White: all three together.
   yellowness = float(np.mean((r + g) / 2 - b))
-  bright = cv2.cvtColor(strip, cv2.COLOR_BGR2GRAY).astype(np.float32).mean(axis=1)
+  bright = _grey(strip).mean(axis=1)
 
   # a dash gives a run of dark between runs of paint; a solid line does not
   lit = bright > (bright.min() + bright.max()) / 2
@@ -142,9 +146,14 @@ def group_doubles(lines):
   return groups
 
 
+def _band_rows():
+  """The output lines the measurements actually read."""
+  return int((FAR - NEAR_BAND_M[1]) * PX_PER_M), int((FAR - NEAR_BAND_M[0]) * PX_PER_M)
+
+
 def read_markings(img, lane_x_m=None, calib=None):
   """-> (flattened view, markings). lane_x_m: lateral metres of modelV2's laneLines."""
-  top = flatten(img, calib)
+  top = flatten(img, calib, _band_rows())
   out = []
   for grp in group_doubles(find_lines(top, lane_x_m)):
     parts = [classify(top, x, w) for x, w in grp]
@@ -175,6 +184,7 @@ def read_markings(img, lane_x_m=None, calib=None):
 
 
 def main():
+  import cv2      # off-car only: reading the image and drawing the debug overlay
   ap = argparse.ArgumentParser()
   ap.add_argument('image')
   ap.add_argument('--debug')
