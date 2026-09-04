@@ -33,7 +33,11 @@ from openpilot.cereal.visionipc import VisionStreamType
 from msgq.visionipc import VisionIpcClient
 
 PORT = 8903
-MODEL = '/data/yolo/yolo11n.onnx'
+# Two models rather than one: a light is 20 px tall and cannot be resampled, a car is 78 px
+# and can. One model covering both would have to take the whole frame at native resolution,
+# measured at 2027 ms against 1436 ms for these two together. They take turns, one frame each.
+MODEL_ROAD = '/data/yolo/c4light13_672x384.onnx'
+MODEL_BAND = '/data/yolo/c4band1_1344x352.onnx'
 RUNS = Path('/data/yolo/runs')
 DISABLE = Path('/data/yolo/DISABLE')
 
@@ -125,7 +129,7 @@ def camera_frames():
         time.sleep(0.05)
       continue
     misses = 0
-    yield yc.nv12_to_rgb(buf)
+    yield buf, None
 
 
 def replay_frames(segment):
@@ -148,7 +152,7 @@ def replay_frames(segment):
         # the clip is 20 fps and we detect at under 1 Hz, so skip ahead to keep replay
         # roughly in step with wall time instead of crawling
         if n % 25 == 0:
-          yield np.frombuffer(raw, np.uint8).reshape(h, w, 3)
+          yield None, np.frombuffer(raw, np.uint8).reshape(h, w, 3)
         n += 1
     finally:
       p.stdout.close()
@@ -163,7 +167,8 @@ def main(replay=None):
     pass
 
   threading.Thread(target=serve, daemon=True).start()
-  sess = yc.make_session(MODEL, threads=2)
+  road_sess = yc.make_session(MODEL_ROAD, threads=2)
+  band_sess = yc.make_session(MODEL_BAND, threads=2)
   sm = messaging.SubMaster(['carState', 'deviceState'])
   ThermalStatus = log.DeviceState.ThermalStatus
   pitch, yaw, height = yc.read_calibration()
@@ -173,23 +178,42 @@ def main(replay=None):
   run.mkdir(parents=True, exist_ok=True)
   jl = (run / 'det.jsonl').open('a', buffering=1)
   # rows carry seconds since start; the wall clock is written once, here
-  (run / 'meta.json').write_text(json.dumps({'start': datetime.now().isoformat(), 'model': MODEL}))
-  print(f'yolod: model {MODEL}, logging to {run}, port {PORT}', flush=True)
+  (run / 'meta.json').write_text(json.dumps({'start': datetime.now().isoformat(),
+                                             'model': MODEL_ROAD, 'model_band': MODEL_BAND}))
+  print(f'yolod: models {MODEL_ROAD} + {MODEL_BAND}, logging to {run}, port {PORT}', flush=True)
 
   frames = 0
   last_save = 0.0
   t_boot = time.monotonic()
+  # each model keeps its last answer while the other one has the CPU
+  dets_road, dets_band, rgb = [], [], None
+  band_prev = set()    # colours seen last time the band model ran
+  band_turn = True     # flipped before use, so the first frame goes to the road model
 
-  for rgb in (replay_frames(replay) if replay else camera_frames()):
+  for buf, replay_rgb in (replay_frames(replay) if replay else camera_frames()):
     if DISABLE.exists():
       with _lock:
         _state.update(ok=False, reason='disabled by /data/yolo/DISABLE')
       time.sleep(5)
       continue
 
+    band_turn = not band_turn and buf is not None
     t0 = time.monotonic()
-    dets = yc.detect(sess, rgb)
+    if band_turn:
+      fresh = yc.detect_band(band_sess, yc.nv12_to_band(buf))
+      # at the threshold that finds the most reds, one frame in eight also invents one. A
+      # light that blinks on the display is worse than one that arrives a beat late, so a
+      # colour has to turn up twice running before it is shown.
+      seen = {d['light'] for d in fresh}
+      dets_band = [d for d in fresh if d['light'] in (seen & band_prev)]
+      band_prev = seen
+    else:
+      rgb = replay_rgb if replay_rgb is not None else yc.nv12_to_rgb(buf)
+      # the road model knows the light classes too, but sees a third of the reds the band
+      # model does, so its lights are dropped rather than argued with
+      dets_road = [d for d in yc.detect(road_sess, rgb, c4=True) if d['cls'] != yc.TRAFFIC_LIGHT]
     ms = (time.monotonic() - t0) * 1000
+    dets = dets_road + dets_band
 
     sm.update(0)
     v_ego = float(sm['carState'].vEgo)
@@ -213,7 +237,7 @@ def main(replay=None):
     # real time on this CPU, so only do it when something is actually going to look at it.
     gap = SAVE_EVERY_INTERESTING if any(d['cls'] in INTERESTING for d in dets) else SAVE_EVERY
     saving = now - last_save > gap
-    if saving or now - _frame_wanted < 5:
+    if (saving or now - _frame_wanted < 5) and rgb is not None:
       hdr = f"{v_ego * 3.6:.0f}km/h {ms:.0f}ms " + ' '.join(f'{k}:{v}' for k, v in counts.items())
       jpeg = yc.draw(rgb, dets, hdr)
       if saving:

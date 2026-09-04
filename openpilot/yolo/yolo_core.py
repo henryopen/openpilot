@@ -42,6 +42,26 @@ ROAD_CLASSES = {0: 'person', 1: 'bicycle', 2: 'car', 3: 'motorcycle', 5: 'bus', 
                 9: 'traffic light', 11: 'stop sign'}
 TRAFFIC_LIGHT = 9
 
+# The model trained on this car's own footage. Same seven road classes, but its own order,
+# and the light split into the six states COCO cannot tell apart. Mapped back onto COCO's
+# indices on the way out so nothing downstream has to know which model produced a box.
+C4 = ['person', 'bicycle', 'car', 'motorcycle', 'bus', 'truck', 'stop_sign',
+      'light_red', 'light_green', 'light_yellow', 'light_off', 'light_pedestrian',
+      'light_green_arrow']
+C4_TO_COCO = {0: 0, 1: 1, 2: 2, 3: 3, 4: 5, 5: 7, 6: 11,
+              7: 9, 8: 9, 9: 9, 10: 9, 11: 9, 12: 9}
+C4_ROAD = set(C4_TO_COCO)
+
+# The band: lights are 20 px tall in the native frame and 10 px after the halving that
+# nv12_to_rgb does, under YOLO's finest stride of 8. These rows are read at full width and
+# full resolution instead, which is the whole reason the band model sees three times the
+# red lights the road model does. Lights sit in these rows and nothing else does: 99% of
+# labelled lights fall inside, while 80% of cars have their bottom edge below them.
+BAND_W, BAND_H, BAND_Y0 = 1344, 352, 32
+BAND_LIGHT = ['red', 'green', 'amber', 'off', 'ped', 'arrow']
+BAND_NAMES = ['light_red', 'light_green', 'light_yellow', 'light_off',
+              'light_pedestrian', 'light_green_arrow']
+
 COLORS = {0: (255, 96, 96), 1: (255, 200, 60), 2: (80, 200, 255), 3: (255, 140, 40),
           5: (160, 130, 255), 7: (120, 255, 160), 9: (255, 255, 255), 11: (255, 60, 60)}
 
@@ -80,6 +100,62 @@ def nv12_to_rgb(buf):
   rgb[..., 1] = y - ((22554 * u + 46802 * v) >> 16)
   rgb[..., 2] = y + ((116130 * u) >> 16)
   return np.clip(rgb, 0, 255).astype(np.uint8)
+
+
+def nv12_to_band(buf):
+  """Native-resolution RGB of the band rows, full width, straight off the NV12.
+
+  nv12_to_rgb halves the frame, which is what costs the lights their pixels. This keeps
+  every column and every row it reads, and reads only 352 of the 760 rows, so it is the
+  cheaper of the two conversions despite being at full resolution.
+  """
+  data = np.frombuffer(buf.data, dtype=np.uint8)
+  w, h, stride, uv_off = buf.width, buf.height, buf.stride, buf.uv_offset
+  y0 = BAND_Y0 - BAND_Y0 % 2          # chroma is shared between row pairs; start on an even row
+  y1 = min(h, y0 + BAND_H)
+  y = data[y0 * stride:y1 * stride].reshape(y1 - y0, stride)[:, :w].astype(np.int32)
+  # one chroma row per two luma rows, U and V interleaved along it
+  uv = data[uv_off + (y0 // 2) * stride:uv_off + ((y1 + 1) // 2) * stride].reshape(-1, stride)[:, :w]
+  u = np.repeat(np.repeat(uv[:, 0::2].astype(np.int32) - 128, 2, 0), 2, 1)[:y.shape[0], :y.shape[1]]
+  v = np.repeat(np.repeat(uv[:, 1::2].astype(np.int32) - 128, 2, 0), 2, 1)[:y.shape[0], :y.shape[1]]
+  rgb = np.empty(y.shape + (3,), dtype=np.int32)
+  rgb[..., 0] = y + ((91881 * v) >> 16)
+  rgb[..., 1] = y - ((22554 * u + 46802 * v) >> 16)
+  rgb[..., 2] = y + ((116130 * u) >> 16)
+  return np.clip(rgb, 0, 255).astype(np.uint8)
+
+
+def detect_band(sess, rgb, conf_thres=0.25, iou_thres=0.45):
+  """-> [{'cls','name','conf','box','light'}] for the six light states.
+
+  0.25 rather than the road model's 0.35: measured on 245 held-out red lights, 0.25 finds
+  60% of them where 0.35 finds 28%. It also leaves a false red in one frame in eight, which
+  is why yolod asks to see a colour twice before passing it on rather than raising this.
+  The colour comes from the class here, not from reading the pixels inside the box.
+  """
+  x = np.zeros((BAND_H, BAND_W, 3), dtype=np.uint8)
+  x[:rgb.shape[0], :rgb.shape[1]] = rgb[:BAND_H, :BAND_W]
+  x = np.ascontiguousarray(x.transpose(2, 0, 1)[None].astype(np.float32) / 255.0)
+  out = sess.run(None, {sess.get_inputs()[0].name: x})[0]
+  p = out[0].T
+  scores = p[:, 4:]
+  cls = scores.argmax(1)
+  conf = scores[np.arange(len(cls)), cls]
+  m = conf > conf_thres
+  if not m.any():
+    return []
+  p, cls, conf = p[m], cls[m], conf[m]
+  cx, cy, w, h = p[:, 0], p[:, 1], p[:, 2], p[:, 3]
+  boxes = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], 1)
+  dets = []
+  for c in np.unique(cls):
+    idx = np.where(cls == c)[0]
+    for k in _nms(boxes[idx], conf[idx], iou_thres):
+      i = idx[k]
+      dets.append({'cls': TRAFFIC_LIGHT, 'name': BAND_NAMES[c], 'conf': round(float(conf[i]), 3),
+                   'box': [round(float(v), 1) for v in boxes[i]], 'light': BAND_LIGHT[c]})
+  dets.sort(key=lambda d: -d['conf'])
+  return dets
 
 
 def pad_top(rgb):
@@ -197,8 +273,13 @@ def _is_rider(person, twowheeler):
   return my1 - mh * 0.6 < py2 < my2 + mh * 0.3
 
 
-def detect(sess, rgb, conf_thres=0.35, iou_thres=0.45, road_only=True, drop_riders=True):
-  """-> list of dicts in the coordinate frame of `rgb` (i.e. half-res camera pixels)."""
+def detect(sess, rgb, conf_thres=0.35, iou_thres=0.45, road_only=True, drop_riders=True, c4=False):
+  """-> list of dicts in the coordinate frame of `rgb` (i.e. half-res camera pixels).
+
+  `c4` switches to the model trained on this car, whose classes are its own; its indices
+  are mapped back onto COCO's so a caller cannot tell which model it got.
+  """
+  names, road = (C4, C4_ROAD) if c4 else (COCO, ROAD_CLASSES)
   out = sess.run(None, {sess.get_inputs()[0].name: to_input(rgb)})[0]
   p = out[0].T                                   # (n, 4 + 80)
   scores = p[:, 4:]
@@ -206,7 +287,7 @@ def detect(sess, rgb, conf_thres=0.35, iou_thres=0.45, road_only=True, drop_ride
   conf = scores[np.arange(len(cls)), cls]
   m = conf > conf_thres
   if road_only:
-    m &= np.isin(cls, list(ROAD_CLASSES))
+    m &= np.isin(cls, list(road))
   if not m.any():
     return []
   p, cls, conf = p[m], cls[m], conf[m]
@@ -219,9 +300,11 @@ def detect(sess, rgb, conf_thres=0.35, iou_thres=0.45, road_only=True, drop_ride
     for k in _nms(boxes[idx], conf[idx], iou_thres):
       i = idx[k]
       box = [round(float(v), 1) for v in boxes[i]]
-      d = {'cls': int(c), 'name': COCO[c], 'conf': round(float(conf[i]), 3), 'box': box}
-      if c == TRAFFIC_LIGHT:
-        d['light'] = light_colour(rgb, box)
+      out_cls = C4_TO_COCO[int(c)] if c4 else int(c)
+      d = {'cls': out_cls, 'name': names[c], 'conf': round(float(conf[i]), 3), 'box': box}
+      if out_cls == TRAFFIC_LIGHT:
+        # the trained model says which lamp is lit; COCO only says there is a light there
+        d['light'] = BAND_LIGHT[int(c) - 7] if c4 else light_colour(rgb, box)
       dets.append(d)
   if drop_riders:
     twos = [d['box'] for d in dets if d['cls'] in (1, 3)]

@@ -67,6 +67,20 @@
   .chip.e2e{color:#fff;background:var(--amber);border-color:var(--amber)}
   .chip.wait{color:var(--amber);border-color:var(--amber)}
 
+  /* 號誌燈牌：跟 STOP 同一欄，各自一層，不再被警示框蓋住 */
+  .lit{top:132px;right:196px;display:none;align-items:center;gap:9px;
+    padding:6px 13px 6px 9px;border-radius:8px;background:rgba(8,12,16,.82);
+    border:1px solid rgba(255,255,255,.10)}
+  .lit.on{display:flex}
+  .lit .dot{width:19px;height:19px;border-radius:50%;flex:0 0 auto}
+  .lit .txt{font-size:20px;font-weight:800;letter-spacing:.5px;white-space:nowrap}
+  .lit.red .dot{background:#ff2f2f;box-shadow:0 0 18px #ff2f2f} .lit.red .txt{color:#ff5c5c}
+  .lit.amber .dot{background:#ffbe00;box-shadow:0 0 18px #ffbe00} .lit.amber .txt{color:#ffbe00}
+  .lit.green .dot,.lit.arrow .dot{background:#00d977;box-shadow:0 0 18px #00d977}
+  .lit.green .txt,.lit.arrow .txt{color:#00d977}
+  .lit.ped .dot{background:#7fb3ff} .lit.ped .txt{color:#7fb3ff}
+  .lit.off .dot{background:#55636f} .lit.off .txt{color:#8b9bab}
+
   /* 停止標誌 */
   .stop{top:18px;right:212px;display:none;flex-direction:column;align-items:center}
   .stop.on{display:flex}
@@ -187,6 +201,8 @@
     <div class="a1" id="alert1"></div>
     <div class="a2" id="alert2"></div>
   </div>
+
+  <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
 
   <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
 
@@ -452,7 +468,11 @@ const YNAME={0:'人', 1:'單車', 2:'車', 3:'機車', 5:'公車', 7:'卡車'};
 const YCN={person:'人', bicycle:'單車', car:'車', motorcycle:'機車', bus:'公車',
            truck:'卡車', 'traffic light':'號誌', 'stop sign':'停牌'};
 const YVRU=new Set([0,1,3]);   // 行人、單車、機車：模型最弱、也最該讓駕駛知道的
-const YLIGHT={red:['#ff2f2f','紅燈'], amber:['#ffbe00','黃燈'], green:['#00d977','綠燈']};
+// what the band model can say. Ordered by what the driver needs to be told first: a red
+// matters more than a green, and a green arrow more than the round green beside it.
+const YLIGHT={red:'紅燈', amber:'黃燈', arrow:'綠箭 →', green:'綠燈',
+              ped:'行人燈', off:'號誌熄燈'};
+const LIGHT_RANK=['red','amber','arrow','green','ped','off'];
 
 let YHOST=null;
 async function yoloHost(){
@@ -541,7 +561,7 @@ function drawYolo(F){
                              .map(([k,v])=>`${YCN[k]||k}${v}`).join(' ') : YSTAT;
   cx.fillText(`YOLO ${tally||'—'}`, W-14, H-86);
   cx.restore();
-  if(!live){ YTRK=[]; return; }
+  if(!live){ YTRK=[]; showLight([]); return; }   // 辨識停了就收起燈牌，不要留一顆假的在上面
 
   const ve=Math.max(0,(F.vEgo||0))/3.6;      // F.vEgo 是 km/h，外推要用 m/s
   if(YPEND){ yoloTrack(YPEND, ve); YPEND=null; }
@@ -573,19 +593,17 @@ function drawYolo(F){
     }
   });
 
-  // 紅綠燈：燈懸在空中不在地面，投影到路面沒有意義，改用固定的燈號牌
-  const lit=(YOLO.lights||[])[0];
-  if(lit && YLIGHT[lit]){
-    const [col,txt]=YLIGHT[lit], bx=W/2, by=44;
-    cx.save();
-    cx.fillStyle=col; cx.shadowColor=col; cx.shadowBlur=22;
-    cx.beginPath(); cx.arc(bx-46, by, 13, 0, 6.283); cx.fill();
-    cx.shadowBlur=0;
-    cx.font='800 26px system-ui'; cx.textAlign='left'; cx.fillStyle=col;
-    cx.lineWidth=5; cx.strokeStyle='rgba(4,7,10,.9)'; cx.lineJoin='round';
-    cx.strokeText(txt, bx-26, by+9); cx.fillText(txt, bx-26, by+9);
-    cx.restore();
-  }
+  // 號誌不畫在路面上：燈懸在空中，投影到地面沒有意義。改用右側的燈牌（HTML，不在這張畫布上）
+  showLight(YOLO.lights||[]);
+}
+
+function showLight(lights){
+  const box=document.getElementById('litBox');
+  if(!box) return;
+  // 好幾顆燈同時看到時，講最該讓駕駛知道的那顆
+  const lit=LIGHT_RANK.find(k=>lights.includes(k));
+  box.className='ov lit'+(lit?' on '+lit:'');
+  if(lit) document.getElementById('litTxt').textContent=YLIGHT[lit];
 }
 
 /* ═════ 縱向來源濾波（避免一直跳）═════ */
