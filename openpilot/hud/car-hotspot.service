@@ -1,0 +1,15 @@
+[Unit]
+Description=Start the car's hotspot when there is no known wifi, so the HUD Pi can join
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=simple
+# nmcli con up needs root; everything it touches is NetworkManager's own state
+User=root
+ExecStart=/usr/bin/python3 /data/openpilot/openpilot/hud/car_hotspot.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
