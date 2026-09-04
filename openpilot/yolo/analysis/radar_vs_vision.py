@@ -17,6 +17,7 @@ Three gates stand between the radar and a matched lead, and they are counted sep
 import argparse
 import glob
 import os
+import statistics
 from collections import Counter, deque
 
 import capnp
@@ -25,12 +26,13 @@ import zstandard
 SCHEMA = r'F:/c4sunny/schema_hcop'
 ADDRS = tuple(range(0x238, 0x238 + 3 * 10, 3))
 PRIMARY = ADDRS[0]
+TRIGGER = ADDRS[-1]                # one radar cycle per trigger message, as the car does it
 MIN_RANGE, PRIMARY_MIN_RANGE, MIN_SCORE = 2.0, 0.5, 30
 MAX_ABS_Y, MAX_GAP, MAX_JUMP, MIN_HITS = 5.5, 0.2, 3.0, 8
 RADAR_TO_CAMERA = 1.52
 DT_MDL = 0.05
 PROB_RC = 0.2                      # radard's asymmetric lead-prob filter
-BANDS = [(0, 25), (25, 50), (50, 90)]
+BANDS = [(0, 25), (25, 50), (50, 90), (90, 150)]
 
 ap = argparse.ArgumentParser()
 ap.add_argument('--root', required=True)
@@ -86,6 +88,7 @@ def main():
         raise SystemExit(f'{args.root} 底下沒有段')
 
     c = Counter()
+    runs: dict = {k: [] for k in ('primary', 'all-slots')}
     for seg in segs:
         data = zstandard.ZstdDecompressor().stream_reader(
             open(os.path.join(seg, 'rlog.zst'), 'rb')).read()
@@ -93,6 +96,7 @@ def main():
         hits = dict.fromkeys(ADDRS, 0)
         held: dict = {}
         v_ego, t, prob_f = 0., 0., 0.
+        run = [None, 0]            # which source is currently matching, and for how many frames
         raw: dict = {}
         pump = iter(log.Event.read_multiple_bytes(data))
         while True:
@@ -109,12 +113,16 @@ def main():
             if w == 'carState':
                 v_ego = float(e.carState.vEgo)
             elif w == 'can':
-                t += 1 / 33.
+                # the log's own clock: the ten radar messages are spread over more than one
+                # can event, so counting events runs the clock ~1.6x fast and MAX_GAP breaks
+                # tracks that never actually gapped
+                t = e.logMonoTime / 1e9
                 got = False
                 for m in e.can:
                     if m.src == 1 and m.address in hist:
                         raw[m.address] = decode(bytes(m.dat))
-                        got = True
+                        if m.address == TRIGGER:
+                            got = True
                 if not got:
                     continue
                 held = {}
@@ -158,10 +166,18 @@ def main():
                 am = any(matches(*h, v_ego, lx, ly, lv) for h in held.values())
                 if pm:
                     c[(b, '現行：primary 配上')] += 1
+                    src = 'primary'
                 elif am:
                     c[(b, '放行全部才配得上')] += 1
+                    src = 'all-slots'
                 else:
                     c[(b, '哪個槽都配不上')] += 1
+                    src = None
+                if src != run[0]:
+                    if run[0] is not None:
+                        runs[run[0]].append(run[1] * DT_MDL)
+                    run = [src, 0]
+                run[1] += 1
 
     print(f'{len(segs)} 段')
     print("")
@@ -177,6 +193,16 @@ def main():
             base = c[(b, 'vision 看到')] or 1
             cells.append(f"{n:>8}{n / base * 100:>5.0f}%")
         print(f"{r:>22}" + "".join(cells))
+
+    print("")
+    print('=== 配上之後撐多久（連續配得上的長度）===')
+    for k, label in (('primary', '現行 primary'), ('all-slots', '只有其他槽配得上')):
+        v = sorted(x for x in runs[k] if x > 0)
+        if not v:
+            continue
+        p90 = v[int(len(v) * 0.9)]
+        line = f'  {label:>16}：{len(v)} 段  中位 {statistics.median(v):.2f}s  p90 {p90:.2f}s'
+        print(line + f'  最長 {max(v):.1f}s  總計 {sum(v):.0f}s')
 
 
 if __name__ == '__main__':
