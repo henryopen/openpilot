@@ -492,7 +492,11 @@ async function pollYolo(){
     clearTimeout(t);
     const j=await r.json();
     if(j.ok){ YOLO=j; YOLO_T=Date.now(); YPEND=j.dets||[]; YSTAT=''; }
-    else { YOLO=null; YSTAT=j.reason==='waiting for camerad'?'待相機':(j.reason||'未就緒'); }
+    else { YOLO=null;
+      // 停用是自己關的，不是壞了，講清楚免得下次看到一串英文以為出問題
+      YSTAT = j.reason==='waiting for camerad' ? '待相機'
+            : (j.reason||'').startsWith('disabled') ? '已停用'
+            : (j.reason||'未就緒'); }
   }catch(e){ YOLO=null; YSTAT='連不上'; }
 }
 setInterval(pollYolo, 700);
