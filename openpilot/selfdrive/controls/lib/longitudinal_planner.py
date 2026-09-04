@@ -17,6 +17,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
+from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
 from openpilot.common.swaglog import cloudlog
 
 # Eco from 18 km/h up, ours below it. open251021's eco curve pulls harder than stock off
@@ -144,7 +145,10 @@ class LongitudinalPlanner:
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.plan_reason = PlanReason.cruise
     self.curve_speed = CurveSpeedControl()
+    # StopForLights is left in the tree but no longer driven: the junction is handed to the
+    # model now rather than braked for here, and two stopping laws would fight each other.
     self.stop_for_lights = StopForLights()
+    self.junction = JunctionHandoff()
     self.a_cruise = init_a
     self.v_cruise_dash = 0.
     self.output_a_target = init_a
@@ -166,15 +170,13 @@ class LongitudinalPlanner:
     if sm['controlsState'].forceDecel:
       v_cruise = 0.0
 
-    # the junction stop asks for speed off the set point before cruise works from it, so
-    # it runs here rather than down with the candidates. in experimental mode the model
-    # already brakes for junctions itself and this has nothing to add.
+    # Arm the model for the junction rather than braking for it here. In experimental mode
+    # the model is already in the mix, so there is nothing to arm.
+    self.stop_for_lights.reset()
     if sm['selfdriveState'].experimentalMode:
-      self.stop_for_lights.reset()
+      self.junction.reset()
     else:
-      self.stop_for_lights.update(sm['modelV2'], v_ego, v_cruise, sm['carState'].gasPressed,
-                                  sm['radarState'].leadOne)
-      v_cruise = min(v_cruise, self.stop_for_lights.v_cruise_cap)
+      self.junction.update(sm['modelV2'], sm['carState'], v_ego, sm['radarState'].leadOne)
 
     # what cruise is actually aiming at, which is not what the driver set whenever the
     # junction stop or a forced decel has taken speed off it. Nothing downstream could say
@@ -267,7 +269,7 @@ class LongitudinalPlanner:
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
                   (self.a_cruise, LongitudinalPlanSource.cruise, cruise_should_stop)]
-    if sm['selfdriveState'].experimentalMode:
+    if sm['selfdriveState'].experimentalMode or self.junction.active:
       candidates.append((output_a_target_e2e, LongitudinalPlanSource.e2e, output_should_stop_e2e))
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
