@@ -187,8 +187,10 @@ def main(replay=None):
   t_boot = time.monotonic()
   # each model keeps its last answer while the other one has the CPU
   dets_road, dets_band, rgb = [], [], None
-  band_prev = set()    # colours seen last time the band model ran
-  band_turn = True     # flipped before use, so the first frame goes to the road model
+  # Two band frames for every road frame. The cars already have openpilot's own lead and
+  # this file's own tracker filling in between passes; a light has neither, and is the only
+  # thing here the driver cannot get from anywhere else.
+  turn = -1
 
   for buf, replay_rgb in (replay_frames(replay) if replay else camera_frames()):
     if DISABLE.exists():
@@ -197,16 +199,15 @@ def main(replay=None):
       time.sleep(5)
       continue
 
-    band_turn = not band_turn and buf is not None
+    turn = (turn + 1) % 3
+    band_turn = turn != 0 and buf is not None
     t0 = time.monotonic()
     if band_turn:
-      fresh = yc.detect_band(band_sess, yc.nv12_to_band(buf))
-      # at the threshold that finds the most reds, one frame in eight also invents one. A
-      # light that blinks on the display is worse than one that arrives a beat late, so a
-      # colour has to turn up twice running before it is shown.
-      seen = {d['light'] for d in fresh}
-      dets_band = [d for d in fresh if d['light'] in (seen & band_prev)]
-      band_prev = seen
+      # Shown as soon as it is seen. Asking for the colour twice was sized against a 1.4 s
+      # pass; on the road a pass takes 5.4 s, so it meant 11 s, and only a car already
+      # stopped at a red waits that long - a green never lasts long enough to qualify.
+      # Nothing brakes on this, so a light that is late is worse than one that is wrong.
+      dets_band = yc.detect_band(band_sess, yc.nv12_to_band(buf))
     else:
       rgb = replay_rgb if replay_rgb is not None else yc.nv12_to_rgb(buf)
       # the road model knows the light classes too, but sees a third of the reds the band

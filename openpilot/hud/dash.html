@@ -561,7 +561,7 @@ function drawYolo(F){
                              .map(([k,v])=>`${YCN[k]||k}${v}`).join(' ') : YSTAT;
   cx.fillText(`YOLO ${tally||'—'}`, W-14, H-86);
   cx.restore();
-  if(!live){ YTRK=[]; showLight([]); return; }   // 辨識停了就收起燈牌，不要留一顆假的在上面
+  if(!live){ YTRK=[]; clearLight(); return; }   // 辨識停了就收起燈牌，不要留一顆假的在上面
 
   const ve=Math.max(0,(F.vEgo||0))/3.6;      // F.vEgo 是 km/h，外推要用 m/s
   if(YPEND){ yoloTrack(YPEND, ve); YPEND=null; }
@@ -597,13 +597,26 @@ function drawYolo(F){
   showLight(YOLO.lights||[]);
 }
 
+// 車機每 4 秒才看一次燈（一顆模型顧路面、一顆顧號誌，輪流跑）。中間那幾秒沒看到就把牌子
+// 收掉的話，畫面會一亮一滅；漏看一次就留著，等下一次再說。
+let litHold=null, litAt=0;
+const LIT_HOLD=6000;
 function showLight(lights){
   const box=document.getElementById('litBox');
   if(!box) return;
   // 好幾顆燈同時看到時，講最該讓駕駛知道的那顆
   const lit=LIGHT_RANK.find(k=>lights.includes(k));
-  box.className='ov lit'+(lit?' on '+lit:'');
-  if(lit) document.getElementById('litTxt').textContent=YLIGHT[lit];
+  const now=Date.now();
+  if(lit){ litHold=lit; litAt=now; }
+  else if(litHold && now-litAt>LIT_HOLD){ litHold=null; }
+  box.className='ov lit'+(litHold?' on '+litHold:'');
+  if(litHold) document.getElementById('litTxt').textContent=YLIGHT[litHold];
+}
+
+function clearLight(){    // 辨識停了：這時候留著上一顆燈就是騙人
+  litHold=null; litAt=0;
+  const box=document.getElementById('litBox');
+  if(box) box.className='ov lit';
 }
 
 /* ═════ 縱向來源濾波（避免一直跳）═════ */
