@@ -30,27 +30,35 @@ HALF_WIDTH = 5.5
 PX_PER_M = 22          # output resolution
 
 
-def ground_to_image(d, lat, pitch=PITCH, yaw=YAW, height=HEIGHT):
-  """A point on the road (d ahead, lat right) -> pixel in the camera frame."""
-  v = CY - FOCAL * math.tan(pitch) + FOCAL * height / d
-  u = CX + FOCAL * math.tan(yaw) + FOCAL * lat / d
+def ground_to_image(d, lat, pitch=PITCH, yaw=YAW, height=HEIGHT, scale=1.0):
+  """A point on the road (d ahead, lat right) -> pixel in the camera frame.
+
+  scale is the frame's width over the 1344 these intrinsics were measured at. The detector
+  reads the camera at half resolution, and the same road point has to land on the pixel that
+  actually holds it, whichever frame it is being asked about.
+  """
+  f, cx, cy = FOCAL * scale, CX * scale, CY * scale
+  v = cy - f * math.tan(pitch) + f * height / d
+  u = cx + f * math.tan(yaw) + f * lat / d
   return u, v
 
 
-def homography():
+def homography(scale=1.0, calib=None):
   """Map the road patch to a top-down image."""
+  pitch, yaw, height = calib if calib else (PITCH, YAW, HEIGHT)
   src, dst = [], []
   w = int(2 * HALF_WIDTH * PX_PER_M)
   h = int((FAR - NEAR) * PX_PER_M)
   for d, lat in ((NEAR, -HALF_WIDTH), (NEAR, HALF_WIDTH), (FAR, HALF_WIDTH), (FAR, -HALF_WIDTH)):
-    src.append(ground_to_image(d, lat))
+    src.append(ground_to_image(d, lat, pitch, yaw, height, scale))
     # top of the output is far away, left of it is negative lat
     dst.append(((lat + HALF_WIDTH) * PX_PER_M, (FAR - d) * PX_PER_M))
   return cv2.getPerspectiveTransform(np.float32(src), np.float32(dst)), (w, h)
 
 
-def flatten(img):
-  M, (w, h) = homography()
+def flatten(img, calib=None):
+  """calib is this car's live (pitch, yaw, height); without it the values measured here."""
+  M, (w, h) = homography(img.shape[1] / 1344, calib)
   return cv2.warpPerspective(img, M, (w, h), flags=cv2.INTER_LINEAR)
 
 
@@ -63,8 +71,6 @@ def main():
   img = cv2.imread(args.image)
   if img is None:
     raise SystemExit(f'cannot read {args.image}')
-  if img.shape[1] != 1344:
-    img = cv2.resize(img, (1344, 760))
   top = flatten(img)
 
   # grid every metre laterally and every 5 m ahead, to check the geometry by eye

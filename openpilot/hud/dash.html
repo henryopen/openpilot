@@ -298,6 +298,36 @@ function ribbon(ys, halfW, style){
   smoothTo(B.slice().reverse(),true);
   cx.closePath(); cx.fillStyle=style; cx.fill();
 }
+// 這條線在 d 公尺處的橫向位置。取樣點是固定那幾個距離，虛線的段落卻落在中間。
+function yAt(ys,d){
+  for(let i=1;i<SAMPLE_D.length;i++){
+    if(d<=SAMPLE_D[i]){
+      const t=(d-SAMPLE_D[i-1])/(SAMPLE_D[i]-SAMPLE_D[i-1]||1);
+      return ys[i-1]+(ys[i]-ys[i-1])*t;
+    }
+  }
+  return ys[ys.length-1];
+}
+
+// 一段油漆，從 d0 畫到 d1
+function segRibbon(ys,d0,d1,halfW,style){
+  const A=[],B=[];
+  for(let d=d0; d<=d1+0.01; d+=2){
+    const p=px(d, yAt(ys,d));
+    const w=Math.max(0.7, halfW*MPP*p.s);
+    A.push({x:p.x-w,y:p.y}); B.push({x:p.x+w,y:p.y});
+  }
+  if(A.length<2) return;
+  cx.beginPath(); smoothTo(A,false); smoothTo(B.slice().reverse(),true);
+  cx.closePath(); cx.fillStyle=style; cx.fill();
+}
+
+// 虛線：市區大約 4 公尺漆、6 公尺空，照著畫而不是畫成半透明的實線
+const DASH_PAINT_M=4, DASH_PERIOD_M=10;
+function dashedRibbon(ys,halfW,style){
+  for(let d=0; d<DMAX; d+=DASH_PERIOD_M) segRibbon(ys, d, Math.min(d+DASH_PAINT_M, DMAX), halfW, style);
+}
+
 function band(y1,y2,fill){
   const A=[],B=[];
   for(let i=0;i<SAMPLE_D.length;i++){
@@ -319,6 +349,17 @@ function smoothDes(v){
   if(desHold===null){ desHold=v; return v; }
   desHold += (v-desHold)*0.06;      // 20Hz * 0.06 -> tau ~= 0.83s
   return desHold;
+}
+
+// yolod 量到的是「橫向幾公尺處有什麼標線」，模型給的是一整條曲線。在量測的那段距離上
+// 對起來：對不到就沒有類型，畫法退回原本的白線。
+function markingFor(lane){
+  const marks = (YOLO && YOLO.lanes) || [];
+  if(!marks.length || !lane.y || !lane.y.length) return null;
+  const at = yAt(lane.y, 10);
+  let best=null, bd=0.7;
+  marks.forEach(m=>{ const d=Math.abs((m.lat_m||0)-at); if(d<bd){ bd=d; best=m; } });
+  return best;
 }
 
 function drawRoad(F){
@@ -358,11 +399,23 @@ function drawRoad(F){
     if(a<0.05) return;
     ribbon(e.y, 0.06, `rgba(255,60,60,${(a*0.55).toFixed(2)})`);
   });
-  // 車道線：寬度與亮度都跟著信心 → 沒有的車道自然消失
+  // 車道線：寬度與亮度跟著信心 → 沒有的車道自然消失。實線/虛線/雙線/黃白來自 yolod 量到的
+  // 路面油漆（modelV2 只有幾何，沒有「這條線是什麼」），量不到就還是原本那條白線。
   lanes.forEach(l=>{
     const p=Math.max(0,Math.min(1,l.p||0));
     if(p<0.08) return;
-    ribbon(l.y, 0.025*p*1.9, `rgba(238,244,250,${(Math.min(p,0.75)).toFixed(2)})`);
+    const a=Math.min(p,0.75).toFixed(2);
+    const mk=markingFor(l);
+    const col = mk && mk.colour==='yellow' ? `rgba(255,196,44,${a})` : `rgba(238,244,250,${a})`;
+    const hw = 0.025*p*1.9;
+    const parts = (mk && mk.parts) || [];
+    // 雙線就是兩條，畫在量到的位置兩側；單線 offs 只有一個 0
+    const offs = (mk && mk.kind==='double') ? [-0.09, 0.09] : [0];
+    offs.forEach((o,k)=>{
+      const ys = o ? l.y.map(v=>v+o) : l.y;
+      const dashed = parts[k] ? !!parts[k].dashed : !!(mk && mk.style==='dashed');
+      if(dashed) dashedRibbon(ys, hw, col); else ribbon(ys, hw, col);
+    });
   });
   // 規劃路徑
   const HL=path.map(v=>v+0.45), HR=path.map(v=>v-0.45);

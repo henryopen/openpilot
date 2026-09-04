@@ -32,6 +32,10 @@ NEAR_BAND_M = (NEAR + 1, 16)
 # Urban dashes here are roughly 4 m of paint to 6 m of gap. Anything under this is smear,
 # a join, or a patch in the asphalt - not a dash.
 DASH_GAP_MIN_M, DASH_GAP_MAX_M = 2.5, 12.0
+# How far either side of a line modelV2 reports to look for the paint. Wide enough for the
+# far band of a double and for the model being a little off, narrow enough to leave out the
+# next line over.
+LANE_SEARCH_M = 0.7
 
 
 def _columns(top):
@@ -48,11 +52,24 @@ def _columns(top):
   return band, prof - base[:len(prof)]
 
 
-def find_lines(top):
-  """-> list of (x_px, width_px) for each painted band across the road."""
+def find_lines(top, lane_x_m=None):
+  """-> list of (x_px, width_px) for each painted band across the road.
+
+  lane_x_m confines the search to the lines modelV2 has already found. Across the full
+  width anything brighter than the asphalt qualifies - a shadow edge, a tar seam, paint
+  in the oncoming lane - and those are exactly the bands that get read wrong, because
+  nothing is holding them to a place a lane line can be.
+  """
   _, contrast = _columns(top)
   thr = max(6.0, float(np.percentile(contrast, 97)) * 0.45)
   above = contrast > thr
+  if lane_x_m:
+    near_a_line = np.zeros_like(above)
+    for x_m in lane_x_m:
+      a = int((x_m - LANE_SEARCH_M + HALF_WIDTH) * PX_PER_M)
+      b = int((x_m + LANE_SEARCH_M + HALF_WIDTH) * PX_PER_M)
+      near_a_line[max(0, a):max(0, b)] = True
+    above = above & near_a_line
   runs, start = [], None
   for i, a in enumerate(above):
     if a and start is None:
@@ -125,14 +142,19 @@ def group_doubles(lines):
   return groups
 
 
-def read_markings(img):
-  top = flatten(img)
+def read_markings(img, lane_x_m=None, calib=None):
+  """-> (flattened view, markings). lane_x_m: lateral metres of modelV2's laneLines."""
+  top = flatten(img, calib)
   out = []
-  for grp in group_doubles(find_lines(top)):
+  for grp in group_doubles(find_lines(top, lane_x_m)):
     parts = [classify(top, x, w) for x, w in grp]
     parts = [p for p in parts if p]
     if not parts:
       continue
+    # The two bands of a double measure differently - 19.0 and 13.7 of yellowness across the
+    # same line - so the marking is yellow if either band is, not if the first one happens
+    # to be the one that reads high.
+    colour = 'yellow' if any(p['colour'] == 'yellow' for p in parts) else 'white'
     kind = 'double' if len(parts) > 1 else 'single'
     dashed = [p for p in parts if p['dashed']]
     if not dashed:
@@ -145,8 +167,8 @@ def read_markings(img):
       'lat_m': parts[0]['lat_m'],
       'kind': kind,
       'style': style,
-      'colour': parts[0]['colour'],
-      'crossable': not (kind == 'double' or parts[0]['colour'] == 'yellow') and style == 'dashed',
+      'colour': colour,
+      'crossable': not (kind == 'double' or colour == 'yellow') and style == 'dashed',
       'parts': parts,
     })
   return top, out
@@ -156,16 +178,18 @@ def main():
   ap = argparse.ArgumentParser()
   ap.add_argument('image')
   ap.add_argument('--debug')
+  ap.add_argument('--lanes', help='lateral metres of known lane lines, e.g. "-1.9,1.9"')
   args = ap.parse_args()
   img = cv2.imread(args.image)
   if img is None:
     raise SystemExit(f'cannot read {args.image}')
-  if img.shape[1] != 1344:
-    img = cv2.resize(img, (1344, 760))
 
-  top, marks = read_markings(img)
+  lane_x_m = [float(v) for v in args.lanes.split(',')] if args.lanes else None
+  top, marks = read_markings(img, lane_x_m)
   lo, hi = NEAR_BAND_M
-  print(f'{Path(args.image).name}: 找到 {len(marks)} 條標線（量測範圍 {lo}-{hi} m）\n')
+  where = f'，只看 {args.lanes} m 附近' if lane_x_m else ''
+  print(f'{Path(args.image).name} {img.shape[1]}x{img.shape[0]}：找到 {len(marks)} 條標線（量測範圍 {lo}-{hi} m{where}）')
+  print()
   for m in marks:
     tag = '可跨越' if m['crossable'] else '不可跨越'
     print(f"  橫向 {m['lat_m']:+5.2f} m  {m['colour']:6} {m['kind']:6} {m['style']:6}  {tag}")

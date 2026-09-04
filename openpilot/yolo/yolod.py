@@ -27,6 +27,7 @@ sys.path.append('/data/openpilot')  # the openpilot package resolves off the rep
 
 import numpy as np
 
+import lane_type
 import yolo_core as yc
 from openpilot.cereal import log, messaging
 from openpilot.cereal.visionipc import VisionStreamType
@@ -51,6 +52,8 @@ SAVE_EVERY = 8.0    # seconds between overlays kept on disk
 # keep more pictures of those to judge afterwards
 SAVE_EVERY_INTERESTING = 2.0
 INTERESTING = {0, 1, 3, 9}  # person, bicycle, motorcycle, traffic light
+LANE_PROB_MIN = 0.3   # below this modelV2 is not really claiming a line is there
+LANE_AT_M = 10.0      # where along the road to take the line's lateral position
 
 _lock = threading.Lock()
 _jpeg = b''
@@ -98,6 +101,24 @@ class Handler(BaseHTTPRequestHandler):
 
 def serve():
   ThreadingHTTPServer(('0.0.0.0', PORT), Handler).serve_forever()
+
+
+def model_lane_x(md):
+  """Lateral metres of modelV2's lane lines, at the distance the paint gets measured.
+
+  Both this and the flattened view take right as positive, so the number passes straight
+  through. Handing these over is what keeps the markings search on lines that are actually
+  there, instead of on whatever else in the frame happens to be brighter than asphalt.
+  """
+  out = []
+  for line, prob in zip(md.laneLines, md.laneLineProbs, strict=False):
+    ys = list(line.y)
+    if prob < LANE_PROB_MIN or not ys:
+      continue
+    xs = list(line.x)
+    i = min(range(len(xs)), key=lambda k: abs(xs[k] - LANE_AT_M))
+    out.append(round(float(ys[i]), 2))
+  return out
 
 
 def camera_frames():
@@ -169,9 +190,10 @@ def main(replay=None):
   threading.Thread(target=serve, daemon=True).start()
   road_sess = yc.make_session(MODEL_ROAD, threads=2)
   band_sess = yc.make_session(MODEL_BAND, threads=2)
-  sm = messaging.SubMaster(['carState', 'deviceState'])
+  sm = messaging.SubMaster(['carState', 'deviceState', 'modelV2'])
   ThermalStatus = log.DeviceState.ThermalStatus
   pitch, yaw, height = yc.read_calibration()
+  calib = (pitch, yaw, height)
   print(f'yolod: calibration pitch {pitch:.5f} yaw {yaw:.5f} height {height:.3f} m', flush=True)
 
   run = RUNS / datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -186,7 +208,7 @@ def main(replay=None):
   last_save = 0.0
   t_boot = time.monotonic()
   # each model keeps its last answer while the other one has the CPU
-  dets_road, dets_band, rgb = [], [], None
+  dets_road, dets_band, rgb, lanes = [], [], None, []
   # Two band frames for every road frame. The cars already have openpilot's own lead and
   # this file's own tracker filling in between passes; a light has neither, and is the only
   # thing here the driver cannot get from anywhere else.
@@ -199,6 +221,7 @@ def main(replay=None):
       time.sleep(5)
       continue
 
+    sm.update(0)
     turn = (turn + 1) % 3
     band_turn = turn != 0 and buf is not None
     t0 = time.monotonic()
@@ -213,10 +236,13 @@ def main(replay=None):
       # the road model knows the light classes too, but sees a third of the reds the band
       # model does, so its lights are dropped rather than argued with
       dets_road = [d for d in yc.detect(road_sess, rgb, c4=True) if d['cls'] != yc.TRAFFIC_LIGHT]
+      # Solid or dashed, single or double, yellow or white - whether the line may be crossed
+      # is absent from modelV2 entirely, and measuring it off the road costs about a
+      # millisecond against the half second the model just spent.
+      lanes = lane_type.read_markings(rgb, model_lane_x(sm['modelV2']), calib)[1]
     ms = (time.monotonic() - t0) * 1000
     dets = dets_road + dets_band
 
-    sm.update(0)
     v_ego = float(sm['carState'].vEgo)
     counts = {}
     for d in dets:
@@ -231,7 +257,7 @@ def main(replay=None):
     now = time.monotonic()
 
     rec = {'t': round(now - t_boot, 2), 'ms': round(ms, 1), 'v': round(v_ego * 3.6, 1),
-           'counts': counts, 'lights': lights, 'dets': dets}
+           'counts': counts, 'lights': lights, 'dets': dets, 'lanes': lanes}
     jl.write(json.dumps(rec) + '\n')
 
     # The HUD draws icons from metres, so it never needs the picture. Rendering one costs
@@ -252,7 +278,7 @@ def main(replay=None):
              for d in dets if 'd' in d or d.get('light')]
     with _lock:
       _state.update(ok=True, reason='running', ms=round(ms, 1), v=round(v_ego * 3.6, 1),
-                    counts=counts, lights=lights, dets=brief, frames=frames,
+                    counts=counts, lights=lights, dets=brief, lanes=lanes, frames=frames,
                     uptime=round(now - t_boot, 1), run=run.name, t_frame=now,
                     thermal=str(sm['deviceState'].thermalStatus))
 
