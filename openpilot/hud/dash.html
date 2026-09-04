@@ -599,61 +599,83 @@ function yoloTrack(dets, ve){
   YTRK=YTRK.filter(t=>(now-t.tObs)/1000 < YHOLD);
 }
 
-// 正後方視角的簡筆圖示：立姿的畫人形，車輛畫車尾方塊
-function yIcon(x, y, s, cls){
+// 每種目標畫多大，照它真實有多大：一個人 1.7 m 高、0.55 m 寬，一台轎車 1.5 m 高、1.8 m 寬。
+// 先前每種都套同一個縮放，結果行人畫得比轎車還高一倍。
+const SIZE={0:{w:0.55,h:1.72}, 1:{w:0.60,h:1.75}, 3:{w:0.75,h:1.68},
+            2:{w:1.80,h:1.48}, 5:{w:2.55,h:3.20}, 7:{w:2.45,h:3.00}};
+const VIEW_K=0.62;
+
+// 正後方視角：立姿的畫人形，車輛畫車尾
+function yIcon(x, y, w, h, cls){
   const col=YCLR[cls]||'#9fb4c8';
   cx.fillStyle=col; cx.strokeStyle=col;
   if(YVRU.has(cls)){
-    cx.beginPath(); cx.arc(x, y-s*1.30, s*0.26, 0, 6.283); cx.fill();          // 頭／安全帽
+    cx.beginPath(); cx.arc(x, y-h*0.86, w*0.30, 0, 6.283); cx.fill();          // 頭／安全帽
     cx.beginPath();                                                            // 軀幹
-    cx.moveTo(x-s*0.30, y-s*0.10); cx.lineTo(x-s*0.24, y-s*1.00);
-    cx.lineTo(x+s*0.24, y-s*1.00); cx.lineTo(x+s*0.30, y-s*0.10); cx.closePath(); cx.fill();
-    if(cls!==0){                                                               // 機車／單車：輪＋把手
-      cx.lineWidth=Math.max(1.4, s*0.13); cx.lineCap='round';
-      cx.beginPath(); cx.moveTo(x-s*0.62, y-s*0.72); cx.lineTo(x+s*0.62, y-s*0.72); cx.stroke();
-      cx.beginPath(); cx.moveTo(x, y-s*0.10); cx.lineTo(x, y); cx.stroke();
+    cx.moveTo(x-w*0.40, y-h*0.05); cx.lineTo(x-w*0.32, y-h*0.70);
+    cx.lineTo(x+w*0.32, y-h*0.70); cx.lineTo(x+w*0.40, y-h*0.05); cx.closePath(); cx.fill();
+    if(cls!==0){                                                               // 機車／單車：把手＋輪
+      cx.lineWidth=Math.max(1.3, w*0.15); cx.lineCap='round';
+      cx.beginPath(); cx.moveTo(x-w*0.60, y-h*0.48); cx.lineTo(x+w*0.60, y-h*0.48); cx.stroke();
+      cx.beginPath(); cx.moveTo(x, y-h*0.05); cx.lineTo(x, y); cx.stroke();
       cx.lineCap='butt';
     }
   }else{
-    vehicle(x, y, s, cls);
+    vehicle(x, y, w, h, cls);
   }
 }
 
 // 從後面看的車。轎車、卡車、公車差在車身高與車頂寬的比例 —— 那就是在路上分辨它們的方式，
 // 不是顏色。尾燈是紅的，因為看到的就是尾燈。
+// 車頂佔全高多少、車頂比車身窄多少 —— 一台公車幾乎整片都是車身，轎車的車頂佔四成。
+// 車漆而不是類別色：路上分辨轎車、卡車、公車靠的是輪廓，塗成三種顏色反而像玩具。
 const VEH={
-  2:{w:0.60, body:0.46, roof:0.34, roofW:0.72, lampW:0.24, lampH:0.12},  // 轎車：車身矮、車頂明顯
-  5:{w:0.82, body:1.20, roof:0.10, roofW:0.96, lampW:0.15, lampH:0.09},  // 公車：一整面高牆
-  7:{w:0.78, body:1.00, roof:0.14, roofW:0.90, lampW:0.18, lampH:0.10},  // 卡車：方廂，比公車矮一截
+  2:{roof:0.40, roofW:0.72, lampW:0.20, lampH:0.11},   // 轎車
+  5:{roof:0.12, roofW:0.94, lampW:0.12, lampH:0.05},   // 公車：一整面高牆
+  7:{roof:0.16, roofW:0.88, lampW:0.14, lampH:0.06},   // 卡車：方廂
 };
-// 車漆而不是類別色：路上分辨轎車、卡車、公車靠的是輪廓高矮寬窄，塗成三種顏色反而像玩具。
-function vehicle(x, y, s, cls){
+function vehicle(x, y, w, h, cls){
   const K=VEH[cls]||VEH[2];
-  const hw=s*K.w, bh=s*K.body, rh=s*K.roof, rw=hw*K.roofW;
+  const hw=w/2, rh=h*K.roof, bh=h-rh, rw=hw*K.roofW;
   const rd=(a,b,c,d,r)=>{ cx.beginPath();
     if(cx.roundRect) cx.roundRect(a,b,c,d,Math.min(r, Math.abs(d)/2, Math.abs(c)/2));
     else cx.rect(a,b,c,d); };
   // 落在路面上的影子，車才不會像浮著
   cx.save();
   cx.globalAlpha*=0.5; cx.fillStyle='#000';
-  cx.beginPath(); cx.ellipse(x, y+s*0.04, hw*1.02, s*0.12, 0, 0, 6.283); cx.fill();
+  cx.beginPath(); cx.ellipse(x, y+h*0.02, hw*1.04, Math.max(1, h*0.07), 0, 0, 6.283); cx.fill();
   cx.restore();
-  cx.lineWidth=Math.max(1, s*0.055); cx.strokeStyle='rgba(5,10,16,0.92)';
+  cx.lineWidth=Math.max(0.9, w*0.035); cx.strokeStyle='rgba(5,10,16,0.92)';
   // 車頂比車身暗一階，看起來才是同一台車的兩個面
   cx.fillStyle='#8593a1';
-  rd(x-rw, y-bh-rh, rw*2, rh, s*0.16); cx.fill(); cx.stroke();
-  cx.fillStyle='#b7c5d2';
-  rd(x-hw, y-bh, hw*2, bh, s*0.15); cx.fill(); cx.stroke();
+  rd(x-rw, y-h, rw*2, rh, w*0.10); cx.fill(); cx.stroke();
+  // 車身給一道由上而下的漸層，像車漆反光
+  const g=cx.createLinearGradient(0, y-bh, 0, y);
+  g.addColorStop(0, '#ccd8e3'); g.addColorStop(1, '#8fa0b0');
+  cx.fillStyle=g;
+  rd(x-hw, y-bh, w, bh, w*0.09); cx.fill(); cx.stroke();
   // 後窗
-  if(rh > s*0.12){
-    cx.fillStyle='rgba(28,42,56,0.85)';
-    rd(x-rw*0.80, y-bh-rh+s*0.07, rw*1.60, Math.max(1.5, rh-s*0.13), s*0.10); cx.fill();
+  if(rh > 3){
+    cx.fillStyle='rgba(24,38,52,0.88)';
+    rd(x-rw*0.82, y-h+rh*0.26, rw*1.64, rh*0.54, w*0.05); cx.fill();
   }
   // 尾燈
-  cx.fillStyle='rgba(255,64,52,0.96)';
-  const ly=y-bh+s*0.09, lw=hw*K.lampW*2, lh=Math.max(1.5, s*K.lampH);
-  rd(x-hw+hw*0.13, ly, lw, lh, lh*0.4); cx.fill();
-  rd(x+hw-hw*0.13-lw, ly, lw, lh, lh*0.4); cx.fill();
+  cx.fillStyle='rgba(255,66,54,0.96)';
+  const lw=Math.max(1.4, w*K.lampW), lh=Math.max(1.2, h*K.lampH), ly=y-bh+bh*0.18;
+  rd(x-hw+w*0.06, ly, lw, lh, lh*0.4); cx.fill();
+  rd(x+hw-w*0.06-lw, ly, lw, lh, lh*0.4); cx.fill();
+}
+
+// 雷達每秒 20 次、距離是量出來的；這裡的距離是單目從框底估的，1.5 秒才一次。兩邊講的是
+// 同一台車時，位置聽雷達的，種類還是這裡認的 —— 各自給出它擅長的那一半。
+function radarFor(t, d, F){
+  let best=null, bd=7;
+  (F.leads||[]).forEach(L=>{
+    if(L.d==null) return;
+    const dd=Math.hypot(L.d-d, (L.y-(t.lat||0))*2.5);   // 橫向對不上比縱向更說明不是同一台
+    if(dd<bd){ bd=dd; best=L; }
+  });
+  return best;
 }
 
 function drawYolo(F){
@@ -674,9 +696,16 @@ function drawYolo(F){
 
   // 遠的先畫，近的疊在上面
   YTRK.map(t=>({t, d:ypos(t,ve,now)})).sort((a,b)=>b.d-a.d).forEach(({t,d})=>{
-    const p=px(d, t.lat||0);
+    const R=radarFor(t, d, F);
+    const dd=R ? R.d : d, lat=R ? R.y : (t.lat||0);
+    const p=px(dd, lat);
     if(p.x<-40 || p.x>W+40) return;
-    const s=Math.max(11, Math.min(46, 900/(d+13)));
+    // 這個投影為了讓車道看得清楚，把近景放得比真實相機大，所以照實際公尺畫會過大。
+    // 縮一個固定係數，相對比例（公車比卡車高、行人比轎車矮）就都還在。
+    const S=SIZE[t.cls]||SIZE[2];
+    const wpx=Math.max(4, Math.min(W*0.22, S.w*MPP*p.s*VIEW_K));
+    const hpx=Math.max(5, Math.min(H*0.40, S.h*MPP*p.s*VIEW_K));
+    const s=Math.max(11, Math.min(26, hpx*0.30));   // 標籤字級，不跟著車身一起放大
     const vru=YVRU.has(t.cls);
     const held=(now-t.tObs)/1000;
     const fade=held<1.0 ? 1 : Math.max(0, 1-(held-1.0)/(YHOLD-1.0));   // 漏看就淡出，不是瞬間消失
@@ -684,16 +713,17 @@ function drawYolo(F){
     // 車輛不再畫淡：形狀要說出是轎車、卡車還是公車，就得看得清楚才有意義
     cx.globalAlpha=(vru?0.95:0.85)*Math.min(1,(t.conf||0.4)+0.35)*fade;
     if(vru){ cx.shadowColor=YCLR[t.cls]; cx.shadowBlur=14; }
-    yIcon(p.x, p.y, s, t.cls);
+    yIcon(p.x, p.y, wpx, hpx, t.cls);
     cx.restore();
-    if(vru && d<70){                        // 只有行人／二輪標距離，不跟前車大字搶
+    if(vru && dd<70){                       // 只有行人／二輪標距離，不跟前車大字搶
       cx.save();
       cx.globalAlpha=0.95*fade; cx.textAlign='center';
-      cx.font=`800 ${Math.max(12, s*0.62)}px system-ui`;
-      cx.lineWidth=Math.max(2.5, s*0.2); cx.strokeStyle='rgba(4,7,10,.92)'; cx.lineJoin='round';
-      const label=`${YNAME[t.cls]||''} ${d.toFixed(0)}`;
-      cx.strokeText(label, p.x, p.y+Math.max(13, s*0.72));
-      cx.fillStyle=YCLR[t.cls]; cx.fillText(label, p.x, p.y+Math.max(13, s*0.72));
+      cx.font=`800 ${s}px system-ui`;
+      cx.lineWidth=Math.max(2.5, s*0.18); cx.strokeStyle='rgba(4,7,10,.92)'; cx.lineJoin='round';
+      const label=`${YNAME[t.cls]||''} ${dd.toFixed(0)}`;
+      const ly=p.y+s*0.95;
+      cx.strokeText(label, p.x, ly);
+      cx.fillStyle=YCLR[t.cls]; cx.fillText(label, p.x, ly);
       cx.restore();
     }
   });

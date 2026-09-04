@@ -34,11 +34,12 @@ from openpilot.cereal.visionipc import VisionStreamType
 from msgq.visionipc import VisionIpcClient
 
 PORT = 8903
-# Two models rather than one: a light is 20 px tall and cannot be resampled, a car is 78 px
-# and can. One model covering both would have to take the whole frame at native resolution,
-# measured at 2027 ms against 1436 ms for these two together. They take turns, one frame each.
+# The band model that read traffic lights is not loaded any more. It was the better of the
+# two at it - 60% of reds per frame against the stock model's 24% - and still not good
+# enough to show a driver: 55% of approaches seen at all, measured offline at every frame,
+# where the car gets two or three. The lights are the driving model's job now, through the
+# junction handoff, and the frames the band model was taking go to the road model instead.
 MODEL_ROAD = '/data/yolo/c4light13_672x384.onnx'
-MODEL_BAND = '/data/yolo/c4band1_1344x352.onnx'
 RUNS = Path('/data/yolo/runs')
 DISABLE = Path('/data/yolo/DISABLE')
 
@@ -193,7 +194,6 @@ def main(replay=None):
 
   threading.Thread(target=serve, daemon=True).start()
   road_sess = yc.make_session(MODEL_ROAD, threads=2)
-  band_sess = yc.make_session(MODEL_BAND, threads=2)
   sm = messaging.SubMaster(['carState', 'deviceState', 'modelV2'])
   ThermalStatus = log.DeviceState.ThermalStatus
   pitch, yaw, height = yc.read_calibration()
@@ -205,19 +205,14 @@ def main(replay=None):
   jl = (run / 'det.jsonl').open('a', buffering=1)
   # rows carry seconds since start; the wall clock is written once, here
   (run / 'meta.json').write_text(json.dumps({'start': datetime.now().isoformat(),
-                                             'model': MODEL_ROAD, 'model_band': MODEL_BAND}))
-  print(f'yolod: models {MODEL_ROAD} + {MODEL_BAND}, logging to {run}, port {PORT}', flush=True)
+                                             'model': MODEL_ROAD}))
+  print(f'yolod: model {MODEL_ROAD}, logging to {run}, port {PORT}', flush=True)
 
   frames = 0
   last_save = 0.0
   t_boot = time.monotonic()
-  # each model keeps its last answer while the other one has the CPU
-  dets_road, dets_band, rgb, lanes = [], [], None, []
+  dets_road, rgb, lanes = [], None, []
   lane_turn = 0
-  # Two band frames for every road frame. The cars already have openpilot's own lead and
-  # this file's own tracker filling in between passes; a light has neither, and is the only
-  # thing here the driver cannot get from anywhere else.
-  turn = -1
 
   for buf, replay_rgb in (replay_frames(replay) if replay else camera_frames()):
     if DISABLE.exists():
@@ -227,28 +222,19 @@ def main(replay=None):
       continue
 
     sm.update(0)
-    turn = (turn + 1) % 3
-    band_turn = turn != 0 and buf is not None
     t0 = time.monotonic()
-    if band_turn:
-      # Shown as soon as it is seen. Asking for the colour twice was sized against a 1.4 s
-      # pass; on the road a pass takes 5.4 s, so it meant 11 s, and only a car already
-      # stopped at a red waits that long - a green never lasts long enough to qualify.
-      # Nothing brakes on this, so a light that is late is worse than one that is wrong.
-      dets_band = yc.detect_band(band_sess, yc.nv12_to_band(buf))
-    else:
-      rgb = replay_rgb if replay_rgb is not None else yc.nv12_to_rgb(buf)
-      # the road model knows the light classes too, but sees a third of the reds the band
-      # model does, so its lights are dropped rather than argued with
-      dets_road = [d for d in yc.detect(road_sess, rgb, c4=True) if d['cls'] != yc.TRAFFIC_LIGHT]
-      # Solid or dashed, single or double, yellow or white - whether the line may be crossed
-      # is absent from modelV2 entirely. Kept on its own count so a pass the driver cannot
-      # see the result of does not slow down the one they can.
-      lane_turn = (lane_turn + 1) % LANE_EVERY
-      if lane_turn == 0:
-        lanes = lane_type.read_markings(rgb, model_lane_x(sm['modelV2']), calib)[1]
+    rgb = replay_rgb if replay_rgb is not None else yc.nv12_to_rgb(buf)
+    # the lights this model reports are dropped: it saw a quarter of the reds, and nothing
+    # downstream wants a traffic light from here any more
+    dets_road = [d for d in yc.detect(road_sess, rgb, c4=True) if d['cls'] != yc.TRAFFIC_LIGHT]
+    # Solid or dashed, single or double, yellow or white - whether the line may be crossed
+    # is absent from modelV2 entirely. Kept on its own count so a pass the driver cannot
+    # see the result of does not slow down the one they can.
+    lane_turn = (lane_turn + 1) % LANE_EVERY
+    if lane_turn == 0:
+      lanes = lane_type.read_markings(rgb, model_lane_x(sm['modelV2']), calib)[1]
     ms = (time.monotonic() - t0) * 1000
-    dets = dets_road + dets_band
+    dets = dets_road
 
     v_ego = float(sm['carState'].vEgo)
     counts = {}
