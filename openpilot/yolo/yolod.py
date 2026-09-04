@@ -54,6 +54,10 @@ SAVE_EVERY_INTERESTING = 2.0
 INTERESTING = {0, 1, 3, 9}  # person, bicycle, motorcycle, traffic light
 LANE_PROB_MIN = 0.3   # below this modelV2 is not really claiming a line is there
 LANE_AT_M = 10.0      # where along the road to take the line's lateral position
+# Road frames between markings passes. Measured at 104 ms on this CPU against the road
+# model's 570, which is too much to pay every frame for something that does not change:
+# the paint either side of a lane is the same paint for as long as the lane lasts.
+LANE_EVERY = 3
 
 _lock = threading.Lock()
 _jpeg = b''
@@ -209,6 +213,7 @@ def main(replay=None):
   t_boot = time.monotonic()
   # each model keeps its last answer while the other one has the CPU
   dets_road, dets_band, rgb, lanes = [], [], None, []
+  lane_turn = 0
   # Two band frames for every road frame. The cars already have openpilot's own lead and
   # this file's own tracker filling in between passes; a light has neither, and is the only
   # thing here the driver cannot get from anywhere else.
@@ -237,9 +242,11 @@ def main(replay=None):
       # model does, so its lights are dropped rather than argued with
       dets_road = [d for d in yc.detect(road_sess, rgb, c4=True) if d['cls'] != yc.TRAFFIC_LIGHT]
       # Solid or dashed, single or double, yellow or white - whether the line may be crossed
-      # is absent from modelV2 entirely, and measuring it off the road costs about a
-      # millisecond against the half second the model just spent.
-      lanes = lane_type.read_markings(rgb, model_lane_x(sm['modelV2']), calib)[1]
+      # is absent from modelV2 entirely. Kept on its own count so a pass the driver cannot
+      # see the result of does not slow down the one they can.
+      lane_turn = (lane_turn + 1) % LANE_EVERY
+      if lane_turn == 0:
+        lanes = lane_type.read_markings(rgb, model_lane_x(sm['modelV2']), calib)[1]
     ms = (time.monotonic() - t0) * 1000
     dets = dets_road + dets_band
 
