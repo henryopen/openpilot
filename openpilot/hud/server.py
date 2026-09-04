@@ -38,7 +38,7 @@ SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV
 # off a message gives its name, and relying on which one arrives here is asking for it.
 _R = custom.LongitudinalPlanSP.Reason
 REASON_NAMES = {_R.cruise: "cruise", _R.lead: "lead0", _R.stopLight: "stoplight",
-                _R.curve: "curve", _R.e2e: "e2e"}
+                _R.curve: "curve", _R.e2e: "e2e", _R.weakLead: "weaklead"}
 
 KPH_TO_MS = 1 / 3.6
 

@@ -48,6 +48,12 @@ PLAN_REASONS = {LongitudinalPlanSource.cruise: PlanReason.cruise,
                 LongitudinalPlanSource.lead0: PlanReason.lead,
                 LongitudinalPlanSource.lead1: PlanReason.lead,
                 LongitudinalPlanSource.e2e: PlanReason.e2e}
+
+# holding cruise back for a lead the model is unsure about, see where it is used below
+RADAR_TO_CAMERA = 1.52
+WEAK_LEAD_MIN_PROB, WEAK_LEAD_MAX_PROB = 0.2, 0.5
+WEAK_LEAD_MIN_DIST, WEAK_LEAD_MAX_DIST = 45., 100.
+WEAK_LEAD_MIN_SPEED = 5.
 ALLOW_THROTTLE_THRESHOLD = 0.4
 MIN_ALLOW_THROTTLE_SPEED = 2.5
 
@@ -225,6 +231,24 @@ class LongitudinalPlanner:
       curve_limited = self.curve_speed.a_target < self.a_cruise
       self.a_cruise = min(self.a_cruise, self.curve_speed.a_target)
 
+    # A lead the model is unsure about, too far out to hold as a lead. On 2026-09-03 a car
+    # 62 to 80 m ahead had its probability swinging between 0.09 and 0.85; every dip dropped
+    # it, the road was judged clear for ten seconds, cruise wound 26 km/h up to 53, and it
+    # locked on again at 43 m closing at 20 km/h, which needed -3.0 m/s^2 and the driver.
+    # Holding a full lead that far out is a coin toss (0.9:1, see radard's LEAD_HOLD_*), but
+    # simply not speeding up is a bounded thing to be wrong about: over 2.27 hours this
+    # holds cruise back for 43 s an hour and a real lead turns up within six seconds 82% of
+    # the time, so 8 s an hour of not accelerating at nothing.
+    weak_lead = False
+    if not sm['radarState'].leadOne.present and v_ego > WEAK_LEAD_MIN_SPEED:
+      leads = sm['modelV2'].leadsV3
+      if len(leads):
+        lead_x = leads[0].x[0] - RADAR_TO_CAMERA
+        weak_lead = (WEAK_LEAD_MIN_PROB <= leads[0].prob < WEAK_LEAD_MAX_PROB
+                     and WEAK_LEAD_MIN_DIST <= lead_x < WEAK_LEAD_MAX_DIST)
+    if weak_lead:
+      self.a_cruise = min(self.a_cruise, 0.)
+
     cruise_should_stop = should_stop(v_ego, self.a_cruise)
 
     candidates = [(output_a_target_mpc, self.mpc.source, output_should_stop_mpc),
@@ -239,6 +263,8 @@ class LongitudinalPlanner:
     reason = PLAN_REASONS.get(self.mpc.source, PlanReason.cruise)
     if reason == PlanReason.cruise and curve_limited:
       reason = PlanReason.curve
+    elif reason == PlanReason.cruise and weak_lead:
+      reason = PlanReason.weakLead
     elif reason == PlanReason.e2e and not sm['selfdriveState'].experimentalMode:
       reason = PlanReason.stopLight
     self.plan_reason = reason

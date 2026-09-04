@@ -32,6 +32,7 @@ struct LongitudinalPlanSP @0xaedffd8f31e7b55d {
     stopLight @2;
     curve @3;
     e2e @4;
+    weakLead @5;
   }
 }
 

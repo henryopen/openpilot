@@ -25,6 +25,23 @@ V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
 
 RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
 
+# The lead going away is usually not the lead leaving. Over 2.27 hours of this car's own
+# logs leadOne vanished 268 times an hour, and 52% of those came back within a second at a
+# distance that carried on from where it left off, with the raw vision probability still
+# sitting at 0.35 - the model blinking, not a car pulling away. Holding through the blink is
+# worth 2.1:1 inside 25 m and 2.9:1 from 25 to 45, counted as dropout seconds recovered
+# against seconds spent holding a lead that really had gone. Past 45 m it is 0.9:1, so
+# nothing is held out there; LONGITUDINAL.md 7.3 says what is done instead.
+#
+# The gate is the model's own probability, not the filtered one radard decides with: that
+# filter rises instantly and decays slowly, so by the time it admits the lead is gone it can
+# no longer tell a blink from a departure. Holding on a timer alone loses - a second of it
+# buys back 30 dropout seconds an hour and spends 41 (openpilot/yolo/analysis/lead_hold_sim.py).
+LEAD_HOLD_MAX_DIST = 45.
+LEAD_HOLD_MIN_PROB = 0.2
+LEAD_HOLD_MAX_TIME = 3.0
+LEAD_HOLD_MIN_SPEED = 3.0
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -211,12 +228,38 @@ def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capn
   return lead_dict
 
 
+class LeadHold:
+  """Carries the last lead through a dip in the model's confidence. See LEAD_HOLD_* above."""
+
+  def __init__(self):
+    self.lead: dict[str, Any] | None = None
+    self.held = 0.
+
+  def update(self, lead: dict[str, Any], raw_prob: float, v_ego: float) -> dict[str, Any]:
+    if lead['present']:
+      self.lead = dict(lead)
+      self.held = 0.
+      return lead
+
+    if (self.lead is None or v_ego < LEAD_HOLD_MIN_SPEED or raw_prob < LEAD_HOLD_MIN_PROB
+        or self.held >= LEAD_HOLD_MAX_TIME or self.lead['dRel'] > LEAD_HOLD_MAX_DIST):
+      self.lead = None
+      self.held = 0.
+      return lead
+
+    self.held += DT_MDL
+    # let it keep closing at the speed it was last measured doing, so the gap does not freeze
+    self.lead['dRel'] = max(self.lead['dRel'] + self.lead['vRel'] * DT_MDL, 0.)
+    return dict(self.lead)
+
+
 class RadarD:
   def __init__(self, delay: float = 0.0):
     self.tracks: dict[int, Track] = {}
     self.kalman_params = KalmanParams(DT_MDL)
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, DT_MDL) for _ in range(2)]
     self.prev_lead_track_ids = [-1, -1]
+    self.lead_hold = LeadHold()
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -274,9 +317,10 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
-      self.radar_state.leadOne = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
-                                          self.lead_prob_filters[0].x, low_speed_override=True,
-                                          preferred_track_id=self.prev_lead_track_ids[0])
+      lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                          self.lead_prob_filters[0].x, low_speed_override=True,
+                          preferred_track_id=self.prev_lead_track_ids[0])
+      self.radar_state.leadOne = self.lead_hold.update(lead_one, leads_v3[0].prob, self.v_ego)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
                                           self.lead_prob_filters[1].x, low_speed_override=False,
                                           preferred_track_id=self.prev_lead_track_ids[1])

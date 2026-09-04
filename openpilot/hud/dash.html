@@ -580,7 +580,7 @@ function drawYolo(F){
 
 /* ═════ 縱向來源濾波（避免一直跳）═════ */
 const SRC={cruise:'定速', lead0:'跟車', lead1:'跟車 2', lead2:'跟車 3', e2e:'模型 E2E',
-           stoplight:'路口煞停', curve:'彎道減速'};
+           stoplight:'路口煞停', curve:'彎道減速', weaklead:'遠方疑似前車'};
 let srcHold='cruise', srcCand='cruise', srcCnt=0;
 function filterSrc(s, instant){
   if(instant){ srcHold=s; srcCand=s; srcCnt=0; return s; }
