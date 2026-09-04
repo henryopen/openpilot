@@ -370,6 +370,9 @@ def poll_loop():
                                  "rightLaneChangeEdgeBlock": edges.right_edge_detected}
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
+        # what cruise is really working to, which is not the driver's MAX whenever something
+        # has taken speed off it. m/s, already in dash units so the page can put it next to MAX
+        data["control"]["vCruiseTarget"] = float(sm["longitudinalPlanSP"].vCruise)
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
                                sm["selfdriveState"], _frame, gps_ok))
       except Exception as e:

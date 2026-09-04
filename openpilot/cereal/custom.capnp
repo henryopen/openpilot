@@ -26,6 +26,10 @@ struct RadarTracksSP @0x81c2f05a394cf4af {
 struct LongitudinalPlanSP @0xaedffd8f31e7b55d {
   reason @0 :Reason;
 
+  # The set speed cruise is really working to, after the junction stop and anything else
+  # that pulls it down, in the units the dash shows so it can sit beside the driver's MAX.
+  vCruise @1 :Float32;
+
   enum Reason {
     cruise @0;
     lead @1;

@@ -30,12 +30,18 @@
   .num{font-size:82px;font-weight:800;line-height:.92;font-variant-numeric:tabular-nums;
     letter-spacing:-3px;text-shadow:0 3px 16px rgba(0,0,0,.98),0 0 40px rgba(0,0,0,.85)}
   .num.blue{color:var(--blue)}
+  .maxrow{display:flex;align-items:baseline;gap:13px}
+  /* 巡航實際在追的設定速度。跟 MAX 一樣時只是附註，被路口停等之類壓下去時轉琥珀 —
+     那是「車為什麼自己慢下來、慢了多少」畫面上唯一看得到的答案 */
+  .tgt{font-size:34px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--dim2);
+    font-variant-numeric:tabular-nums}
+  .tgt.cut{color:var(--amber)}
   .sub{font-size:17px;color:var(--dim2);font-weight:600;margin-top:2px;letter-spacing:.4px}
   .sub b{color:var(--txt);font-weight:800}
   .off .num{color:#5d7183}
 
   /* 速限：原始值大、offset 與下一個速限小字 */
-  .slbox{top:152px;right:20px;display:flex;flex-direction:column;align-items:flex-end;gap:9px}
+  .slbox{top:196px;right:20px;display:flex;flex-direction:column;align-items:flex-end;gap:9px}
   .sl{width:62px;height:62px;border-radius:50%;background:#fbfbfb;border:6px solid #dd1f27;
     display:flex;align-items:center;justify-content:center;font-size:27px;font-weight:800;
     color:#0c0c0c;text-shadow:none;box-shadow:0 4px 22px rgba(0,0,0,.85)}
@@ -150,7 +156,10 @@
 
   <div class="ov cnr cnrL" id="paneL">
     <div class="cap">設定速度<i id="netInfo"></i></div>
-    <div class="num blue" id="maxV">60</div>
+    <div class="maxrow">
+      <div class="num blue" id="maxV">60</div>
+      <div class="tgt" id="tgtV"></div>
+    </div>
   </div>
 
   <div class="ov cnr cnrR" id="paneR">
@@ -593,6 +602,13 @@ function filterSrc(s, instant){
 function render(F){
   const set=(id,v)=>{ const el=$(id); if(el) el.textContent=v; };
   set('maxV', F.vCruise>0?F.vCruise:'--');
+  // 實際在追的設定速度：接管中才有意義，跟 MAX 一樣就低調，被壓下去才亮
+  const tg=$('tgtV');
+  if(tg){
+    const show = F.engaged && F.vTgt>0 && F.vCruise>0;
+    tg.textContent = show ? F.vTgt : '';
+    tg.className = 'tgt' + (show && F.vTgt < F.vCruise-1 ? ' cut' : '');
+  }
   set('spdV', F.vEgo);
   set('spdF', F.road || '—');
   $('paneL').className='ov cnr cnrL'+(F.engaged?'':' off');
@@ -876,7 +892,7 @@ function fromSSE(J){
   const v=cs.vEgoCluster||cs.vEgo||0;
   const kph=x=>Math.round((x||0)*KPH);
   const F={
-    vEgo:kph(v), vCruise:kph(cs.cruiseSpeed),
+    vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget),
     engaged: !!(ss.enabled||ss.active),
     avail: !!cs.cruiseAvailable,   // 儀表 MAIN 亮著（但 OP 可能還沒按啟動）
     road: lm.roadName||'—',

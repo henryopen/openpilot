@@ -78,6 +78,14 @@ def dash_to_true(v_target: float) -> float:
   return max((v_kph - DASH_OFFSET_KPH) / DASH_GAIN, 0.) * CV.KPH_TO_MS
 
 
+def true_to_dash(v_true: float) -> float:
+  """The inverse, for showing a target next to the number the driver set it by."""
+  v_kph = v_true * CV.MS_TO_KPH
+  if v_kph <= 0. or v_kph > DASH_MAX_KPH:
+    return v_true
+  return (v_kph * DASH_GAIN + DASH_OFFSET_KPH) * CV.KPH_TO_MS
+
+
 def get_max_accel(v_ego):
   return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
 
@@ -138,6 +146,7 @@ class LongitudinalPlanner:
     self.curve_speed = CurveSpeedControl()
     self.stop_for_lights = StopForLights()
     self.a_cruise = init_a
+    self.v_cruise_dash = 0.
     self.output_a_target = init_a
     self.output_should_stop = False
 
@@ -166,6 +175,11 @@ class LongitudinalPlanner:
       self.stop_for_lights.update(sm['modelV2'], v_ego, v_cruise, sm['carState'].gasPressed,
                                   sm['radarState'].leadOne)
       v_cruise = min(v_cruise, self.stop_for_lights.v_cruise_cap)
+
+    # what cruise is actually aiming at, which is not what the driver set whenever the
+    # junction stop or a forced decel has taken speed off it. Nothing downstream could say
+    # so, which is why the driver saw the car slow for no visible reason.
+    self.v_cruise_dash = true_to_dash(v_cruise)
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
 
@@ -301,4 +315,5 @@ class LongitudinalPlanner:
     sp_send = messaging.new_message('longitudinalPlanSP')
     sp_send.valid = plan_send.valid
     sp_send.longitudinalPlanSP.reason = self.plan_reason
+    sp_send.longitudinalPlanSP.vCruise = float(self.v_cruise_dash)
     pm.send('longitudinalPlanSP', sp_send)
