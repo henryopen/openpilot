@@ -567,7 +567,9 @@ async function pollYolo(){
             : (j.reason||'未就緒'); }
   }catch(e){ YOLO=null; YSTAT='連不上'; }
 }
-setInterval(pollYolo, 700);
+// 雷達那條是 SSE 推播，一有就到；YOLO 這條是我們自己去拉，所以輪詢間隔整個加在延遲上。
+// 偵測本身約 1.4 秒才一幀，拉太慢等於白等 —— 每次幾百 bytes，區網上不差這點。
+setInterval(pollYolo, 250);
 
 // 偵測是一幀一幀各自算的，一秒又只有 0.8 次，照著畫就是一閃一閃、位置一格一格跳。
 // 這裡把同一個目標接起來（跟 matchLeads 對前車做的同一件事），估出它自己的地面速度，
