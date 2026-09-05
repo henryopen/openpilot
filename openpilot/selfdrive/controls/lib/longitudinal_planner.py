@@ -186,11 +186,6 @@ class LongitudinalPlanner:
     else:
       self.junction.update(sm['modelV2'], sm['carState'], v_ego, sm['radarState'].leadOne)
 
-    # what cruise is actually aiming at, which is not what the driver set whenever the
-    # junction stop or a forced decel has taken speed off it. Nothing downstream could say
-    # so, which is why the driver saw the car slow for no visible reason.
-    self.v_cruise_dash = true_to_dash(v_cruise)
-
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
 
     # Reset current state when not engaged, or user is controlling the speed
@@ -254,6 +249,17 @@ class LongitudinalPlanner:
     if self.curve_speed.is_active:
       curve_limited = self.curve_speed.a_target < self.a_cruise
       self.a_cruise = min(self.a_cruise, self.curve_speed.a_target)
+
+    # What cruise is really working to, in the units the dash shows so it can sit beside the
+    # driver's MAX. On its own the set speed says nothing the driver cannot already read, so
+    # the number is only worth showing when something has taken speed off it. The corner is
+    # the one limiter here that computes a speed rather than an acceleration - the rest
+    # reach the car as a_cruise - and its target only means anything while it is active,
+    # holding the last corner's value otherwise.
+    v_cruise_shown = v_cruise
+    if self.curve_speed.is_active:
+      v_cruise_shown = min(v_cruise_shown, self.curve_speed.v_target)
+    self.v_cruise_dash = true_to_dash(v_cruise_shown)
 
     # A lead the model is unsure about, too far out to hold as a lead. On 2026-09-03 a car
     # 62 to 80 m ahead had its probability swinging between 0.09 and 0.85; every dip dropped
