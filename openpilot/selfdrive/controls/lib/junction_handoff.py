@@ -52,7 +52,10 @@ THRESHOLD = 1.0 - 1.0 / np.e    # a filtered condition has to hold for about one
 
 # A lead nearer than the stop threshold is the queue at the junction, not a reason to say
 # there is no junction - that conflation is what kept the older forks from arming at a red
-# light with a car in front. A lead that is itself stopped hands the approach over instead.
+# light with a car in front. A lead that is itself stopped lifts that veto, and only that:
+# the model still has to see the path end before anything arms. Letting the stopped lead
+# arm on its own instead put the mode on for half of a town drive, most of it standing
+# still behind a car with the path reading long - see the note on `armed` below.
 LEAD_BLOCK_MARGIN = 15.0
 LEAD_HANDOFF_SPEED = 2.0
 
@@ -116,8 +119,13 @@ class JunctionHandoff:
       self.lead_clear_filter.update(not lead_relevant)
       lead_cleared = self.lead_clear_filter.x >= THRESHOLD
 
+    # The stopped lead reaches this only through lead_cleared. Arming on it directly held
+    # the mode on for 49.9% of an engaged town drive on 2026-09-05, 87% of that from this
+    # one path; 73% of those frames were standing still and 80% had the path longer than
+    # the threshold, which is the model saying there is no junction. Replayed over the same
+    # drive this line drops it to 31.6% and still catches all six real stops.
     self.filter.update(self.model_detected and lead_cleared)
-    armed = self.filter.x >= THRESHOLD or handoff
+    armed = self.filter.x >= THRESHOLD
 
     now = time.monotonic()
     if armed and path < max(threshold - STRONG_MARGIN, 0.0):
