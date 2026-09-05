@@ -193,7 +193,11 @@ def main(replay=None):
     pass
 
   threading.Thread(target=serve, daemon=True).start()
-  road_sess = yc.make_session(MODEL_ROAD, threads=2)
+  # Three, measured on this device: the road model runs 499 ms at two threads, 375 at three
+  # and 412 at four. Four is worse than three because the four cores this process is pinned
+  # to also carry locationd, paramsd, torqued and the rest at realtime priority, so asking
+  # for all of them just adds contention. Nice=15 means none of that can be starved by this.
+  road_sess = yc.make_session(MODEL_ROAD, threads=3)
   sm = messaging.SubMaster(['carState', 'deviceState', 'modelV2'])
   ThermalStatus = log.DeviceState.ThermalStatus
   pitch, yaw, height = yc.read_calibration()
