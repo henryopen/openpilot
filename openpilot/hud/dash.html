@@ -572,21 +572,43 @@ setInterval(pollYolo, 700);
 // 偵測是一幀一幀各自算的，一秒又只有 0.8 次，照著畫就是一閃一閃、位置一格一格跳。
 // 這裡把同一個目標接起來（跟 matchLeads 對前車做的同一件事），估出它自己的地面速度，
 // 兩次偵測之間用本車速度把位置補到「現在」；短暫漏看沿用推算值並淡出，不直接消失。
-const YGATE=6;          // 匹配門檻（公尺）
+// 一幀只有 0.52 Hz（推論 849 ms + yolod 讓出 CPU 的 1.04 秒），兩次偵測之間車走了一大段，
+// 所以門檻不能是固定值：等得越久，目標可能跑得越遠。
+const YGATE=3;          // 匹配門檻底線（公尺）
+const YGATE_PER_S=3;    // 每多等一秒再放寬多少（公尺）
 const YHOLD=2.4;        // 漏看多久才放棄（秒）
 function ypos(t, ve, now){ return Math.max(1, t.dObs - (ve-(t.vObj||0))*(now-t.tObs)/1000); }
+
+// 還沒估出目標速度前，它可能是停著的（距離照本車速縮短），也可能跟著車流走（距離不變）。
+// 兩種都合理，所以比對的是這一整段區間而不是一個點。先前這裡拿 vObj||0 當點預測，等於
+// 一律當成停著的：一台同速的前車在 50 km/h、間隔 2 秒下會被預測靠近 28 m，遠超門檻，
+// 於是每一幀都開新軌跡 —— 同一台車在畫面上變成好幾個。
+function yerr(t, d, ve, now){
+  const dt=(now-t.tObs)/1000;
+  if(t.vObj==null){
+    const hi=t.dObs, lo=Math.max(1, t.dObs-ve*dt);
+    return (d>=lo && d<=hi) ? 0 : Math.min(Math.abs(d-lo), Math.abs(d-hi));
+  }
+  return Math.abs(ypos(t,ve,now)-d);
+}
 
 function yoloTrack(dets, ve){
   const now=Date.now(), used=new Set();
   dets.forEach(d=>{
     if(d.d==null) return;
-    let best=-1, bd=YGATE;
+    // 類別不參與匹配。同一台車有 14% 的幀會被判成別的類別（卡車↔車最多），拿它當條件
+    // 只會把一個目標拆成兩個；類別改由累計投票決定，見下。
+    let best=-1, bd=Infinity;
     YTRK.forEach((t,i)=>{
-      if(used.has(i) || t.cls!==d.cls) return;
-      const dd=Math.hypot(ypos(t,ve,now)-d.d, (t.lat-d.lat)*2);   // 橫向抖動加倍看待
-      if(dd<bd){ bd=dd; best=i; }
+      if(used.has(i)) return;
+      const gate=YGATE+YGATE_PER_S*(now-t.tObs)/1000;
+      const dd=Math.hypot(yerr(t,d.d,ve,now), (t.lat-d.lat)*2);   // 橫向抖動加倍看待
+      if(dd<gate && dd<bd){ bd=dd; best=i; }
     });
-    if(best<0){ YTRK.push({cls:d.cls, conf:d.conf, dObs:d.d, lat:d.lat, tObs:now, vObj:null}); return; }
+    if(best<0){
+      YTRK.push({cls:d.cls, vote:{[d.cls]:d.conf}, conf:d.conf, dObs:d.d, lat:d.lat, tObs:now, vObj:null});
+      return;
+    }
     used.add(best);
     const t=YTRK[best], dt=(now-t.tObs)/1000;
     if(dt>0.3){
@@ -594,6 +616,11 @@ function yoloTrack(dets, ve){
       const vObj=Math.max(-3, Math.min(ve+8, ve-(t.dObs-d.d)/dt));
       t.vObj = t.vObj==null ? vObj : t.vObj*0.6+vObj*0.4;
     }
+    // 畫哪一種車由整條軌跡的信心總和決定，不是最後一幀說了算，圖示才不會一直換
+    t.vote[d.cls]=(t.vote[d.cls]||0)+d.conf;
+    let bc=t.cls, bv=-1;
+    for(const k in t.vote){ if(t.vote[k]>bv){ bv=t.vote[k]; bc=+k; } }
+    t.cls=bc;
     t.dObs=d.d; t.lat+=(d.lat-t.lat)*0.6; t.conf=d.conf; t.tObs=now;
   });
   YTRK=YTRK.filter(t=>(now-t.tObs)/1000 < YHOLD);
