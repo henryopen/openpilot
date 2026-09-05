@@ -24,9 +24,17 @@ from openpilot.common.swaglog import cloudlog
 # the line (1.6 against 1.2) and much softer everywhere above walking pace; the request was
 # for the soft half only, so the first two points hold the values this car already had and
 # the rest are eco's, whose 5 m/s breakpoint is exactly the 18 km/h asked for.
+#
+# Eco is flat at 0.5 from 36 to 72 km/h and then steps to 0.3, which wastes the three
+# breakpoints sitting inside that range and leaves a cliff at 72. Driven on 2026-09-05 the
+# band was called too eager, and the log agrees it is felt rather than met occasionally: of
+# the 42 s spent accelerating between 36 and 72 km/h, 69% was commanded at 0.40 or above and
+# the median was 0.41. The three points now taper into the 0.3 at 90 instead, which at a
+# 50 km/h set speed takes 50 -> 60 from 6.0 s to 8.2 s. The same ceiling caps closing on a
+# lead that pulls away, which was 27% of that band, and that is the cost of the change.
 #                     0    10km/h  18    36    54    72    90   144
 A_CRUISE_MAX_BP =   [0.,   2.8,   5.,   10.,  15.,  20.,  25., 40.]
-A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.5,  0.5,  0.5,  0.3, 0.2]
+A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.42, 0.35, 0.32, 0.3, 0.2]
 # Jerk keeps its own breakpoints. It shares the acceleration curve's in stock, and adding
 # points there would silently make the two arrays different lengths.
 J_CRUISE_BP = [0., 10.0, 25., 40.]
