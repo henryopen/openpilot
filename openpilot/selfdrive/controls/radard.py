@@ -21,6 +21,19 @@ _LEAD_ACCEL_TAU = 1.5
 # Sized to reject only the absurd: accepted matches sit 0.8 m apart at the median.
 MAX_SAME_OBJECT_DIST_GAP = 50.0  # m
 
+# A range means nothing without the speed it is read at: 8 m is 0.58 s of headway at 50
+# km/h and 2.9 s at 10 km/h. Over 49 minutes of accepted matches this radar placed the lead
+# inside 0.6 s of headway on 0.53% of frames, at a median of 4.9 m while vision looked 92.7
+# m out and the car was doing 54 km/h. Nothing is there. Those frames carry 94 of the
+# planner's commands below -1 m/s2, nearly three times what the range gate above catches,
+# and the two overlap on less than a third of what they reject, so both are needed.
+# Below 15 km/h the ratio cannot fire at all - 0 of 33201 frames - which leaves stop-and-go
+# and junction crawls alone, and it never fires past 45 m either, so the early warning the
+# radar exists for is untouched: 0 of 5919 frames with the radar between 45 and 100 m, and
+# 0 of the 2386 of those where the radar alone said the lead was closing.
+MIN_SAME_OBJECT_HEADWAY = 0.6  # s
+MIN_HEADWAY_GATE_SPEED = 4.17  # m/s, 15 km/h
+
 # radar tracks
 SPEED, ACCEL = 0, 1     # Kalman filter states enum
 
@@ -172,6 +185,8 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   # in both of those was the one telling the truth.
   same_object = abs(track.vRel + v_ego - lead.v[0]) < 1.5 and abs(track.yRel + lead.y[0]) < 2.0
   same_object = same_object and abs(track.dRel - offset_vision_dist) < MAX_SAME_OBJECT_DIST_GAP
+  same_object = same_object and (v_ego <= MIN_HEADWAY_GATE_SPEED
+                                 or track.dRel > MIN_SAME_OBJECT_HEADWAY * v_ego)
   dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0]) or same_object
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
