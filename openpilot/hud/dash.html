@@ -481,18 +481,36 @@ function drawRoad(F){
     // 掉格保持中的淡一點，對向的再淡一點；橫向位置已不可靠的（25 m 外的旁車）畫得更淡
     const a0 = (L.main?1:0.62) * (L.coast?0.45:1) * (L.onc?0.7:1) * (L.dim?0.5:1);
     const sz = Math.max(13, Math.min(30, 900/(L.d+18))) * (L.main?1.2:0.85);
-    // V 形箭標（有厚度，不是實心大三角）
     const dir = L.onc ? 1 : -1;           // 對向來車的箭頭倒過來指向我們
     const by=p.y, ty=by+sz*1.10*dir;      // by=底部(對齊距離點), ty=尖端
-    const vpath=(k)=>{ cx.beginPath();
-      cx.moveTo(p.x-sz*1.15*k, by); cx.lineTo(p.x, ty);
-      cx.lineTo(p.x+sz*1.15*k, by); cx.lineTo(p.x+sz*0.72*k, by);
-      cx.lineTo(p.x, ty-sz*0.57*k*dir); cx.lineTo(p.x-sz*0.72*k, by); cx.closePath(); };
-    if(L.main){ vpath(1); cx.fillStyle=`rgba(${RGB},.22)`; cx.shadowColor=`rgba(${RGB},.9)`;
-                cx.shadowBlur=26; cx.fill(); cx.fill(); cx.shadowBlur=0; }
-    vpath(1); cx.fillStyle=`rgba(${RGB},${a0})`; cx.fill();
+    // 認出種類就畫那台車，沒認出來就畫箭標 —— 一個目標永遠只有一個圖示。
+    // 位置與距離兩種畫法都來自雷達，種類只是換一個形狀，不會讓圖示自己跑。
+    const KL = leadClass(L);
+    let gw=sz*1.55, gtop=ty-sz*0.30, gbot=by+sz*0.30, gcn=sz*0.55;
+    if(KL){
+      // 照它真實有多大畫：一台轎車 1.8 m 寬、一個人 0.55 m，比例才對得起來
+      const S=SIZE[KL.cls];
+      const wpx=Math.max(8, Math.min(W*0.22, S.w*MPP*p.s*VIEW_K));
+      const hpx=Math.max(10, Math.min(H*0.40, S.h*MPP*p.s*VIEW_K));
+      const vru=YVRU.has(KL.cls);
+      cx.save();
+      cx.globalAlpha=a0*(vru?0.95:0.9);
+      if(vru){ cx.shadowColor=YCLR[KL.cls]; cx.shadowBlur=14; }
+      yIcon(p.x, by, wpx, hpx, KL.cls);
+      cx.restore();
+      gw=wpx*0.62; gtop=by-hpx; gbot=by+sz*0.22; gcn=Math.max(6, hpx*0.18);
+    }else{
+      // V 形箭標（有厚度，不是實心大三角）
+      const vpath=(k)=>{ cx.beginPath();
+        cx.moveTo(p.x-sz*1.15*k, by); cx.lineTo(p.x, ty);
+        cx.lineTo(p.x+sz*1.15*k, by); cx.lineTo(p.x+sz*0.72*k, by);
+        cx.lineTo(p.x, ty-sz*0.57*k*dir); cx.lineTo(p.x-sz*0.72*k, by); cx.closePath(); };
+      if(L.main){ vpath(1); cx.fillStyle=`rgba(${RGB},.22)`; cx.shadowColor=`rgba(${RGB},.9)`;
+                  cx.shadowBlur=26; cx.fill(); cx.fill(); cx.shadowBlur=0; }
+      vpath(1); cx.fillStyle=`rgba(${RGB},${a0})`; cx.fill();
+    }
     if(L.main){                     // leadOne：鎖定角框，一眼看出 openpilot 跟的是哪一台
-      const hw=sz*1.55, top=ty-sz*0.30, bot=by+sz*0.30, cn=sz*0.55;
+      const hw=gw, top=gtop, bot=gbot, cn=gcn;
       cx.strokeStyle='rgba(255,255,255,.95)'; cx.lineWidth=Math.max(2, sz*0.13); cx.lineCap='round';
       const corner=(x,y,dx,dy)=>{ cx.beginPath(); cx.moveTo(x+dx*cn,y); cx.lineTo(x,y); cx.lineTo(x,y+dy*cn); cx.stroke(); };
       corner(p.x-hw, top, 1, 1);  corner(p.x+hw, top, -1, 1);
@@ -530,7 +548,7 @@ function drawRoad(F){
 // yolod 只回傳公尺座標，不回傳畫面：一趟下來是幾百 KB，不是幾百 MB。
 // 距離是單目估的（框底當接地點），對照雷達實測中位偏差約 ±10~20%，遠處只能算「大概位置」，
 // 所以圖示照距離擺、但不標到小數點。
-let YOLO=null, YOLO_T=0, YPEND=null, YTRK=[];
+let YOLO=null, YOLO_T=0, YPEND=null, YFRAME=null;
 const YCLR={0:'#ff6b6b', 1:'#ffd93d', 2:'#8fb4d6', 3:'#ffa726', 5:'#b39ddb', 7:'#9fd6a7'};
 const YNAME={0:'人', 1:'單車', 2:'車', 3:'機車', 5:'公車', 7:'卡車'};
 const YCN={person:'人', bicycle:'單車', car:'車', motorcycle:'機車', bus:'公車',
@@ -559,7 +577,10 @@ async function pollYolo(){
     const r=await fetch(`http://${h}:8903/det.json`,{cache:'no-store',signal:c.signal});
     clearTimeout(t);
     const j=await r.json();
-    if(j.ok){ YOLO=j; YOLO_T=Date.now(); YPEND=j.dets||[]; YSTAT=''; }
+    if(j.ok){ YOLO=j; YOLO_T=Date.now(); YSTAT='';
+      // 車機 1.9 秒才出一幀，這裡 250 ms 拉一次，所以同一批偵測會被拿到七八次。
+      // 只有換了幀才交給下游，否則同一台車會被重複計票、而且永遠不會過期。
+      if(j.t!==YFRAME){ YFRAME=j.t; YPEND=j.dets||[]; } }
     else { YOLO=null;
       // 停用是自己關的，不是壞了，講清楚免得下次看到一串英文以為出問題
       YSTAT = j.reason==='waiting for camerad' ? '待相機'
@@ -571,61 +592,46 @@ async function pollYolo(){
 // 偵測本身約 1.4 秒才一幀，拉太慢等於白等 —— 每次幾百 bytes，區網上不差這點。
 setInterval(pollYolo, 250);
 
-// 偵測是一幀一幀各自算的，一秒又只有 0.8 次，照著畫就是一閃一閃、位置一格一格跳。
-// 這裡把同一個目標接起來（跟 matchLeads 對前車做的同一件事），估出它自己的地面速度，
-// 兩次偵測之間用本車速度把位置補到「現在」；短暫漏看沿用推算值並淡出，不直接消失。
-// 一幀只有 0.52 Hz（推論 849 ms + yolod 讓出 CPU 的 1.04 秒），兩次偵測之間車走了一大段，
-// 所以門檻不能是固定值：等得越久，目標可能跑得越遠。
-const YGATE=3;          // 匹配門檻底線（公尺）
-const YGATE_PER_S=3;    // 每多等一秒再放寬多少（公尺）
-const YHOLD=2.4;        // 漏看多久才放棄（秒）
-function ypos(t, ve, now){ return Math.max(1, t.dObs - (ve-(t.vObj||0))*(now-t.tObs)/1000); }
-
-// 還沒估出目標速度前，它可能是停著的（距離照本車速縮短），也可能跟著車流走（距離不變）。
-// 兩種都合理，所以比對的是這一整段區間而不是一個點。先前這裡拿 vObj||0 當點預測，等於
-// 一律當成停著的：一台同速的前車在 50 km/h、間隔 2 秒下會被預測靠近 28 m，遠超門檻，
-// 於是每一幀都開新軌跡 —— 同一台車在畫面上變成好幾個。
-function yerr(t, d, ve, now){
-  const dt=(now-t.tObs)/1000;
-  if(t.vObj==null){
-    const hi=t.dObs, lo=Math.max(1, t.dObs-ve*dt);
-    return (d>=lo && d<=hi) ? 0 : Math.min(Math.abs(d-lo), Math.abs(d-hi));
-  }
-  return Math.abs(ypos(t,ve,now)-d);
+// 位置一律以雷達為準，這裡只回答「那個雷達目標是什麼車種」。
+//
+// 先前這裡自己養一套軌跡，用單目估的距離畫圖示，於是畫面上同時有兩套目標：雷達的箭標
+// 和視覺的圖示，各自跳動。位置是快變量（每 50 ms 都在變），種類是慢變量（一台車不會
+// 變成機車），把兩者綁在同一個 1.9 秒的更新上，位置就只能跟著慢的那個跳。
+// 拆開之後：位置吃雷達 20 Hz，種類認出來一次就跟著雷達的 id 走。
+//
+// 認不出來的就不猜。以前未知類別會落進 SIZE[t.cls]||SIZE[2]，把停止標誌畫成一台汽車。
+const YMATCH_MIN=5;     // 配對門檻底線（公尺）
+const YMATCH_FRAC=0.25; // 單目測距誤差約一成到兩成，遠的放寬
+const CLS_TTL=20000;    // 這個 id 消失這麼久就忘掉它的種類（毫秒）
+const LEADCLS=new Map();  // 雷達目標 id -> {cls, vote, t}
+function yoloClassify(dets, F){
+  const now=Date.now();
+  (dets||[]).forEach(d=>{
+    if(d.d==null || !(d.cls in SIZE)) return;   // 表上沒有的類別不畫，也不猜成車
+    let best=null, bd=Infinity;
+    (F.leads||[]).forEach(L=>{
+      if(L.id==null || L.d==null) return;
+      // 橫向對不上比縱向更說明不是同一台，所以橫向差距加權看待
+      const dd=Math.hypot(L.d-d.d, (L.y-(d.lat||0))*2.5);
+      if(dd<bd){ bd=dd; best=L; }
+    });
+    if(best===null) return;
+    if(bd > Math.max(YMATCH_MIN, YMATCH_FRAC*d.d)) return;
+    const e=LEADCLS.get(best.id) || {vote:{}, cls:null, t:now};
+    // 累計信心投票，不讓最後一幀單獨決定：同一台車有 14% 的幀會被判成別的類別
+    e.vote[d.cls]=(e.vote[d.cls]||0)+d.conf;
+    let bc=null, bv=-1;
+    for(const k in e.vote){ if(e.vote[k]>bv){ bv=e.vote[k]; bc=+k; } }
+    e.cls=bc; e.conf=d.conf; e.t=now;
+    LEADCLS.set(best.id, e);
+  });
+  LEADCLS.forEach((e,k)=>{ if(now-e.t>CLS_TTL) LEADCLS.delete(k); });
 }
 
-function yoloTrack(dets, ve){
-  const now=Date.now(), used=new Set();
-  dets.forEach(d=>{
-    if(d.d==null) return;
-    // 類別不參與匹配。同一台車有 14% 的幀會被判成別的類別（卡車↔車最多），拿它當條件
-    // 只會把一個目標拆成兩個；類別改由累計投票決定，見下。
-    let best=-1, bd=Infinity;
-    YTRK.forEach((t,i)=>{
-      if(used.has(i)) return;
-      const gate=YGATE+YGATE_PER_S*(now-t.tObs)/1000;
-      const dd=Math.hypot(yerr(t,d.d,ve,now), (t.lat-d.lat)*2);   // 橫向抖動加倍看待
-      if(dd<gate && dd<bd){ bd=dd; best=i; }
-    });
-    if(best<0){
-      YTRK.push({cls:d.cls, vote:{[d.cls]:d.conf}, conf:d.conf, dObs:d.d, lat:d.lat, tObs:now, vObj:null});
-      return;
-    }
-    used.add(best);
-    const t=YTRK[best], dt=(now-t.tObs)/1000;
-    if(dt>0.3){
-      // 距離縮短的速率就是「本車速 − 目標速」，反推目標自己多快，下一段才推得準
-      const vObj=Math.max(-3, Math.min(ve+8, ve-(t.dObs-d.d)/dt));
-      t.vObj = t.vObj==null ? vObj : t.vObj*0.6+vObj*0.4;
-    }
-    // 畫哪一種車由整條軌跡的信心總和決定，不是最後一幀說了算，圖示才不會一直換
-    t.vote[d.cls]=(t.vote[d.cls]||0)+d.conf;
-    let bc=t.cls, bv=-1;
-    for(const k in t.vote){ if(t.vote[k]>bv){ bv=t.vote[k]; bc=+k; } }
-    t.cls=bc;
-    t.dObs=d.d; t.lat+=(d.lat-t.lat)*0.6; t.conf=d.conf; t.tObs=now;
-  });
-  YTRK=YTRK.filter(t=>(now-t.tObs)/1000 < YHOLD);
+// 畫面上這個雷達目標認出來了嗎
+function leadClass(L){
+  const e = L && L.id!=null ? LEADCLS.get(L.id) : null;
+  return e && e.cls!=null ? e : null;
 }
 
 // 每種目標畫多大，照它真實有多大：一個人 1.7 m 高、0.55 m 寬，一台轎車 1.5 m 高、1.8 m 寬。
@@ -766,18 +772,6 @@ function vehicle(x, y, w, h, cls){
   cx.fill();
 }
 
-// 雷達每秒 20 次、距離是量出來的；這裡的距離是單目從框底估的，1.5 秒才一次。兩邊講的是
-// 同一台車時，位置聽雷達的，種類還是這裡認的 —— 各自給出它擅長的那一半。
-function radarFor(t, d, F){
-  let best=null, bd=7;
-  (F.leads||[]).forEach(L=>{
-    if(L.d==null) return;
-    const dd=Math.hypot(L.d-d, (L.y-(t.lat||0))*2.5);   // 橫向對不上比縱向更說明不是同一台
-    if(dd<bd){ bd=dd; best=L; }
-  });
-  return best;
-}
-
 function drawYolo(F){
   const live = YOLO && Date.now()-YOLO_T<4000;
   // 小小的狀態燈：辨識沒在跑的時候，畫面上沒有圖示跟「真的沒東西」長得一樣
@@ -788,45 +782,10 @@ function drawYolo(F){
                              .map(([k,v])=>`${YCN[k]||k}${v}`).join(' ') : YSTAT;
   cx.fillText(`YOLO ${tally||'—'}`, W-14, H-86);
   cx.restore();
-  if(!live){ YTRK=[]; clearLight(); return; }   // 辨識停了就收起燈牌，不要留一顆假的在上面
+  if(!live){ LEADCLS.clear(); clearLight(); return; }  // 辨識停了就收起燈牌和已認出的種類
 
-  const ve=Math.max(0,(F.vEgo||0))/3.6;      // F.vEgo 是 km/h，外推要用 m/s
-  if(YPEND){ yoloTrack(YPEND, ve); YPEND=null; }
-  const now=Date.now();
-
-  // 遠的先畫，近的疊在上面
-  YTRK.map(t=>({t, d:ypos(t,ve,now)})).sort((a,b)=>b.d-a.d).forEach(({t,d})=>{
-    const R=radarFor(t, d, F);
-    const dd=R ? R.d : d, lat=R ? R.y : (t.lat||0);
-    const p=px(dd, lat);
-    if(p.x<-40 || p.x>W+40) return;
-    // 這個投影為了讓車道看得清楚，把近景放得比真實相機大，所以照實際公尺畫會過大。
-    // 縮一個固定係數，相對比例（公車比卡車高、行人比轎車矮）就都還在。
-    const S=SIZE[t.cls]||SIZE[2];
-    const wpx=Math.max(4, Math.min(W*0.22, S.w*MPP*p.s*VIEW_K));
-    const hpx=Math.max(5, Math.min(H*0.40, S.h*MPP*p.s*VIEW_K));
-    const s=Math.max(11, Math.min(26, hpx*0.30));   // 標籤字級，不跟著車身一起放大
-    const vru=YVRU.has(t.cls);
-    const held=(now-t.tObs)/1000;
-    const fade=held<1.0 ? 1 : Math.max(0, 1-(held-1.0)/(YHOLD-1.0));   // 漏看就淡出，不是瞬間消失
-    cx.save();
-    // 車輛不再畫淡：形狀要說出是轎車、卡車還是公車，就得看得清楚才有意義
-    cx.globalAlpha=(vru?0.95:0.85)*Math.min(1,(t.conf||0.4)+0.35)*fade;
-    if(vru){ cx.shadowColor=YCLR[t.cls]; cx.shadowBlur=14; }
-    yIcon(p.x, p.y, wpx, hpx, t.cls);
-    cx.restore();
-    if(vru && dd<70){                       // 只有行人／二輪標距離，不跟前車大字搶
-      cx.save();
-      cx.globalAlpha=0.95*fade; cx.textAlign='center';
-      cx.font=`800 ${s}px system-ui`;
-      cx.lineWidth=Math.max(2.5, s*0.18); cx.strokeStyle='rgba(4,7,10,.92)'; cx.lineJoin='round';
-      const label=`${YNAME[t.cls]||''} ${dd.toFixed(0)}`;
-      const ly=p.y+s*0.95;
-      cx.strokeText(label, p.x, ly);
-      cx.fillStyle=YCLR[t.cls]; cx.fillText(label, p.x, ly);
-      cx.restore();
-    }
-  });
+  // 這裡不再畫任何目標。認出來的種類交給雷達目標那一段去畫，一台車只會有一個圖示。
+  if(YPEND){ yoloClassify(YPEND, F); YPEND=null; }
 
   // 號誌不畫在路面上：燈懸在空中，投影到地面沒有意義。改用右側的燈牌（HTML，不在這張畫布上）
   showLight(YOLO.lights||[]);

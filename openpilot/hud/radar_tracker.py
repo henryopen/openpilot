@@ -11,6 +11,15 @@ LANE_HALF = 5.5          # keep this lane and the two beside it; roadside sits o
 STATIC_TH = 2.5          # |vRel + vEgo| under this is something standing still
 MIN_RANGE = 2.0          # closer than this is bumper clutter
 
+# Standing still is how a guardrail is told from traffic, but it is also what the car in
+# front does at a red light, and dropping those left the display empty exactly when the
+# driver is looking at it. Over 30 segments the targets this rule discarded inside our own
+# lane sit at a median 4.8 m with the car itself stopped, which is the queue ahead, not
+# scenery - 88% of them are logged while we are under 5 km/h. Keep the ones directly ahead
+# and close; a guardrail is out to the side, so the lateral test still does the filtering.
+STATIC_KEEP_Y = 2.0      # m, within our own lane
+STATIC_KEEP_D = 30.0     # m, near enough to be the queue rather than roadside furniture
+
 LANE_NAME = {-2: '右右', -1: '右', 0: '前', 1: '左', 2: '左左'}
 
 
@@ -36,8 +45,9 @@ def relevant(groups, v_ego):
   for g in groups:
     if abs(g['yRel']) > LANE_HALF:
       continue
-    if abs(g['vRel'] + v_ego) < STATIC_TH:   # standing still, so scenery
-      continue
+    if abs(g['vRel'] + v_ego) < STATIC_TH:   # standing still: scenery, or the queue ahead
+      if abs(g['yRel']) > STATIC_KEEP_Y or g['dRel'] > STATIC_KEEP_D:
+        continue
     if g['dRel'] < MIN_RANGE:
       continue
     g['lane'] = lane_of(g['yRel'])
