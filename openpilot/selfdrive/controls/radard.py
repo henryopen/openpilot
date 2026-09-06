@@ -17,6 +17,10 @@ from openpilot.common.simple_kalman import KF1D
 # Default lead acceleration decay set to 50% at 1s
 _LEAD_ACCEL_TAU = 1.5
 
+# How far the radar and vision may disagree on range and still be called the same car.
+# Sized to reject only the absurd: accepted matches sit 0.8 m apart at the median.
+MAX_SAME_OBJECT_DIST_GAP = 50.0  # m
+
 # radar tracks
 SPEED, ACCEL = 0, 1     # Kalman filter states enum
 
@@ -157,7 +161,17 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   # gate rejects, the lateral disagreement is 0.3 m at the median; letting those through
   # raises accepted frames from 77.9% to 91.7% by day and from 57.9% to 79.7% at night, and
   # what it admits disagrees on distance by 3.9 m at the median while agreeing on speed.
+  # Matching on speed and lateral position alone leaves nothing checking the range at all,
+  # and this radar will hold a target on a bridge's noise barrier that is doing our own
+  # speed on our own centreline - both tests pass while it reads 7 m against vision's 101.
+  # Twice on 2026-09-06 that reached the planner as a car a metre and a half ahead at 60
+  # km/h and it braked to 2.8 m/s2 with the road visibly empty. So the range still has to be
+  # in the same world: over 49 minutes of accepted matches the two disagree by 0.8 m at the
+  # median and 10.4 m at p95, while those two events disagreed by 83 and 103 m. A 50 m
+  # ceiling turns away 0.80% of matches, and what it turns away falls back to vision, which
+  # in both of those was the one telling the truth.
   same_object = abs(track.vRel + v_ego - lead.v[0]) < 1.5 and abs(track.yRel + lead.y[0]) < 2.0
+  same_object = same_object and abs(track.dRel - offset_vision_dist) < MAX_SAME_OBJECT_DIST_GAP
   dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0]) or same_object
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
