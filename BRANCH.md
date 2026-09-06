@@ -115,7 +115,26 @@ openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx | 2 +-
 並據此建議不要合 —— 那是只看 commit 標題沒看 diff 的結果。**看到「換模型」的 commit
 MUST 先 `git show --stat` 確認是 big 還是標準。**
 
-### 剩下的合併風險
+### ⚠️ 真正的風險：合上游是一次系統升級，不是一次 merge
+
+**`merge-tree` 回報乾淨，是因為下面這三件事在 git 眼中只是三個 submodule 指標
+和一行環境變數。它們每一件都會在重開機時對車機做實體動作。**
+
+| 動作 | 現在（車機實測） | 合併後 |
+|---|---|---|
+| **AGNOS 系統版本** | **19.6** | **19.7** —— `launch_env.sh` 的 `AGNOS_VERSION` 改了，開機自動刷 OS 分區 |
+| **panda 韌體** | `dd8a5b3df` | `75aa44bec` —— 開機自動重刷 panda |
+| **tinygrad** | `138fb4a78` | `f6fc4e3f2` —— modeld 要重新 JIT 編譯，第一次開機很久 |
+| 依賴 | — | `uv.lock` 有變 |
+
+⚠️ **panda 那條最危險**：flash 失敗車就不能開。2026-09-07 凌晨一次單純的重開機就撞到過
+`spi.py erase_sector` 的 `pandad.uncaught_exception`（2036 個 swaglog 裡只出現過 2 次，
+重試後恢復）。韌體換版會讓這條路徑必然被走一次。
+
+**所以合上游要當成「找一天車不急著用、有時間處理的系統升級」來排，不是「merge 一下」。**
+升級前先確認備份（見 memory `custin-c4-device-setup`）。
+
+### 其餘的合併風險（低）
 
 上游把 `UsbGpu*` 全面改名成 `Chestnut*`（params、`modelV2.big`、`selfdrived`、`helpers`）。
 我們沒有自己引用 `usbgpu`，那些出現全是 stock code，合併時會一起改掉，**語意風險低**。
@@ -123,14 +142,13 @@ MUST 先 `git show --stat` 確認是 big 還是標準。**
 上游**沒有動到**我們改的任何控制檔（`longitudinal_planner`、`radard`、`long_mpc`、
 `desire_helper`、`latcontrol_torque`、`cruise.py` 都不在交集裡）。
 
-**尚未逐一驗證的**：58 commit 共 207 個檔案，上面只查證了模型與 modeld 這條線。
-其餘改動沒有逐檔看過，合併後仍應跑一趟再上路。
-
 ### 建議的合併順序
 
 1. 先實車驗完手上未驗證的改動（見 memory `MEMORY.md` 的上路清單），
    免得上游改動與自己的改動混在一起，分不清行為變化是誰造成的
-2. 開一個分支合上游，在那邊編譯 + 跑車機驗證腳本，確認無誤再進 `hcop`
+2. 挑一個車不急著用的時段，**當作系統升級來做**：合上游 → 編譯 →
+   重開機（會刷 AGNOS 19.7 + panda 韌體 + 重編 tinygrad）→ 確認 `pandad` 沒有
+   `uncaught_exception`、三服務 active、`git status` 乾淨 → 才上路
 
 ---
 
