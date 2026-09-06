@@ -288,6 +288,14 @@ class LongitudinalPlanner:
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
 
+    # The model plans a stop but brakes at about two thirds of what reaching it takes, and
+    # the shortfall compounds. Hold it to the deceleration the distance it says it has needs.
+    # This can only ever brake harder, and it is only reachable when the handoff is armed -
+    # which needs no lead, no turn desire, and the model's own plan collapsing to a stop.
+    if self.junction.a_floor < min(output_a_target, 0.0):
+      output_a_target = self.junction.a_floor
+      self.mpc.source = LongitudinalPlanSource.e2e
+
     # name what set this accel, so the display can say so: the junction stop reports as the
     # mpc's e2e obstacle outside experimental mode, and the curve limiter hides inside cruise
     reason = PLAN_REASONS.get(self.mpc.source, PlanReason.cruise)
