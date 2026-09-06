@@ -32,6 +32,30 @@ JERK_GAIN = 0.3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
+# The assumption above holds at speed and falls apart below it: lateral acceleration is
+# curvature times speed squared, so at 15 km/h a junction turn asks for a couple of m/s^2
+# while the steering rack still has to be forced round against a stationary tyre. Measured
+# on this car, the same torque produces 0.08 of the lateral acceleration the model predicts
+# at 10-20 km/h and 2.8 of it above 70. The error is what shrinks with speed, so scale the
+# error back up rather than inventing a second feedforward. Same curve as the one openpilot
+# used to carry here and that StarPilot and CarrotPilot both still do.
+LOW_SPEED_X = [0, 10, 20, 30]
+LOW_SPEED_Y = [12, 10.5, 8, 5]
+LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
+
+# Planned jerk comes out of a difference between buffer entries, so it carries the high
+# frequency of the request straight through. It is worth clipping before the friction term
+# sees it, but it is NOT worth leading the setpoint with: replaying this car's own drives,
+# setpoint += jerk * lat_delay doubled the frame-to-frame movement of the feedforward
+# (p99 10.5 -> 20.8 counts) to buy 1 count of median feedforward. StarPilot carries that
+# lead, but with a small-signal deadzone alongside it that there is nothing here to size.
+MAX_LAT_JERK = 2.5  # m/s^3
+
+# Coming out of a turn the integrator is holding wind-up from the turn itself; letting it
+# keep integrating through the unwind is what makes the wheel come back late and overshoot.
+UNWIND_SETPOINT_RATE = -1.0  # m/s^3
+UNWIND_NEAR_ZERO = 0.3       # m/s^2
+
 class LatControlTorque(LatControl):
   def __init__(self, CP, CI, dt):
     super().__init__(CP, CI, dt)
@@ -45,6 +69,11 @@ class LatControlTorque(LatControl):
     self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len , maxlen=self.lat_accel_request_buffer_len)
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
+    self.prev_setpoint = 0.0
+
+  def reset(self):
+    super().reset()
+    self.prev_setpoint = 0.0
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -70,12 +99,23 @@ class LatControlTorque(LatControl):
 
     delay_frames = int(np.clip(lat_delay / self.dt + 1, 1, self.lat_accel_request_buffer_len))
     expected_lateral_accel = self.lat_accel_request_buffer[-delay_frames]
-    setpoint = expected_lateral_accel
-    error = setpoint - measurement
 
     lookahead_idx = int(np.clip(-delay_frames + self.lookahead_frames, -self.lat_accel_request_buffer_len+1, -2))
     raw_lateral_jerk = (self.lat_accel_request_buffer[lookahead_idx+1] - self.lat_accel_request_buffer[lookahead_idx-1]) / (2 * self.dt)
-    desired_lateral_jerk = self.jerk_filter.update(raw_lateral_jerk)
+    desired_lateral_jerk = float(np.clip(self.jerk_filter.update(raw_lateral_jerk), -MAX_LAT_JERK, MAX_LAT_JERK))
+
+    setpoint = expected_lateral_accel
+    setpoint_rate = (setpoint - self.prev_setpoint) / self.dt
+    unwinding = setpoint_rate < UNWIND_SETPOINT_RATE and abs(setpoint) < UNWIND_NEAR_ZERO
+    self.prev_setpoint = setpoint
+
+    # correcting in lateral acceleration space understates how far off the car is at low
+    # speed, where the same miss is worth far less acceleration; scale it back to what the
+    # steering rack actually has to do
+    low_speed_factor = (np.interp(CS.vEgo, LOW_SPEED_X, LOW_SPEED_Y) / max(CS.vEgo, LOW_SPEED_MIN)) ** 2
+    current_kp = np.interp(CS.vEgo, INTERP_SPEEDS, KP_INTERP)
+    error = (setpoint - measurement) * (1 + low_speed_factor / max(current_kp, 1e-3))
+
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     ff = gravity_adjusted_future_lateral_accel
     # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
@@ -89,7 +129,7 @@ class LatControlTorque(LatControl):
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
 
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or unwinding
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 
