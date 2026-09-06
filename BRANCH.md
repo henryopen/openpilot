@@ -131,6 +131,19 @@ MUST 先 `git show --stat` 確認是 big 還是標準。**
 `spi.py erase_sector` 的 `pandad.uncaught_exception`（2036 個 swaglog 裡只出現過 2 次，
 重試後恢復）。韌體換版會讓這條路徑必然被走一次。
 
+**那三個升級各自帶來什麼（2026-09-07 查證，不要再憑猜）**：
+
+| 升級 | 實際內容 | 對這台車 |
+|---|---|---|
+| AGNOS 19.7 | PR #38750 全文：`fix soundd/micd race`、`bump tg gpu fw` | soundd/micd 歷來 `uncaught_exception` **0 次**，沒踩到；**GPU 韌體影響未知** |
+| panda `75aa44be` | 只有一個 commit：`health packet cleanup (#2425)` | 純整理，無功能 |
+| tinygrad 211 commit | openpilot 端唯一用到的 `TC_MIN_GLOBALS=32` 寫在 **`chestnut_tg_flags`**，標準路徑 flags 未改 | 最佳化是給 chestnut 的；標準路徑只拿到新編譯器的副作用，好壞未知 |
+
+同批的 `TGC`、`BMRLNAP`、`amd warp`、`fall back on invalid big model outputs` 也全在 big model 路徑。
+
+→ **三者唯一可能對我們有益的是 AGNOS 那行 `bump tg gpu fw`，而它的效果事前無法得知。**
+拿「未知的收益」去換 OS + 韌體 + 重編的風險，只有在沒有更重要的事要驗時才划算。
+
 **所以合上游要當成「找一天車不急著用、有時間處理的系統升級」來排，不是「merge 一下」。**
 升級前先確認備份（見 memory `custin-c4-device-setup`）。
 
