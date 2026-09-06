@@ -80,31 +80,57 @@
 
 opendbc 兩邊的改動檔案**交集為空**。
 
-### ⚠️ 但 git 說能合 ≠ 合了能跑
+### 上游那個新模型跟我們無關（2026-09-07 查證）
 
-**真正的風險是上游換了駕駛模型（cinque terre），而 git 不會為此報任何衝突。**
+上游最新是 `c51e3e5a7`「cinque terre model」，看名字像是換了駕駛模型，**但它只改一個檔**：
 
-我們這些調校**全部是照舊模型的輸出行為量出來的**：
+```
+openpilot/selfdrive/modeld/models/big_driving_supercombo.onnx | 2 +-
+```
 
-| 依賴模型行為的東西 | 依賴什麼 |
+**是 big model，不是我們跑的那個。** 58 個 commit 裡動到模型檔的三個
+（`c51e3e5a7` cinque terre、`a2e422eee` TGC、`4adbb8574` BMRLNAP）**全部只動 big**，
+標準的 `driving_supercombo.onnx` 一行沒動。
+
+車機實測（`comma mici`）：
+
+| | |
 |---|---|
-| `junction_handoff` 的 arm 條件 | 「模型自己的規劃塌陷成停止」 |
-| `junction_handoff.a_floor` | 量到「模型只煞到需求的三分之二」 |
-| `curve_speed` 的門檻 | 模型看得到的彎道曲率 |
-| `stop_for_lights` | 模型的 `shouldStop`（已停用） |
-| turn desire 的 5–40 km/h 門檻 | 模型對轉彎意圖的反應 |
+| `UsbGpuActive` / `UsbGpuLoading` | **0 / 0** |
+| `driving_supercombo.onnx` | **60.9 MB ← 實際跑這個** |
+| `big_driving_supercombo.onnx` | 1.76 GB（有下載，沒啟用） |
 
-**換模型後這些數字可能整組失效，症狀是行為變差而不是報錯。**
+`modeld.py` 的 `USBGPU = usbgpu_present() and usbgpu_compiled()` 為 False —— big model 需要
+外接 chestnut USB GPU，這台沒有。
 
-上游同批還把 `UsbGpu*` 全面改名成 `Chestnut*`（params、`modelV2.big`、`selfdrived`）。
+**模型輸出語意也沒變**：`parse_model_outputs.py` 和 `constants.py` **一行沒動**，
+`fill_model_msg.py` 只 +1 行（把 `big` 旗標轉發到 `driving_model_data`）。
+`helpers.py` 的改動純粹是 `usbgpu` → `chestnut` 改名，邏輯相同（`prefix = 'big_' if chestnut else ''`），
+標準模型走的 `prefix = ''` 那條不變。
+
+⚠️ **所以以下這些調校不受這批上游影響**（它們依賴的是模型行為，而模型沒換）：
+`junction_handoff` 的 arm 條件與減速地板、`curve_speed` 門檻、turn desire 的 5–40 km/h 頻寬。
+
+**這一段是 2026-09-07 更正的。** 初版盤點誤以為 cinque terre 換掉了我們跑的模型，
+並據此建議不要合 —— 那是只看 commit 標題沒看 diff 的結果。**看到「換模型」的 commit
+MUST 先 `git show --stat` 確認是 big 還是標準。**
+
+### 剩下的合併風險
+
+上游把 `UsbGpu*` 全面改名成 `Chestnut*`（params、`modelV2.big`、`selfdrived`、`helpers`）。
 我們沒有自己引用 `usbgpu`，那些出現全是 stock code，合併時會一起改掉，**語意風險低**。
+
+上游**沒有動到**我們改的任何控制檔（`longitudinal_planner`、`radard`、`long_mpc`、
+`desire_helper`、`latcontrol_torque`、`cruise.py` 都不在交集裡）。
+
+**尚未逐一驗證的**：58 commit 共 207 個檔案，上面只查證了模型與 modeld 這條線。
+其餘改動沒有逐檔看過，合併後仍應跑一趟再上路。
 
 ### 建議的合併順序
 
-1. 先實車驗完手上未驗證的改動（見 memory `MEMORY.md` 的上路清單）
-2. 開一個分支合上游，**不要在 `hcop` 上直接合**
-3. 在那個分支上重新量模型行為：junction handoff 觸發率、減速地板是否還適用、turn desire 命中率
-4. 兩者混在一起就分不清行為變化是誰造成的 —— 這是不建議現在合的唯一理由
+1. 先實車驗完手上未驗證的改動（見 memory `MEMORY.md` 的上路清單），
+   免得上游改動與自己的改動混在一起，分不清行為變化是誰造成的
+2. 開一個分支合上游，在那邊編譯 + 跑車機驗證腳本，確認無誤再進 `hcop`
 
 ---
 
