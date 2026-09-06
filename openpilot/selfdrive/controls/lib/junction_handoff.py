@@ -16,9 +16,11 @@ within the next eight seconds, against 10.4 s when it does not:
         7 s         76.5%           14.1%
         9 s         85.8%           26.9%
 
-7 s is taken. A frame counted there as tripped is not a braking event: arming only adds the
-model's plan to the candidates, and min() still takes the most conservative, so the model
-has to ask for the deceleration itself before anything moves.
+7 s is taken. Arming only adds the model's plan to the candidates and min() still takes the
+most conservative, which was first written down as a reason not to mind tripping. It is not:
+measured on 2026-09-06, over the 11 minutes the mode was armed with a lead in front, the
+model's plan was the one setting the acceleration 56.5% of the time. A trip is felt. That is
+why the lead now vetoes outright rather than being reasoned around.
 
 The raw signal is noisy - on one approach the path read 100 m, then 42, then 60, then 25 in
 consecutive seconds - so it is filtered, and entering and leaving use different margins.
@@ -50,14 +52,17 @@ BOOSTS = [1.0, 1.0, 1.2]
 CAPS = [0.0, 0.0, 1.0]
 THRESHOLD = 1.0 - 1.0 / np.e    # a filtered condition has to hold for about one time constant
 
-# A lead nearer than the stop threshold is the queue at the junction, not a reason to say
-# there is no junction - that conflation is what kept the older forks from arming at a red
-# light with a car in front. A lead that is itself stopped lifts that veto, and only that:
-# the model still has to see the path end before anything arms. Letting the stopped lead
-# arm on its own instead put the mode on for half of a town drive, most of it standing
-# still behind a car with the path reading long - see the note on `armed` below.
+# A lead inside the stopping distance vetoes the handoff outright. Braking for a car in
+# front is the lead MPC's job and it is already doing it; the model has nothing to add
+# there, and everything it does add is felt.
+#
+# This was twice written the other way, on the reasoning that a queue at a red light is a
+# junction and the model should take it. Measured over 56 engaged minutes on 2026-09-06 the
+# reasoning does not survive: the mode was on for 21% of the drive, 93% of that with a lead,
+# and every one of the 50 arming events that had a lead had a lead that was barely moving.
+# Those are traffic queues, not junctions. Vetoing on the lead alone takes the mode from
+# 21% to 1.2% of the drive and from 62 arming events to 12, none of which have a lead.
 LEAD_BLOCK_MARGIN = 15.0
-LEAD_HANDOFF_SPEED = 2.0
 
 # Mid-turn the path is short because the road bends, not because it ends.
 TURN_VETO_SPEED = 24 * CV.KPH_TO_MS
@@ -112,18 +117,9 @@ class JunctionHandoff:
       self.model_detected = path < max(threshold - ON_MARGIN, 0.0)
 
     lead_relevant = lead is not None and bool(lead.present) and lead.dRel < threshold + LEAD_BLOCK_MARGIN
-    handoff = lead_relevant and lead.vLead < LEAD_HANDOFF_SPEED
-    if handoff:
-      lead_cleared = True
-    else:
-      self.lead_clear_filter.update(not lead_relevant)
-      lead_cleared = self.lead_clear_filter.x >= THRESHOLD
+    self.lead_clear_filter.update(not lead_relevant)
+    lead_cleared = self.lead_clear_filter.x >= THRESHOLD
 
-    # The stopped lead reaches this only through lead_cleared. Arming on it directly held
-    # the mode on for 49.9% of an engaged town drive on 2026-09-05, 87% of that from this
-    # one path; 73% of those frames were standing still and 80% had the path longer than
-    # the threshold, which is the model saying there is no junction. Replayed over the same
-    # drive this line drops it to 31.6% and still catches all six real stops.
     self.filter.update(self.model_detected and lead_cleared)
     armed = self.filter.x >= THRESHOLD
 
