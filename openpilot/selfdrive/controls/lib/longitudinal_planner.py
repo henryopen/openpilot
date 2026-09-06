@@ -40,6 +40,18 @@ A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.42, 0.35, 0.32, 0.3, 0.2]
 J_CRUISE_BP = [0., 10.0, 25., 40.]
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MIN = -1.2
+# Stopped behind a car that has not moved, do not creep the last metre in to STOP_DISTANCE.
+# This car stops a systematic 1.5-2 m short of the 6 m target - 40 stops on 2026-09-06 sat
+# at 3.6-4.9 m - so the MPC spends the wait asking for the gap it did not get. Frames
+# stopped inside 10 m creep 5.3% of the time, but split by where it stopped: 0.5% inside
+# 3 m, 2.3% from 3 to 5, 13.7% from 5 to 6, 38.3% from 6 to 7 and 60.4% beyond that, with
+# aTarget reaching +1.36. Requiring the radar's own vRel to say the lead is not leaving
+# keeps this off a real pull-away: of 3709 stopped frames where the lead was opening at
+# 0.3 m/s or more, this holds back none of them. The radar is required because vision's
+# range on a stopped car is what creates the false gap in the first place.
+STANDSTILL_CREEP_SPEED = 0.5  # m/s
+STANDSTILL_CREEP_DIST = 9.0  # m
+STANDSTILL_CREEP_VREL = 0.3  # m/s
 # Comfort jerk for tracking the set speed. A plain proportional law on the speed error
 # (gain 1.0) saturates at max_accel or A_CRUISE_MIN for any error over ~1.2 m/s, so it holds
 # full accel or full decel until the last 4 km/h and then drops off abruptly. Shaping the
@@ -307,6 +319,15 @@ class LongitudinalPlanner:
       reason = PlanReason.stopLight
     self.plan_reason = reason
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
+
+    # See STANDSTILL_CREEP_* above. Stateless on purpose: the lead opening up clears it on
+    # the same frame, so there is nothing to get stuck in.
+    lead = sm['radarState'].leadOne
+    if (v_ego < STANDSTILL_CREEP_SPEED and lead.present and lead.radar
+        and lead.dRel < STANDSTILL_CREEP_DIST and lead.vRel < STANDSTILL_CREEP_VREL
+        and not sm['carState'].gasPressed):
+      output_a_target = min(output_a_target, 0.0)
+
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
     self.v_desired_filter.x = self.v_desired_filter.x + self.dt * (self.output_a_target + a_prev) / 2.0

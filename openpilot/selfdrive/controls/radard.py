@@ -59,6 +59,19 @@ LEAD_HOLD_MIN_PROB = 0.2
 LEAD_HOLD_MAX_TIME = 3.0
 LEAD_HOLD_MIN_SPEED = 3.0
 
+# Stopped, the same hold is needed for the opposite failure. The lead is still 'present' -
+# vision has one - but the radar track under it has gone, and vision reads a stopped car at
+# 3-4 m as anywhere between 3.3 and 14.8 m. The planner sees the gap open and creeps.
+# Over 22 minutes of stopped-and-close frames on 2026-09-06 the radar track dropped out 60
+# times, 1.3 times a minute, and those frames creep 44.0% of the time against 5.3% for
+# stopped frames as a whole. The drops are short - 0.20 s at the median, 1.21 s at p90 and
+# 2.70 s at the longest - so LEAD_HOLD_MAX_TIME covers all of them with room to spare.
+# Only held when vision reports the lead further away than the radar last did: reading it
+# closer is the safe direction and is believed immediately.
+LEAD_HOLD_STANDSTILL_SPEED = 0.5  # m/s
+LEAD_HOLD_STANDSTILL_DIST = 10.0  # m
+LEAD_HOLD_STANDSTILL_JUMP = 1.0  # m
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -264,13 +277,22 @@ class LeadHold:
     self.lead: dict[str, Any] | None = None
     self.held = 0.
 
+  def _standstill_radar_loss(self, lead: dict[str, Any], v_ego: float) -> bool:
+    """Stopped, and the radar track under the lead has gone while vision reads it further."""
+    return (v_ego < LEAD_HOLD_STANDSTILL_SPEED and self.lead is not None
+            and self.lead['radar'] and not lead['radar']
+            and self.lead['dRel'] < LEAD_HOLD_STANDSTILL_DIST
+            and lead['dRel'] > self.lead['dRel'] + LEAD_HOLD_STANDSTILL_JUMP)
+
   def update(self, lead: dict[str, Any], raw_prob: float, v_ego: float) -> dict[str, Any]:
-    if lead['present']:
+    standstill_loss = self._standstill_radar_loss(lead, v_ego)
+    if lead['present'] and not standstill_loss:
       self.lead = dict(lead)
       self.held = 0.
       return lead
 
-    if (self.lead is None or v_ego < LEAD_HOLD_MIN_SPEED or raw_prob < LEAD_HOLD_MIN_PROB
+    if (self.lead is None or (v_ego < LEAD_HOLD_MIN_SPEED and not standstill_loss)
+        or raw_prob < LEAD_HOLD_MIN_PROB
         or self.held >= LEAD_HOLD_MAX_TIME or self.lead['dRel'] > LEAD_HOLD_MAX_DIST):
       self.lead = None
       self.held = 0.
