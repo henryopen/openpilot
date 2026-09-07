@@ -43,6 +43,16 @@ LOW_SPEED_X = [0, 10, 20, 30]
 LOW_SPEED_Y = [12, 10.5, 8, 5]
 LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
 
+# Upstream freezes the integrator below 5 m/s. That guard is for cars whose rack will not
+# move at low speed; this one is a full-time lateral car with minSteerSpeed = 0, so all it
+# does here is switch the integrator off for the whole junction speed range. Measured over
+# the 2026-09-06 drive (294k active frames): in a turn held steady at 10-20 km/h the
+# integrator sat at |I| p50 0.1032 with p90 0.1034 -- frozen, not small -- and the car
+# stayed 11% short of the requested curvature no matter how long the turn was held, while
+# above 45 km/h the same shortfall decayed to 4%. Take the threshold from the car, the way
+# StarPilot does, and keep a floor so it still resets at a standstill.
+MIN_LATERAL_CONTROL_SPEED = 0.3  # m/s
+
 # Planned jerk comes out of a difference between buffer entries, so it carries the high
 # frequency of the request straight through. It is worth clipping before the friction term
 # sees it, but it is NOT worth leading the setpoint with: replaying this car's own drives,
@@ -72,6 +82,7 @@ class LatControlTorque(LatControl):
     self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
+    self.integrator_reset_speed = max(CP.minSteerSpeed, MIN_LATERAL_CONTROL_SPEED)
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
     self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len , maxlen=self.lat_accel_request_buffer_len)
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
@@ -128,7 +139,7 @@ class LatControlTorque(LatControl):
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
 
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < self.integrator_reset_speed
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 
