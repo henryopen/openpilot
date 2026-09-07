@@ -18,8 +18,10 @@ here from what master does have, and the page needs no changes:
 """
 import bisect
 import json
+import os
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.cereal import custom, messaging
@@ -49,6 +51,15 @@ _lock = threading.Lock()
 _snapshot = b'{"standby": true}'
 _frame = 0
 _model_cache = None
+# The producer runs in a daemon thread while the main thread serves HTTP, so an exception in
+# it kills the thread and leaves the process up: systemd sees a healthy service, the stream
+# keeps sending the last snapshot forever, and the display freezes on a frame that looks
+# live. That is what the driver saw on 2026-09-07 - lane lines still drawn, no vehicles, the
+# lead frozen - while radarState.leadOne in the same drive never stuck for even half a
+# second. Stamp every snapshot so the freeze is detectable instead of silent.
+_snapshot_ts = 0.0
+# Offroad the loop runs at 1 Hz, onroad at 20. Anything past this is not slow, it is stopped.
+STALE_AFTER = 15.0  # s
 
 
 def _resample(line):
@@ -322,7 +333,28 @@ def _sp_shapes(params, mem_params, cs, cc, ss, frame, gps_ok):
 
 
 def poll_loop():
-  global _snapshot, _frame, _model_cache
+  """Restart the producer rather than let one bad frame take the display down for the drive."""
+  while True:
+    try:
+      _produce()
+    except Exception:
+      traceback.print_exc()
+      time.sleep(1.0)
+
+
+def watchdog():
+  """A stopped producer is invisible from outside, so make it fatal and let systemd restart."""
+  while True:
+    time.sleep(5.0)
+    with _lock:
+      age = time.monotonic() - _snapshot_ts
+    if _snapshot_ts and age > STALE_AFTER:
+      print(f'hud: producer stalled for {age:.0f}s, exiting for systemd to restart', flush=True)
+      os._exit(1)
+
+
+def _produce():
+  global _snapshot, _snapshot_ts, _frame, _model_cache
   sm = messaging.SubMaster(SERVICES)
   params = Params()
   mem_params = Params("/dev/shm/params")
@@ -384,6 +416,7 @@ def poll_loop():
       data["liveMapDataSP"] = {"roadName": mem_params.get("RoadName") or ""}
     with _lock:
       _snapshot = json.dumps(data, default=str).encode()
+      _snapshot_ts = time.monotonic()
     # offroad nothing publishes (sm.update just times out); onroad cap the loop ~20 Hz
     time.sleep(1.0 if not onroad else 0.05)
 
@@ -406,6 +439,10 @@ class Handler(BaseHTTPRequestHandler):
         while True:
           with _lock:
             payload = _snapshot
+            stale = bool(_snapshot_ts) and (time.monotonic() - _snapshot_ts) > STALE_AFTER
+          if stale:
+            # say so rather than keep serving a frozen frame that reads as live
+            payload = b'{"stale": true, ' + payload[1:]
           self.wfile.write(b"data: " + payload + b"\n\n")
           self.wfile.flush()
           time.sleep(0.1)
@@ -427,6 +464,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main():
   threading.Thread(target=poll_loop, daemon=True).start()
+  threading.Thread(target=watchdog, daemon=True).start()
   server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
   server.daemon_threads = True
   server.serve_forever()
