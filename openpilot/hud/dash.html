@@ -548,7 +548,7 @@ function drawRoad(F){
 // yolod 只回傳公尺座標，不回傳畫面：一趟下來是幾百 KB，不是幾百 MB。
 // 距離是單目估的（框底當接地點），對照雷達實測中位偏差約 ±10~20%，遠處只能算「大概位置」，
 // 所以圖示照距離擺、但不標到小數點。
-let YOLO=null, YOLO_T=0, YPEND=null, YFRAME=null;
+let YOLO=null, YOLO_T=0, YPEND=null, YFRAME=null, YVOTED=new Set();
 const YCLR={0:'#ff6b6b', 1:'#ffd93d', 2:'#8fb4d6', 3:'#ffa726', 5:'#b39ddb', 7:'#9fd6a7'};
 const YNAME={0:'人', 1:'單車', 2:'車', 3:'機車', 5:'公車', 7:'卡車'};
 const YCN={person:'人', bicycle:'單車', car:'車', motorcycle:'機車', bus:'公車',
@@ -580,7 +580,7 @@ async function pollYolo(){
     if(j.ok){ YOLO=j; YOLO_T=Date.now(); YSTAT='';
       // 車機 1.9 秒才出一幀，這裡 250 ms 拉一次，所以同一批偵測會被拿到七八次。
       // 只有換了幀才交給下游，否則同一台車會被重複計票、而且永遠不會過期。
-      if(j.t!==YFRAME){ YFRAME=j.t; YPEND=j.dets||[]; } }
+      if(j.t!==YFRAME){ YFRAME=j.t; YPEND=j.dets||[]; YVOTED.clear(); } }
     else { YOLO=null;
       // 停用是自己關的，不是壞了，講清楚免得下次看到一串英文以為出問題
       YSTAT = j.reason==='waiting for camerad' ? '待相機'
@@ -617,6 +617,9 @@ function yoloClassify(dets, F){
     });
     if(best===null) return;
     if(bd > Math.max(YMATCH_MIN, YMATCH_FRAC*d.d)) return;
+    const vkey=YFRAME+':'+best.id+':'+d.cls;
+    if(YVOTED.has(vkey)) return;      // 同一幀的同一票只算一次，即使這批被重試多幀
+    YVOTED.add(vkey);
     const e=LEADCLS.get(best.id) || {vote:{}, cls:null, t:now};
     // 累計信心投票，不讓最後一幀單獨決定：同一台車有 14% 的幀會被判成別的類別
     e.vote[d.cls]=(e.vote[d.cls]||0)+d.conf;
@@ -785,7 +788,10 @@ function drawYolo(F){
   if(!live){ LEADCLS.clear(); clearLight(); return; }  // 辨識停了就收起燈牌和已認出的種類
 
   // 這裡不再畫任何目標。認出來的種類交給雷達目標那一段去畫，一台車只會有一個圖示。
-  if(YPEND){ yoloClassify(YPEND, F); YPEND=null; }
+  // 這一批留著每幀重試，不是用掉就丟：車機 1.9 秒才出一幀，而配對要有 leads 才成得了。
+  // 先前用掉即丟，只要那一瞬間 leads 還沒到或對不上，整批就白費，下一批要再等 1.9 秒。
+  // 重複計票由 YVOTED 擋（同一幀、同一個目標、同一個類別只計一次）。
+  if(YPEND){ yoloClassify(YPEND, F); }
 
   // 號誌不畫在路面上：燈懸在空中，投影到地面沒有意義。改用右側的燈牌（HTML，不在這張畫布上）
   showLight(YOLO.lights||[]);
