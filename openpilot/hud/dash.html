@@ -781,8 +781,12 @@ function drawYolo(F){
   cx.save();
   cx.font='700 12px system-ui'; cx.textAlign='right';
   cx.fillStyle = live ? 'rgba(47,212,90,.75)' : 'rgba(130,150,170,.5)';
-  const tally = live ? Object.entries(YOLO.counts||{}).sort((a,b)=>b[1]-a[1])
-                             .map(([k,v])=>`${YCN[k]||k}${v}`).join(' ') : YSTAT;
+  // 偵測數之外再報「幾個雷達目標已經認出種類」：2026-09-07 一整趟偵測數都在跳、
+  // 卻一個車輛圖示都沒有，而偵測數本身分不出是配對沒成還是畫的時候沒拿到。
+  const nlead = (F.leads||[]).length;
+  const nnamed = (F.leads||[]).filter(L=>leadClass(L)).length;
+  const tally = live ? (Object.entries(YOLO.counts||{}).sort((a,b)=>b[1]-a[1])
+                             .map(([k,v])=>`${YCN[k]||k}${v}`).join(' ') + ` ·${nnamed}/${nlead}`) : YSTAT;
   cx.fillText(`YOLO ${tally||'—'}`, W-14, H-86);
   cx.restore();
   if(!live){ LEADCLS.clear(); clearLight(); return; }  // 辨識停了就收起燈牌和已認出的種類
