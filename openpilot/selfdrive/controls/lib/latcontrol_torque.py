@@ -51,10 +51,17 @@ LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
 # lead, but with a small-signal deadzone alongside it that there is nothing here to size.
 MAX_LAT_JERK = 2.5  # m/s^3
 
-# Coming out of a turn the integrator is holding wind-up from the turn itself; letting it
-# keep integrating through the unwind is what makes the wheel come back late and overshoot.
-UNWIND_SETPOINT_RATE = -1.0  # m/s^3
-UNWIND_NEAR_ZERO = 0.3       # m/s^2
+# Coming out of a turn the integrator holds wind-up from the turn itself, and letting it keep
+# integrating through the unwind makes the wheel come back late. Freezing it on the setpoint
+# falling was tried on 2026-09-06 and taken back out on 09-07: the rate is a difference
+# between consecutive frames divided by dt, and at 100 Hz the setpoint's own frame-to-frame
+# noise is already 4.77 m/s^3 at p90, so a -1.0 threshold sits inside the noise and fired on
+# 5.9% of frames with no turn in sight. Over that drive the integrator term fell to a fifth
+# of what it had been the day before (0.0775 -> 0.0141 at the median on low-speed straights)
+# while P had to make up the difference, and the output at 10-30 km/h reached its limit.
+# There is no threshold that works here: -10 is the first value clear of the noise and it
+# fires on 0.1% of frames, which is nothing. Left out until there is a measurement of the
+# unwind that is not a one-frame difference.
 
 class LatControlTorque(LatControl):
   def __init__(self, CP, CI, dt):
@@ -69,11 +76,6 @@ class LatControlTorque(LatControl):
     self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len , maxlen=self.lat_accel_request_buffer_len)
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
-    self.prev_setpoint = 0.0
-
-  def reset(self):
-    super().reset()
-    self.prev_setpoint = 0.0
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -105,9 +107,6 @@ class LatControlTorque(LatControl):
     desired_lateral_jerk = float(np.clip(self.jerk_filter.update(raw_lateral_jerk), -MAX_LAT_JERK, MAX_LAT_JERK))
 
     setpoint = expected_lateral_accel
-    setpoint_rate = (setpoint - self.prev_setpoint) / self.dt
-    unwinding = setpoint_rate < UNWIND_SETPOINT_RATE and abs(setpoint) < UNWIND_NEAR_ZERO
-    self.prev_setpoint = setpoint
 
     # correcting in lateral acceleration space understates how far off the car is at low
     # speed, where the same miss is worth far less acceleration; scale it back to what the
@@ -129,7 +128,7 @@ class LatControlTorque(LatControl):
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
 
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5 or unwinding
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
       output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
 
