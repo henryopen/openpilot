@@ -204,7 +204,16 @@ def main(replay=None):
   calib = (pitch, yaw, height)
   print(f'yolod: calibration pitch {pitch:.5f} yaw {yaw:.5f} height {height:.3f} m', flush=True)
 
-  run = RUNS / datetime.now().strftime('%Y%m%d_%H%M%S')
+  # The clock is wrong at boot - AGNOS has no working RTC - so every boot names this the
+  # same thing and det.jsonl is appended to instead of started. By 2026-09-07 one file held
+  # six separate runs whose t restarted from zero each time, which is not obvious from the
+  # file and quietly breaks anything that reads t as a timeline. Take the first free name.
+  base = datetime.now().strftime('%Y%m%d_%H%M%S')
+  run = RUNS / base
+  n = 1
+  while run.exists():
+    run = RUNS / f'{base}_{n}'
+    n += 1
   run.mkdir(parents=True, exist_ok=True)
   jl = (run / 'det.jsonl').open('a', buffering=1)
   # rows carry seconds since start; the wall clock is written once, here
