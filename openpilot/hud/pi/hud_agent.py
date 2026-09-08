@@ -33,6 +33,8 @@ _reconnect_lock = threading.Lock()
 
 # C4 熱點 > 手機熱點 > 家/辦公室；密碼都已存在 NM keyfile，這裡只負責叫起來
 KNOWN_WIFI = ["weedle-94cc", "MotowayapC", "Motowayap"]
+CAR_WIFI = KNOWN_WIFI[0]      # the car's own AP; the only way to reach it on the road
+CAR_RESCAN = 45.0             # seconds between forced scans while hunting for it
 
 
 def own_ip() -> str:
@@ -133,7 +135,54 @@ def discover_loop():
       # straight away when there is already a connection, so at home this costs nothing.
       if not read_ssid():
         net_reconnect()
+      else:
+        # We have wifi but the car is not on it. If the car is broadcasting its own AP,
+        # that is where it is - NetworkManager will not make that move on its own.
+        join_car_wifi()
       time.sleep(15)
+
+
+_last_car_scan = 0.0
+
+
+def join_car_wifi() -> bool:
+  """Move to the car's hotspot once it appears, even though we already have wifi.
+
+  NetworkManager never gives up a connection it has already brought up for a better one
+  that turns up later, so parked at home the Pi sits on home wifi while the car drives
+  away hosting an AP nobody joins. read_ssid() returning something used to be enough to
+  skip all of this, so the switch only ever happened once home wifi faded out of range
+  by itself - minutes, and often a reboot. The car now raises its hotspot the moment it
+  goes onroad, so by the time this runs there is usually something to join.
+
+  Only ever moves *to* the car. If the car is not broadcasting - parked in the office,
+  say - this does nothing and leaves whatever network is already up alone.
+  """
+  global _last_car_scan
+  if read_ssid() == CAR_WIFI:
+    return False
+  now = time.monotonic()
+  if now - _last_car_scan > CAR_RESCAN:
+    _last_car_scan = now
+    try:
+      subprocess.run(["nmcli", "dev", "wifi", "rescan"], timeout=10,
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+      time.sleep(2)
+    except Exception:
+      pass
+  try:
+    out = subprocess.check_output(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list"],
+                                  text=True, timeout=10, stderr=subprocess.DEVNULL)
+  except Exception:
+    return False
+  if CAR_WIFI not in [ln.strip() for ln in out.splitlines()]:
+    return False
+  try:
+    r = subprocess.run(["nmcli", "-w", "20", "con", "up", CAR_WIFI],
+                       capture_output=True, text=True, timeout=30)
+    return r.returncode == 0
+  except Exception:
+    return False
 
 
 def net_reconnect() -> dict:
