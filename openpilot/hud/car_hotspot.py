@@ -89,9 +89,20 @@ def main():
     station, hotspot = active_wifi()
 
     if station is not None:
-      if hotspot:                                   # both up: the hotspot is the odd one out
-        nmcli("con", "down", HOTSPOT)
-      state = f"on {station}"
+      if not offroad():
+        # Driving: the known network is only going to get further away, and the Pi has no
+        # way to reach the car except the hotspot. Waiting for home wifi to drop first cost
+        # the Pi its whole first scan - the car was still on home wifi when the Pi went
+        # looking, so the Pi found nothing, and NetworkManager's retry backoff then held it
+        # off the hotspot for minutes. Switch as soon as openpilot says we are onroad.
+        # Nothing is lost by leaving home wifi here: the car is moving away from it anyway,
+        # and RETRY_HOME below brings it back once parked.
+        state = "driving, moving to the hotspot"
+        nmcli("con", "up", HOTSPOT, timeout=60)
+      else:
+        if hotspot:                                 # both up: the hotspot is the odd one out
+          nmcli("con", "down", HOTSPOT)
+        state = f"on {station}"
     elif hotspot:
       state = "on the hotspot"
       if offroad() and time.monotonic() - last_home_try > RETRY_HOME:
