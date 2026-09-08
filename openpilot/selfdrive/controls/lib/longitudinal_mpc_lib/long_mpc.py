@@ -57,7 +57,18 @@ T_IDXS_LST = [index_function(idx, max_val=MAX_T, max_idx=N) for idx in range(N+1
 T_IDXS = np.array(T_IDXS_LST)
 FCW_IDXS = T_IDXS < 5.0
 T_DIFFS = np.diff(T_IDXS, prepend=[0.])
-COMFORT_BRAKE = 2.5
+# The MPC's target gap is v^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so this is
+# not a braking limit - it is how much deceleration the planner assumes it may use when it
+# decides how much room to keep. Lowering it keeps more room and therefore starts braking
+# earlier and more gently.
+#
+# 2026-09-08: replaying that day's seven engaged stops, the gap fell below the target at
+# 36.3 m / 33 km/h needing 1.61 m/s^2 to stop in what was left; the car then actually used
+# -2.1 to -3.1 m/s^2 because it had done nothing until then. At 2.0 the same stops trigger
+# at 36.7 m needing 1.32, and the individual approaches gain 5-9 m of run-up (stop #4:
+# 25.6 m needing 1.67 -> 30.7 m needing 1.23). Only the v^2 term moves, so low-speed
+# following distance is left where the driver asked for it on 09-06.
+COMFORT_BRAKE = 2.0
 STOP_DISTANCE = 6.0
 MIN_X_LEAD_FACTOR = 0.5
 
