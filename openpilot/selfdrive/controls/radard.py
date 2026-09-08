@@ -278,8 +278,16 @@ class LeadHold:
     self.held = 0.
 
   def _standstill_radar_loss(self, lead: dict[str, Any], v_ego: float) -> bool:
-    """Stopped, and the radar track under the lead has gone while vision reads it further."""
+    """Stopped, and the radar track under the lead has gone while vision reads it further.
+
+    get_lead returns a bare {'present': False} when there is no lead at all, so the
+    keys below only exist once something has been seen. Reading them unguarded crashed
+    radard on 2026-09-08 (KeyError: 'radar') the first time a lead vanished outright
+    while stopped - a car pulling away at a light - and took longitudinal with it.
+    Nothing to compare against in that case, so it is not a standstill loss.
+    """
     return (v_ego < LEAD_HOLD_STANDSTILL_SPEED and self.lead is not None
+            and lead['present']
             and self.lead['radar'] and not lead['radar']
             and self.lead['dRel'] < LEAD_HOLD_STANDSTILL_DIST
             and lead['dRel'] > self.lead['dRel'] + LEAD_HOLD_STANDSTILL_JUMP)
