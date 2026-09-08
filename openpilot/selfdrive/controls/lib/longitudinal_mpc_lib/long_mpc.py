@@ -69,7 +69,13 @@ T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 # 25.6 m needing 1.67 -> 30.7 m needing 1.23). Only the v^2 term moves, so low-speed
 # following distance is left where the driver asked for it on 09-06.
 COMFORT_BRAKE = 2.0
-STOP_DISTANCE = 6.0
+# This car stops systematically short of whatever is asked for: 40 stops on 2026-09-06 sat
+# at 3.6-4.9 m against the 6 m target, and seven stops on 09-08 sat at 1.8-4.0 m. The cause
+# is not established - it is either a dRel bias or something in how the MPC closes the last
+# few metres - so this is compensation, not a fix, asked for by the driver. Note the term is
+# constant across speed, so following distance goes up by the same metre everywhere, not
+# only at rest.
+STOP_DISTANCE = 7.0
 MIN_X_LEAD_FACTOR = 0.5
 
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
