@@ -32,9 +32,18 @@ from openpilot.common.swaglog import cloudlog
 # the median was 0.41. The three points now taper into the 0.3 at 90 instead, which at a
 # 50 km/h set speed takes 50 -> 60 from 6.0 s to 8.2 s. The same ceiling caps closing on a
 # lead that pulls away, which was 27% of that band, and that is the cost of the change.
+#
+# 2026-09-08: that taper went too far - the driver now calls the same band flat. The taper
+# took 8% off 30 km/h but 30% off 54 and 36% off 72, so what was cut hardest is the part
+# above where the complaint was. Driving free of a lead that day, the plan sat within 8% of
+# this ceiling for 33% of the frames at 30-35 km/h and 54% at 45-50, while the same drive
+# reached 0.72-0.82 under MPC and e2e, which do not read this array - so the car does that
+# much already and only cruise is held down. Only the 10 m/s point moves, to halfway back
+# towards eco's 0.5; 54 km/h and above stay where the taper put them, so the flat 0.5-to-72
+# stretch that was called too eager does not come back.
 #                     0    10km/h  18    36    54    72    90   144
 A_CRUISE_MAX_BP =   [0.,   2.8,   5.,   10.,  15.,  20.,  25., 40.]
-A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.42, 0.35, 0.32, 0.3, 0.2]
+A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.48, 0.35, 0.32, 0.3, 0.2]
 # Jerk keeps its own breakpoints. It shares the acceleration curve's in stock, and adding
 # points there would silently make the two arrays different lengths.
 J_CRUISE_BP = [0., 10.0, 25., 40.]
