@@ -22,7 +22,10 @@ from urllib.parse import parse_qs, urlparse
 
 PORT = 8080
 SP_HUD_PORT = 8902
-FALLBACK_HOSTS = ["192.168.2.122"]  # 辦公室/家用 LAN 上的 C4（.143 於 2026-09-02 失效）
+# The car's Hotspot profile pins ipv4.addresses to 192.168.43.1/24 (method shared), so
+# on its AP the car is always exactly here - no scan, no gateway lookup, one connect.
+CAR_HOTSPOT_IP = "192.168.43.1"
+FALLBACK_HOSTS = [CAR_HOTSPOT_IP, "192.168.2.122"]  # AP 上的固定位址；LAN 上的 C4（.143 於 2026-09-02 失效）
 HUD_DIR = Path(__file__).resolve().parent
 CACHE_FILE = HUD_DIR / "last_host.txt"
 
@@ -112,14 +115,16 @@ def gateway_ip() -> str:
 
 def scan_once() -> str | None:
   candidates = []
-  # On the car's AP the gateway is the car. Try it before anything that can time out:
-  # the cached address and the fallbacks are all from the home/office LAN and cannot
-  # answer from here, so without this every hop onto the hotspot pays for their
-  # timeouts and then a full subnet scan before finding the car.
+  # On the car's AP the car is at CAR_HOTSPOT_IP, pinned in its Hotspot profile. Try that
+  # before anything that can time out: the cached address is from the home/office LAN and
+  # cannot answer from here, so without this every hop onto the hotspot pays for its
+  # timeout and then a full subnet scan before finding the car. The gateway lookup is kept
+  # behind it as a backstop in case that profile is ever re-addressed.
   if read_ssid() == CAR_WIFI:
+    candidates.append(CAR_HOTSPOT_IP)
     gw = gateway_ip()
-    if gw:
-      candidates.append(gw)
+    if gw and gw != CAR_HOTSPOT_IP:
+      candidates.append(gw)          # only if the profile's address ever changes
   if CACHE_FILE.exists():
     candidates.append(CACHE_FILE.read_text().strip())
   candidates += FALLBACK_HOSTS
