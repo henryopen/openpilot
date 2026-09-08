@@ -22,7 +22,7 @@ from urllib.parse import parse_qs, urlparse
 
 PORT = 8080
 SP_HUD_PORT = 8902
-FALLBACK_HOSTS = ["192.168.2.143"]  # 辦公室 LAN 上的 C4
+FALLBACK_HOSTS = ["192.168.2.122"]  # 辦公室/家用 LAN 上的 C4（.143 於 2026-09-02 失效）
 HUD_DIR = Path(__file__).resolve().parent
 CACHE_FILE = HUD_DIR / "last_host.txt"
 
@@ -88,8 +88,38 @@ def local_networks() -> list[ipaddress.IPv4Network]:
   return nets
 
 
+def gateway_ip() -> str:
+  """Default gateway, which on the car's own hotspot is the car itself.
+
+  The hotspot is NetworkManager ipv4 shared, so the car is the AP, the DHCP server and
+  the gateway all at once. Asking the routing table costs one syscall and is exact,
+  where the subnet scan below is 254 connects and only gets started after the cached
+  address and the fallbacks have each timed out.
+  """
+  try:
+    out = subprocess.check_output(["ip", "-o", "route", "show", "default"],
+                                  text=True, timeout=3, stderr=subprocess.DEVNULL)
+  except Exception:
+    return ""
+  for line in out.splitlines():
+    parts = line.split()
+    if "via" in parts:
+      i = parts.index("via") + 1
+      if i < len(parts):
+        return parts[i]
+  return ""
+
+
 def scan_once() -> str | None:
   candidates = []
+  # On the car's AP the gateway is the car. Try it before anything that can time out:
+  # the cached address and the fallbacks are all from the home/office LAN and cannot
+  # answer from here, so without this every hop onto the hotspot pays for their
+  # timeouts and then a full subnet scan before finding the car.
+  if read_ssid() == CAR_WIFI:
+    gw = gateway_ip()
+    if gw:
+      candidates.append(gw)
   if CACHE_FILE.exists():
     candidates.append(CACHE_FILE.read_text().strip())
   candidates += FALLBACK_HOSTS
@@ -114,7 +144,13 @@ def discover_loop():
       s2 = read_ssid()
       with _lock:
         _ssid = s2
-      time.sleep(10)
+      # Poll the SSID while waiting: hopping to the car's hotspot changes the subnet, and
+      # sleeping the whole interval out first would add that much to the time the screen
+      # sits empty.
+      for _ in range(10):
+        time.sleep(1)
+        if read_ssid() != s2:
+          break
       continue
     found = scan_once()
     ssid = read_ssid()
