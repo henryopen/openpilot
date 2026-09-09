@@ -57,6 +57,21 @@ DISABLE_SPEED = 80 * CV.KPH_TO_MS
 LEAD_LOOKAHEAD = 7.0        # seconds of travel a lead has to be inside to count
 LEAD_BLOCK_MARGIN = 15.0
 
+# ...but only up to the point where the stop is already committed. Down at walking pace the
+# question the veto answers - is this a queue the lead MPC should own, or a junction - is
+# already settled, and what appears 17-19 m ahead at a junction is traffic crossing it.
+# On 2026-09-09 that handed control back to cruise twice at a red light:
+#
+#   13:10:18.25  2.6 km/h, a car crossing 18.4 m ahead   -> cruise asked for +1.19
+#   13:31:15.25  3.4 km/h, a car crossing 18.9 m ahead   -> lead MPC asked for +0.53
+#
+# both times the car pulled forward into the junction and the driver braked. The distances
+# gave it away - 18.9, 17.6, gone, 19.1, 17.4, 35.1, 36.9, 32.2 while we sat still - but
+# nothing here reads lateral motion, so the fix is to stop asking once stopping is decided.
+# Only affects a mode that is already active: arming still sees the veto in full, so the
+# queue behaviour it was written for is untouched.
+COMMITTED_SPEED = STOP_SPEED_ON
+
 # What the driver's indicator means to the model: desire_helper sends turnLeft/turnRight in
 # this band, the model plans the corner, and the plan ends at the corner. That is not a stop.
 # Bounds are imported so the two cannot drift apart.
@@ -115,7 +130,9 @@ class JunctionHandoff:
     self.model_detected = self.stop_x is not None
 
     threshold = max(v_ego * LEAD_LOOKAHEAD, 0.0)
-    lead_relevant = lead is not None and bool(lead.present) and lead.dRel < threshold + LEAD_BLOCK_MARGIN
+    committed = self.active and v_ego < COMMITTED_SPEED
+    lead_relevant = not committed and lead is not None and bool(lead.present) and \
+        lead.dRel < threshold + LEAD_BLOCK_MARGIN
     self.lead_clear_filter.update(not lead_relevant)
     lead_cleared = self.lead_clear_filter.x >= THRESHOLD
 
