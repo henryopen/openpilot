@@ -78,13 +78,27 @@ COMFORT_BRAKE = 2.0
 STOP_DISTANCE = 7.0
 MIN_X_LEAD_FACTOR = 0.5
 
+# All three personalities are deliberately identical, asked for on 2026-09-09. The distance
+# button on the wheel is easy to catch by accident: the 2026-09-08 drive started on relaxed
+# and was found on standard afterwards without the driver having chosen that, so the gap
+# changed underneath him and the next drive's data meant something different. Making the
+# three the same means the button cannot change anything.
+#
+# 1.5 is the value the car has actually been driven on - relaxed since 2026-09-06 - and
+# standard was only 0.05 s away from it, so nothing is really being given up. Measured over
+# 27.6 min of following on 2026-09-09 this produced 1.8-3.3 s of real gap, because the MPC's
+# target is v^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE and t_follow is only one term.
+#
+# The cost: changing the following distance now means editing this file and redeploying.
+# The structure is left as three branches rather than a bare return so the values are still
+# per-personality if that is ever wanted back, and so the unsupported case still raises.
 def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.0
   elif personality==log.LongitudinalPersonality.standard:
     return 1.0
   elif personality==log.LongitudinalPersonality.aggressive:
-    return 0.5
+    return 1.0
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
@@ -93,9 +107,9 @@ def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
   if personality==log.LongitudinalPersonality.relaxed:
     return 1.5
   elif personality==log.LongitudinalPersonality.standard:
-    return 1.45
+    return 1.5
   elif personality==log.LongitudinalPersonality.aggressive:
-    return 1.25
+    return 1.5
   else:
     raise NotImplementedError("Longitudinal personality not supported")
 
