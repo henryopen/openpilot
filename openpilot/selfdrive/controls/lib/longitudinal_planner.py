@@ -13,6 +13,8 @@ from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import T_IDXS as T_IDXS_MPC
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE as MPC_STOP_DISTANCE
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (get_T_FOLLOW, get_safe_obstacle_distance,
+                                                                            get_stopped_equivalence_factor)
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
@@ -44,6 +46,35 @@ from openpilot.common.swaglog import cloudlog
 #                     0    10km/h  18    36    54    72    90   144
 A_CRUISE_MAX_BP =   [0.,   2.8,   5.,   10.,  15.,  20.,  25., 40.]
 A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.48, 0.35, 0.32, 0.3, 0.2]
+# With nothing close ahead the ceiling above is what holds the car back, not the MPC. Over
+# the 2026-09-09 drive, with the nearest lead beyond the gate below, the plan sat within 8%
+# of this ceiling for 75% of the frames at 15-25 km/h, 82% at 25-36, 80% at 36-45, 70% at
+# 45-54 and 92% at 54-72. With a lead inside the gate the same figures are 38/46/31/29% -
+# there the MPC is in charge and raising this would change nothing. So the ceiling only
+# lifts when the road ahead is actually clear.
+#
+# Pinned to the 2026-08-29 drive, which the driver called too eager: every point here is at
+# or below what that drive allowed, checked value by value (0.94/0.81/0.67/0.50/0.47/0.45 at
+# 20/25/30/36/45/54 km/h against 0.94/0.81/0.67/0.50/0.50/0.50). That matters because on
+# 2026-09-05 a change was made by taking "half the suggestion" without checking, and it came
+# out above the too-eager values across 24-42 km/h.
+#
+# What 08-29 actually delivered, free of a close lead, against 2026-09-09: 0.68 vs 0.54 at
+# 25-36 km/h, 0.43 vs 0.35 at 36-45, 0.37 vs 0.27 at 45-54 - but 0.24 vs 0.26 at 54-72 and
+# 0.31 vs 0.26 at 72-90. So the gap that was felt is 36-54 km/h; above that today's car is
+# already the quicker of the two and the flat 0.5 was never being used. Only 36 and 54 move.
+# 40 -> 60 km/h goes from 14.6 s to 12.1 s (08-29 was 11.1 s), 50 -> 70 from 16.3 to 13.4.
+A_CRUISE_MAX_VALS_FREE = [1.2, 1.17, 1.0, 0.50, 0.45, 0.35, 0.3, 0.2]
+# How much more room than the MPC is asking for before the road counts as clear. A fixed
+# distance was considered and measured worse: the MPC's target gap is
+# v^2/(2*COMFORT_BRAKE) - v_lead^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so 50 m
+# is 3.3x the target behind a lead holding 20 km/h and only 0.9x behind one that has
+# stopped at 40 km/h - it would be loosest exactly where the risk is. As a share of frames
+# the ratio also lands where it is wanted: over the 2026-09-09 drive it opens 37% of
+# 15-30 km/h and 46% of 30-45 against a fixed 50 m's 17% and 28%, while at 100-130 km/h it
+# opens 79% against 99%. Of the frames each lets through, 85% are cruise-led under the
+# ratio against 72% under 50 m, so less of it is spent raising a ceiling nothing is on.
+FREE_LEAD_MARGIN = 1.2
 # Jerk keeps its own breakpoints. It shares the acceleration curve's in stock, and adding
 # points there would silently make the two arrays different lengths.
 J_CRUISE_BP = [0., 10.0, 25., 40.]
@@ -116,8 +147,18 @@ def true_to_dash(v_true: float) -> float:
   return (v_kph * DASH_GAIN + DASH_OFFSET_KPH) * CV.KPH_TO_MS
 
 
-def get_max_accel(v_ego):
-  return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS)
+def get_max_accel(v_ego, lead_free=False):
+  return np.interp(v_ego, A_CRUISE_MAX_BP, A_CRUISE_MAX_VALS_FREE if lead_free else A_CRUISE_MAX_VALS)
+
+
+def lead_is_far(lead, v_ego, t_follow):
+  """Is the nearest lead far enough that cruise, not the MPC, is what limits acceleration?"""
+  if not lead.present:
+    return True
+  # the gap the MPC is working to, in the same terms it uses: a lead moving with us needs
+  # less room than one that has stopped, so this tightens by itself when the lead slows
+  target_gap = get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(min(lead.vLead, v_ego))
+  return lead.dRel > FREE_LEAD_MARGIN * target_gap
 
 # Ease off when the set speed itself is low. Pulling the full 1.2 m/s2 away from a stop
 # feels abrupt when the target is 40 km/h, in a way the same acceleration toward 100 km/h
@@ -132,8 +173,9 @@ def scale_for_set_speed(max_accel, v_cruise):
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
-def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle):
-  max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego)
+def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
+                     lead_free=False):
+  max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego, lead_free)
 
   if not e2e:
     max_accel = scale_for_set_speed(max_accel, v_cruise)
@@ -260,9 +302,10 @@ class LongitudinalPlanner:
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
+    lead_free = lead_is_far(sm['radarState'].leadOne, v_ego, get_T_FOLLOW(sm['selfdriveState'].personality))
     self.a_cruise = get_cruise_accel(sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
-                                     accel_coast, self.allow_throttle)
+                                     accel_coast, self.allow_throttle, lead_free)
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)
