@@ -70,7 +70,14 @@ LEAD_BLOCK_MARGIN = 15.0
 # nothing here reads lateral motion, so the fix is to stop asking once stopping is decided.
 # Only affects a mode that is already active: arming still sees the veto in full, so the
 # queue behaviour it was written for is untouched.
+#
+# Bounded below as well, because "already stopped" is not the case this is for. Replayed
+# over 22 segments the upper bound alone held the mode on for 10601 extra frames, and every
+# one of them had a lead at a median 5.8 m with the car already at a standstill - queues,
+# exactly what the veto is meant to catch. The two frames that needed help were rolling at
+# 0.86 and 0.89 m/s, so the window only covers a car still moving towards its stop.
 COMMITTED_SPEED = STOP_SPEED_ON
+COMMITTED_SPEED_MIN = 0.5
 
 # What the driver's indicator means to the model: desire_helper sends turnLeft/turnRight in
 # this band, the model plans the corner, and the plan ends at the corner. That is not a stop.
@@ -130,7 +137,7 @@ class JunctionHandoff:
     self.model_detected = self.stop_x is not None
 
     threshold = max(v_ego * LEAD_LOOKAHEAD, 0.0)
-    committed = self.active and v_ego < COMMITTED_SPEED
+    committed = self.active and COMMITTED_SPEED_MIN < v_ego < COMMITTED_SPEED
     lead_relevant = not committed and lead is not None and bool(lead.present) and \
         lead.dRel < threshold + LEAD_BLOCK_MARGIN
     self.lead_clear_filter.update(not lead_relevant)

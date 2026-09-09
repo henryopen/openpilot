@@ -70,7 +70,7 @@ def main():
     paths = [p for p in paths if int(p.rsplit('--', 1)[-1]) in want]
   if not paths:
     sys.exit(f'no segments matched {args.route}')
-  print(f'segments: {len(paths)}, COMMITTED_SPEED = {jh.COMMITTED_SPEED} m/s = {jh.COMMITTED_SPEED * KPH:.1f} km/h')
+  print(f'segments: {len(paths)}, window {jh.COMMITTED_SPEED_MIN * KPH:.1f} - {jh.COMMITTED_SPEED * KPH:.1f} km/h')
 
   old = replay(paths, -1.0)      # veto always applies: the behaviour before this change
   new = replay(paths, jh.COMMITTED_SPEED)
