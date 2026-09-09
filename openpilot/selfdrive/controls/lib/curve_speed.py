@@ -141,6 +141,18 @@ class CurveSpeedControl:
     if self.state not in ACTIVE_STATES:
       return self.a_ego
     if self.state == CurveState.entering:
+      # v_target is the speed this corner allows at _A_LAT_REG_MAX, so at or below it the
+      # corner is already inside what we are willing to pull and there is nothing left to
+      # give up. It was being computed and then only shown on the display, never used to
+      # call the braking off, so the entering state kept asking for deceleration until
+      # max_pred_lat_acc fell under _ABORT_ENTERING_PRED_LAT_ACC_TH - barely half of
+      # _A_LAT_REG_MAX. Measured over seven corners on 2026-09-09: braking stopped at a
+      # median 74% of the lateral acceleration allowed, with the car pulling only 49% of
+      # it, costing 2-12 km/h a corner. Hand back _LEAVING_ACC rather than zero: a_cruise
+      # is 0.35-0.44 at these speeds, so zero would keep blocking ordinary acceleration
+      # once the braking is done.
+      if self.v_ego <= self.v_target:
+        return _LEAVING_ACC
       return float(np.interp(self.max_pred_lat_acc / tol, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V))
     if self.state == CurveState.turning:
       return float(np.interp(self.current_lat_acc / tol, _TURNING_ACC_BP, _TURNING_ACC_V))
