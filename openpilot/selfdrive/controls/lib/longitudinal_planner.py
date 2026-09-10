@@ -123,12 +123,26 @@ _A_TOTAL_MAX_V = [1.7, 3.2]
 _A_TOTAL_MAX_BP = [20., 40.]
 
 # The driver sets MAX by what the dash shows, but openpilot controls on true wheel speed,
-# so this car ran about 7% faster than the number set. Regression over 81753 samples of
-# route 00000004--422ccab765 (vEgo vs vEgoCluster): dash = 1.071*true + 2.07 km/h. Cruise
-# and speed limit targets are dash speeds and are converted back here. Re-run the
-# regression if the tyres or wheel size change.
-DASH_GAIN = 1.071
-DASH_OFFSET_KPH = 2.07
+# so cruise and speed limit targets are dash speeds and are converted back here.
+#
+# Refitted 2026-09-10 over 22915 moving samples of route 00000026--ee332da948 above
+# 40 km/h. The previous constants came from a single route and had the gain too high and
+# the offset too low; below 50 km/h the two errors cancel, but the gain error grows with
+# speed and the driver noticed it above 90:
+#
+#   set 100  ->  old target 91.4 true  ->  reached 97.9 on the dash (measured 98.0)
+#   set 110  ->  old target 100.8 true ->  reached 107.5 on the dash (measured 108.0)
+#
+# Residual against the whole route: 1.51 km/h at the median and 2.64 at p95 for the old
+# constants, 0.34 and 1.04 for these. Fitted above 40 km/h because that is where set
+# speeds live and the relation is not quite linear at walking pace; the low end barely
+# moves anyway (40 -> 35.4 becomes 35.0, 50 is unchanged, 60 -> 54.1 becomes 54.5).
+#
+# The dash reads high by law, and the driver's ask is that its number match the number he
+# set, so this deliberately runs the car about 2-3 km/h faster in true terms at 100-120.
+# Re-run the regression if the tyres or wheel size change.
+DASH_GAIN = 1.0272
+DASH_OFFSET_KPH = 4.00
 DASH_MAX_KPH = 200.  # above this the value is a sentinel rather than a speed, pass it through
 
 
