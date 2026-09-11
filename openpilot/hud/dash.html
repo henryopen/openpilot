@@ -37,9 +37,11 @@
     font-variant-numeric:tabular-nums}
   .tgt.cut{color:var(--amber)}
   /* 車機時間。路上看到怪事記一下，回來才找得到是哪一段 log。
+     定位獨立於 maxrow —— 那一列是 MAX 與「實際在追的設定速度」，
+     擠進第三個元素會讓它們隨著 tgt 的出現消失左右跳。
      暗掉＝車機時鐘還沒被 GPS/NTP 校到，那個時間對不上任何一段，不要抄 */
-  .clk{font-size:30px;font-weight:700;color:var(--dim2);font-variant-numeric:tabular-nums;
-    letter-spacing:.5px;margin-left:12px}
+  .clk{top:46px;left:300px;font-size:30px;font-weight:700;color:var(--dim2);
+    font-variant-numeric:tabular-nums;letter-spacing:.5px}
   .clk.stale{color:#41505d}
   .sub{font-size:17px;color:var(--dim2);font-weight:600;margin-top:2px;letter-spacing:.4px}
   .sub b{color:var(--txt);font-weight:800}
@@ -189,9 +191,10 @@
     <div class="maxrow">
       <div class="num blue" id="maxV">60</div>
       <div class="tgt" id="tgtV"></div>
-      <div class="clk" id="clk">--:--:--</div>
     </div>
   </div>
+
+  <div class="ov clk" id="clk">--:--:--</div>
 
   <div class="ov cnr cnrR" id="paneR">
     <div class="cap">車速 km/h</div>
@@ -895,7 +898,7 @@ function render(F){
     tg.className = 'tgt' + (show && F.vTgt < F.vCruise-1 ? ' cut' : '');
   }
   const ck=$('clk');
-  if(ck){ ck.textContent = F.clk || '--:--:--'; ck.className = 'clk' + (F.clkOk ? '' : ' stale'); }
+  if(ck){ ck.textContent = F.clk || '--:--:--'; ck.className = 'ov clk' + (F.clkOk ? '' : ' stale'); }
   set('spdV', F.vEgo);
   set('spdF', F.road || '—');
   $('paneL').className='ov cnr cnrL'+(F.engaged?'':' off');
