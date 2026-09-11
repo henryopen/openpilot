@@ -24,33 +24,42 @@ def sec(s):
 w0, w1 = sec(h0), sec(h1)
 path = f"/data/media/0/realdata/{route}--{seg}/rlog.zst"
 
+# The RTC has no backup power, so it reads 1970 at boot and systemd falls back to its own
+# build date - every segment recorded before the clock settles is stamped 2026-07-28. Taking
+# the first plausible-looking clocks message therefore puts the whole segment weeks out and
+# every time window misses: 00000027--8ef3693bf9--1 opens on 07-28 23:06 and only jumps to
+# the real 09-11 13:42 at mono=136 s. The offset only ever steps forward when the clock is
+# corrected, so the largest one is the settled one.
 CP = None
+off = None
 for m in LogReader(path):
-  if m.which() == 'carParams':
+  w = m.which()
+  if w == 'carParams' and CP is None:
     CP = m.carParams.as_builder()
-    break
+  elif w == 'clocks':
+    wt = m.clocks.wallTimeNanos / 1e9
+    if wt > 1.7e9:
+      o = wt - m.logMonoTime / 1e9
+      if off is None or o > off:
+        off = o
+if off is None:
+  raise SystemExit("no usable clocks message in this segment")
 RI = RadarInterface(CP)
 
-wall0 = wallmono = None      # the clock syncs about 49 s after boot; anchor on the first sane one
 vego = 0.
 last = 0.
 for m in LogReader(path):
   w = m.which()
-  if w == 'clocks':
-    wt = m.clocks.wallTimeNanos / 1e9
-    if wt > 1.7e9 and wall0 is None:
-      wall0, wallmono = wt, m.logMonoTime / 1e9
-    continue
   if w == 'carState':
     vego = m.carState.vEgo
     continue
   if w != 'can':
     continue
   rr = RI.update(can_capnp_to_list([m.as_builder().to_bytes()]))
-  if rr is None or wall0 is None:
+  if rr is None:
     continue
   t = m.logMonoTime / 1e9
-  tw = wall0 + (t - wallmono) + 8 * 3600      # the device keeps UTC
+  tw = off + t + 8 * 3600      # the device keeps UTC
   if not (w0 <= tw % 86400 <= w1):
     continue
   if t - last < 0.25:
