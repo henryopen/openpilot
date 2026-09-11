@@ -26,6 +26,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from openpilot.cereal import custom, messaging
 from openpilot.common.params import Params
+from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
 from openpilot.selfdrive.modeld.constants import ModelConstants
@@ -107,6 +108,21 @@ def _model(md):
               for e, st in zip(md.roadEdges, md.roadEdgeStds, strict=True)],
     "path": _resample(md.position),
   }
+
+
+LOCAL_UTC_OFFSET_S = 8 * 3600   # the device keeps UTC, and we drive in Taiwan
+
+
+def _clock():
+  """The device's own clock, so something seen on the road can be found in the logs.
+
+  Sent from here rather than read off the PI: the PI is on the car's hotspot with no route
+  out, so its own clock is no better than this one and would not line up with the segments.
+  ok is false until GPS or NTP has actually set the time - the RTC has no backup power, so
+  until then this is systemd's build date, and writing that down would find the wrong drive.
+  """
+  return {"t": time.strftime("%H:%M:%S", time.gmtime(time.time_ns() / 1e9 + LOCAL_UTC_OFFSET_S)),
+          "ok": system_time_valid()}
 
 
 def _car_state(cs):
@@ -373,6 +389,7 @@ def _produce():
     radar_points = [{"dRel": float(p.dRel), "yRel": float(p.yRel), "vRel": float(p.vRel)}
                     for p in sm["radarTracksSP"].points]
     data["standby"] = not onroad
+    data["clock"] = _clock()
     if not onroad:
       edges.reset()
       targets.reset()

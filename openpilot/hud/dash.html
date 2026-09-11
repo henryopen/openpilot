@@ -36,6 +36,11 @@
   .tgt{font-size:34px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--dim2);
     font-variant-numeric:tabular-nums}
   .tgt.cut{color:var(--amber)}
+  /* 車機時間。路上看到怪事記一下，回來才找得到是哪一段 log。
+     暗掉＝車機時鐘還沒被 GPS/NTP 校到，那個時間對不上任何一段，不要抄 */
+  .clk{font-size:30px;font-weight:700;color:var(--dim2);font-variant-numeric:tabular-nums;
+    letter-spacing:.5px;margin-left:12px}
+  .clk.stale{color:#41505d}
   .sub{font-size:17px;color:var(--dim2);font-weight:600;margin-top:2px;letter-spacing:.4px}
   .sub b{color:var(--txt);font-weight:800}
   .off .num{color:#5d7183}
@@ -184,6 +189,7 @@
     <div class="maxrow">
       <div class="num blue" id="maxV">60</div>
       <div class="tgt" id="tgtV"></div>
+      <div class="clk" id="clk">--:--:--</div>
     </div>
   </div>
 
@@ -888,6 +894,8 @@ function render(F){
     tg.textContent = show ? F.vTgt : '';
     tg.className = 'tgt' + (show && F.vTgt < F.vCruise-1 ? ' cut' : '');
   }
+  const ck=$('clk');
+  if(ck){ ck.textContent = F.clk || '--:--:--'; ck.className = 'clk' + (F.clkOk ? '' : ' stale'); }
   set('spdV', F.vEgo);
   set('spdF', F.road || '—');
   $('paneL').className='ov cnr cnrL'+(F.engaged?'':' off');
@@ -1174,6 +1182,7 @@ function fromSSE(J){
   const v=cs.vEgoCluster||cs.vEgo||0;
   const kph=x=>Math.round((x||0)*KPH);
   const F={
+    clk:(J.clock||{}).t||'', clkOk:!!(J.clock||{}).ok,
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff,
     engaged: !!(ss.enabled||ss.active),
     avail: !!cs.cruiseAvailable,   // 儀表 MAIN 亮著（但 OP 可能還沒按啟動）
