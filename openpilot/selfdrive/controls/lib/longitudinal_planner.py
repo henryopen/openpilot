@@ -236,6 +236,7 @@ class LongitudinalPlanner:
     self.junction = JunctionHandoff()
     self.a_cruise = init_a
     self.v_cruise_dash = 0.
+    self.follow_distance = 0.
     self.output_a_target = init_a
     self.output_should_stop = False
 
@@ -316,7 +317,14 @@ class LongitudinalPlanner:
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    lead_free = lead_is_far(sm['radarState'].leadOne, v_ego, get_T_FOLLOW(sm['selfdriveState'].personality))
+    t_follow = get_T_FOLLOW(sm['selfdriveState'].personality)
+    lead_free = lead_is_far(sm['radarState'].leadOne, v_ego, t_follow)
+    # the same gap in the MPC's own terms, for anything that wants to show where it is
+    # trying to sit. Kept here rather than worked out again downstream, which is how the
+    # HUD ended up drawing it nine metres short at a 20 km/h closing speed
+    lead_one = sm['radarState'].leadOne
+    self.follow_distance = (get_safe_obstacle_distance(v_ego, t_follow)
+                            - get_stopped_equivalence_factor(float(lead_one.vLead))) if lead_one.present else 0.
     self.a_cruise = get_cruise_accel(sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
                                      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
                                      accel_coast, self.allow_throttle, lead_free)
@@ -428,4 +436,5 @@ class LongitudinalPlanner:
     sp_send.longitudinalPlanSP.reason = self.plan_reason
     sp_send.longitudinalPlanSP.vCruise = float(self.v_cruise_dash)
     sp_send.longitudinalPlanSP.modelHandoff = bool(self.junction.active)
+    sp_send.longitudinalPlanSP.followDistance = float(self.follow_distance)
     pm.send('longitudinalPlanSP', sp_send)

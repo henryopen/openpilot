@@ -449,15 +449,14 @@ function drawRoad(F){
     cx.setLineDash([13*p.s+5, 9*p.s+4]);
     cx.beginPath(); cx.moveTo(p.x-hw,p.y); cx.lineTo(p.x+hw,p.y); cx.stroke(); cx.setLineDash([]);
   }
-  // 期望跟車距離（openpilot long MPC 公式：long_mpc.py）
-  // d_des = v_ego^2/(2*COMFORT_BRAKE) + t_follow*v_ego + STOP_DISTANCE - v_lead^2/(2*COMFORT_BRAKE)
-  const CB2=5.0, STOPD=6.0;                       // 2*COMFORT_BRAKE, STOP_DISTANCE
+  // 期望跟車距離：由車機的 planner 算好送來（longitudinalPlanSP.followDistance），
+  // 這裡不重算。原本這裡自己抄了一份 long_mpc 的公式，三個常數全部走散了
+  // （2*COMFORT_BRAKE 5 對 4、STOP_DISTANCE 6 對 7、t_follow 1.45 對 1.5，
+  // 而且 server 根本沒送過 tFollow），20 km/h 的接近速度就少畫九公尺
   const MN=(F.leads||[]).find(l=>l.main);
   let dDes=0;   // 濾波後的值見下方 smoothDes()
-  if(MN && F.engaged){          // 沒接管就沒有「目標跟車距離」可言
-    const tF=F.tFollow||1.45;                     // 1.25 積極 / 1.45 標準 / 1.75 輕鬆
-    const ve=Math.max(0,(F.vEgo||0))/3.6, vl=Math.max(0,((F.vEgo||0)+(MN.v||0))/3.6);
-    dDes = smoothDes(ve*ve/CB2 + tF*ve + STOPD - vl*vl/CB2);
+  if(MN && F.engaged && F.dDes>0){   // 沒接管就沒有「目標跟車距離」可言
+    dDes = smoothDes(F.dDes);
   } else { smoothDes(null); }
   if(dDes>2 && dDes<DMAX){
     const q=px(dDes,0), hw=Math.max(26, 4.0*MPP*q.s);
@@ -983,7 +982,7 @@ const mk=(o,c)=>D0.map(d=>o+c*d*d*0.0011);
 const DEMOS = [
   { _t:'跟車 + 提示警示',
     vEgo:52, vCruise:60, engaged:true, src:'lead0', road:'國道3號 南下 32.4K',
-    slRaw:50, slOfs:10, slNext:40, slNextD:320, tFollow:1.45,
+    slRaw:50, slOfs:10, slNext:40, slNextD:320, dDes:40.9,
     bsdL:true, bsdR:true,                       // 左右盲點
     blkR:true, blinkR:true,                     // 右側車道太窄 + 右方向燈
     stop:true, stopD:72,
@@ -998,7 +997,7 @@ const DEMOS = [
 
   { _t:'E2E + 危險警告',
     vEgo:88, vCruise:110, engaged:true, src:'e2e', road:'國道1號 北上 128.7K',
-    slRaw:100, slNext:0, slNextD:0, tFollow:1.25,
+    slRaw:100, slNext:0, slNextD:0, dDes:86.0,
     blkL:true, blinkL:true,                     // 左側車道太窄 + 左方向燈
     stop:false, stopD:0,
     lanes:[{y:mk(-5.2,-.35),p:.06},{y:mk(-1.75,-.35),p:.99},
@@ -1186,6 +1185,7 @@ function fromSSE(J){
   const kph=x=>Math.round((x||0)*KPH);
   const F={
     clk:(J.clock||{}).t||'', clkOk:!!(J.clock||{}).ok,
+    dDes:ct.followDistance||0,
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff,
     engaged: !!(ss.enabled||ss.active),
     avail: !!cs.cruiseAvailable,   // 儀表 MAIN 亮著（但 OP 可能還沒按啟動）

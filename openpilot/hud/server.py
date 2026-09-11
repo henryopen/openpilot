@@ -425,6 +425,9 @@ def _produce():
         # whether the model has been handed the junction, which the driver wants to see
         # even on the frames where cruise is still the one setting the accel
         data["control"]["modelHandoff"] = bool(sm["longitudinalPlanSP"].modelHandoff)
+        # where the MPC is trying to sit, worked out by the planner with the car's own
+        # constants. The page used to derive this itself and had drifted on all three.
+        data["control"]["followDistance"] = float(sm["longitudinalPlanSP"].followDistance)
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
                                sm["selfdriveState"], _frame, gps_ok))
       except Exception as e:

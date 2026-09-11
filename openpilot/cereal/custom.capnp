@@ -35,6 +35,11 @@ struct LongitudinalPlanSP @0xaedffd8f31e7b55d {
   # asked to see that the model is in the loop, not only when it wins.
   modelHandoff @2 :Bool;
 
+  # The gap the MPC's own constraint works out to for the current lead, in metres of dRel.
+  # Sent rather than re-derived by whoever wants to draw it: the HUD kept its own copy of
+  # the formula and all three constants had drifted away from long_mpc's.
+  followDistance @3 :Float32;
+
   enum Reason {
     cruise @0;
     lead @1;
