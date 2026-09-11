@@ -1,6 +1,9 @@
+import datetime
+
 import pyray as rl
 from dataclasses import dataclass
 from openpilot.common.constants import CV
+from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.ui.onroad.exp_button import ExpButton
 from openpilot.selfdrive.ui.ui_state import ui_state, UIStatus
 from openpilot.system.ui.lib.application import gui_app, FontWeight
@@ -12,6 +15,7 @@ from openpilot.system.ui.widgets import Widget
 SET_SPEED_NA = 255
 KM_TO_MILE = 0.621371
 CRUISE_DISABLED_CHAR = '–'
+LOCAL_UTC_OFFSET = datetime.timedelta(hours=8)   # the device keeps UTC, and we drive in Taiwan
 
 
 @dataclass(frozen=True)
@@ -31,6 +35,7 @@ class FontSizes:
   speed_unit: int = 66
   max_speed: int = 40
   set_speed: int = 90
+  clock: int = 56
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,7 @@ class HudRenderer(Widget):
     self.set_speed: float = SET_SPEED_NA
     self.speed: float = 0.0
     self.v_ego_cluster_seen: bool = False
+    self._time_valid: bool = False
 
     self._font_semi_bold: rl.Font = gui_app.font(FontWeight.SEMI_BOLD)
     self._font_bold: rl.Font = gui_app.font(FontWeight.BOLD)
@@ -115,6 +121,7 @@ class HudRenderer(Widget):
     if self.is_cruise_available:
       self._draw_set_speed(rect)
 
+    self._draw_clock(rect)
     self._draw_current_speed(rect)
 
     button_x = rect.x + rect.width - UI_CONFIG.border_size - UI_CONFIG.button_size
@@ -166,6 +173,26 @@ class HudRenderer(Widget):
       0,
       set_speed_color,
     )
+
+  def _draw_clock(self, rect: rl.Rectangle) -> None:
+    """Draw the time of day next to the MAX box, so anything noticed while driving can be
+    found in the logs afterwards without guessing at the timestamp.
+
+    Grey until the clock has actually been set, because the RTC has no backup power: until
+    GPS or NTP arrives the device is reading systemd's build date, and a stale reading shown
+    in white would be worse than showing nothing.
+    """
+    if not self._time_valid:
+      self._time_valid = system_time_valid()
+
+    text = (datetime.datetime.now(datetime.UTC) + LOCAL_UTC_OFFSET).strftime("%H:%M:%S")
+    color = COLORS.WHITE_TRANSLUCENT if self._time_valid else COLORS.DARK_GREY
+
+    set_speed_width = UI_CONFIG.set_speed_width_metric if ui_state.is_metric else UI_CONFIG.set_speed_width_imperial
+    x = rect.x + 60 + (UI_CONFIG.set_speed_width_imperial - set_speed_width) // 2 + set_speed_width + 30
+    text_size = measure_text_cached(self._font_semi_bold, text, FONT_SIZES.clock)
+    y = rect.y + 45 + (UI_CONFIG.set_speed_height - text_size.y) / 2
+    rl.draw_text_ex(self._font_semi_bold, text, rl.Vector2(x, y), FONT_SIZES.clock, 0, color)
 
   def _draw_current_speed(self, rect: rl.Rectangle) -> None:
     """Draw the current vehicle speed and unit."""
