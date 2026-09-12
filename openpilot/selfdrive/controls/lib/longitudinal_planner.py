@@ -230,8 +230,10 @@ class LongitudinalPlanner:
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.plan_reason = PlanReason.cruise
     self.curve_speed = CurveSpeedControl()
-    # StopForLights is left in the tree but no longer driven: the junction is handed to the
-    # model now rather than braked for here, and two stopping laws would fight each other.
+    # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
+    # laws would fight each other, but the two are not both stopping laws: the handoff takes
+    # speed off on the way in and never says where to stop, and this says where to stop and
+    # writes no deceleration of its own. Measured over the 9/9 route, below.
     self.stop_for_lights = StopForLights()
     self.junction = JunctionHandoff()
     self.a_cruise = init_a
@@ -258,11 +260,18 @@ class LongitudinalPlanner:
 
     # Arm the model for the junction rather than braking for it here. In experimental mode
     # the model is already in the mix, so there is nothing to arm.
-    self.stop_for_lights.reset()
     if sm['selfdriveState'].experimentalMode:
       self.junction.reset()
     else:
       self.junction.update(sm['modelV2'], sm['carState'], v_ego, sm['radarState'].leadOne)
+
+    # And give the empty junction its stop point. Experimental mode already stops for one,
+    # and there is nothing to stop for until we are driving.
+    if sm['selfdriveState'].experimentalMode or not sm['selfdriveState'].enabled:
+      self.stop_for_lights.reset()
+    else:
+      self.stop_for_lights.update(sm['modelV2'], v_ego, v_cruise, sm['carState'].gasPressed,
+                                  sm['radarState'].leadOne)
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
 
