@@ -59,10 +59,14 @@ def replay(paths, cp):
         reasons[str(planner.plan_reason)] += 1
         # both the junction stop and the handoff's floor report as the mpc's e2e slot, so
         # the reason field alone cannot say which one set the accel. Keep them apart here.
+        lead1 = sm['radarState'].leadOne
         a_targets.append((float(planner.output_a_target),
                           float(planner.stop_for_lights.is_active),
                           float(sm['carState'].vEgo),
-                          float(planner.junction.a_floor)))
+                          float(planner.junction.a_floor),
+                          float(int(planner.mpc.source)),
+                          float(lead1.dRel) if lead1.present else -1.,
+                          float(planner.stop_for_lights.stop_distance)))
       except Exception:
         errors += 1
         if first_error is None:
@@ -129,6 +133,19 @@ if __name__ == '__main__':
         print('  stop point alone      : p50 %.2f, min %.2f (bound %.2f)%s' %
               (np.median(a[own]), a[own].min(), MAX_DECEL,
                '   <-- BELOW THE BOUND' if a[own].min() < MAX_DECEL - 0.05 else '   ok'))
+        # who asked for it: the solve is bounded at MAX_DECEL only for the stop obstacle,
+        # so a lead that is nearer is free to brake harder and rightly does
+        below = own & (a < MAX_DECEL - 0.05)
+        if below.any():
+          src, lead_d, stop_d = arr[:, 4], arr[:, 5], arr[:, 6]
+          names = {0: 'cruise', 1: 'lead0', 2: 'lead1', 3: 'e2e/stop'}
+          print('  frames under the bound: %d' % below.sum())
+          for s in sorted(set(src[below])):
+            m2 = below & (src == s)
+            print('    source %-9s n %4d  a p50 %.2f min %.2f  lead %s  stop point %.0f m' %
+                  (names.get(int(s), int(s)), m2.sum(), np.median(a[m2]), a[m2].min(),
+                   ('%.0f m' % np.median(lead_d[m2])) if np.median(lead_d[m2]) >= 0 else 'none',
+                   np.median(stop_d[m2])))
       if (held & ~own).any():
         print('  handoff floor won     : p50 %.2f, min %.2f  (its own limit, not this one)' %
               (np.median(a[held & ~own]), a[held & ~own].min()))
