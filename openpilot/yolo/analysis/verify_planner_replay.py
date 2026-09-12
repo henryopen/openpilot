@@ -78,12 +78,24 @@ if __name__ == '__main__':
     want = {int(x) for x in args.segments.split(',')}
     paths = [x for x in paths if int(x.rstrip('/').split('--')[-1]) in want]
 
-  import openpilot.cereal.messaging as messaging
-  from opendbc.car.structs import car
-  from openpilot.common.params import Params
-
-  # the same CarParams plannerd gets, so the replay is the car's own configuration
-  cp = messaging.log_from_bytes(Params().get("CarParams", block=True), car.CarParams)
+  # CarParams comes out of the route itself, not the params directory: that key only
+  # exists while the car is on, and this runs parked. The recorded one is also the
+  # configuration the drive actually had, which is the one worth replaying against.
+  cp = None
+  for p in paths:
+    rl = os.path.join(p, 'rlog.zst')
+    if not os.path.exists(rl):
+      rl = os.path.join(p, 'rlog')
+    if not os.path.exists(rl):
+      continue
+    for m in LogReader(rl):
+      if m.which() == 'carParams':
+        cp = m.carParams
+        break
+    if cp is not None:
+      break
+  if cp is None:
+    raise SystemExit('no carParams in these segments')
   print('car %s, openpilotLongitudinalControl %s' % (cp.carFingerprint, cp.openpilotLongitudinalControl))
   print('%d segments' % len(paths))
 
