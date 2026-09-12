@@ -146,6 +146,14 @@ if __name__ == '__main__':
                   (names.get(int(s), int(s)), m2.sum(), np.median(a[m2]), a[m2].min(),
                    ('%.0f m' % np.median(lead_d[m2])) if np.median(lead_d[m2]) >= 0 else 'none',
                    np.median(stop_d[m2])))
+          # A replay is open loop: the car in the log never braked for this stop, so the
+          # speed stays up while the tracked point counts down with the recorded wheels,
+          # and the solver is asked for what that geometry needs. If the demand matches
+          # v^2 / 2d at those frames, the bound is not being broken by the controller -
+          # the replay is handing it an approach that never happened.
+          need = v[below] ** 2 / (2 * np.maximum(stop_d[below], 1.0))
+          print('    speed there p50 %.1f kph; v^2/2d p50 %.2f vs demand p50 %.2f' %
+                (np.median(v[below]) * 3.6, np.median(need), -np.median(a[below])))
       if (held & ~own).any():
         print('  handoff floor won     : p50 %.2f, min %.2f  (its own limit, not this one)' %
               (np.median(a[held & ~own]), a[held & ~own].min()))
