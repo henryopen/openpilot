@@ -57,9 +57,12 @@ def replay(paths, cp):
         planner.update(sm)
         frames += 1
         reasons[str(planner.plan_reason)] += 1
+        # both the junction stop and the handoff's floor report as the mpc's e2e slot, so
+        # the reason field alone cannot say which one set the accel. Keep them apart here.
         a_targets.append((float(planner.output_a_target),
                           float(planner.stop_for_lights.is_active),
-                          float(sm['carState'].vEgo)))
+                          float(sm['carState'].vEgo),
+                          float(planner.junction.a_floor)))
       except Exception:
         errors += 1
         if first_error is None:
@@ -112,16 +115,25 @@ if __name__ == '__main__':
     import numpy as np
     from openpilot.selfdrive.controls.lib.stop_for_lights import MAX_DECEL
     arr = np.array(a_targets)
-    a, held, v = arr[:, 0], arr[:, 1] > 0.5, arr[:, 2]
-    print('a_target overall     : p01 %.2f p50 %.2f p99 %.2f, min %.2f' %
+    a, held, v, floor = arr[:, 0], arr[:, 1] > 0.5, arr[:, 2], arr[:, 3]
+    print('a_target overall        : p01 %.2f p50 %.2f p99 %.2f, min %.2f' %
           (np.percentile(a, 1), np.median(a), np.percentile(a, 99), a.min()))
     if held.any():
-      # the junction stop is a guess, so MAX_DECEL is the worst a wrong one may ask for.
-      # Anything below it came from somewhere else and is worth knowing about.
-      print('a_target while committed: n %d, p50 %.2f, min %.2f (floor %.2f)%s' %
-            (held.sum(), np.median(a[held]), a[held].min(), MAX_DECEL,
-             '   <-- BELOW THE FLOOR' if a[held].min() < MAX_DECEL - 0.05 else ''))
+      # The junction stop is a guess, so MAX_DECEL is the worst a wrong one may ask the
+      # solver for, and that bound is the argument for committing at all. The handoff's
+      # floor is a separate thing that can go firmer, and it overwrites a_target outright -
+      # so only frames where the floor did NOT bite say anything about this bound.
+      own = held & (floor >= a)
+      print('committed frames        : %d (floor also biting on %d)' % (held.sum(), (held & ~own).sum()))
+      if own.any():
+        print('  stop point alone      : p50 %.2f, min %.2f (bound %.2f)%s' %
+              (np.median(a[own]), a[own].min(), MAX_DECEL,
+               '   <-- BELOW THE BOUND' if a[own].min() < MAX_DECEL - 0.05 else '   ok'))
+      if (held & ~own).any():
+        print('  handoff floor won     : p50 %.2f, min %.2f  (its own limit, not this one)' %
+              (np.median(a[held & ~own]), a[held & ~own].min()))
       print('  speed while committed : p50 %.1f kph, max %.1f kph' %
-            (np.median(v[held]) * KPH, v[held].max() * KPH))
-    print('a_target elsewhere   : min %.2f' % a[~held].min() if (~held).any() else '')
+            (np.median(v[held]) * 3.6, v[held].max() * 3.6))
+    if (~held).any():
+      print('a_target when not committed: min %.2f' % a[~held].min())
   sys.exit(1 if errors else 0)
