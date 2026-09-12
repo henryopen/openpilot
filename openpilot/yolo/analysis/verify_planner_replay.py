@@ -57,7 +57,9 @@ def replay(paths, cp):
         planner.update(sm)
         frames += 1
         reasons[str(planner.plan_reason)] += 1
-        a_targets.append(float(planner.output_a_target))
+        a_targets.append((float(planner.output_a_target),
+                          float(planner.stop_for_lights.is_active),
+                          float(sm['carState'].vEgo)))
       except Exception:
         errors += 1
         if first_error is None:
@@ -108,7 +110,18 @@ if __name__ == '__main__':
     print('  %-28s %6d (%5.2f%%)' % (name, n, 100 * n / total))
   if a_targets:
     import numpy as np
-    a = np.array(a_targets)
-    print('a_target: p01 %.2f p50 %.2f p99 %.2f, min %.2f' %
+    from openpilot.selfdrive.controls.lib.stop_for_lights import MAX_DECEL
+    arr = np.array(a_targets)
+    a, held, v = arr[:, 0], arr[:, 1] > 0.5, arr[:, 2]
+    print('a_target overall     : p01 %.2f p50 %.2f p99 %.2f, min %.2f' %
           (np.percentile(a, 1), np.median(a), np.percentile(a, 99), a.min()))
+    if held.any():
+      # the junction stop is a guess, so MAX_DECEL is the worst a wrong one may ask for.
+      # Anything below it came from somewhere else and is worth knowing about.
+      print('a_target while committed: n %d, p50 %.2f, min %.2f (floor %.2f)%s' %
+            (held.sum(), np.median(a[held]), a[held].min(), MAX_DECEL,
+             '   <-- BELOW THE FLOOR' if a[held].min() < MAX_DECEL - 0.05 else ''))
+      print('  speed while committed : p50 %.1f kph, max %.1f kph' %
+            (np.median(v[held]) * KPH, v[held].max() * KPH))
+    print('a_target elsewhere   : min %.2f' % a[~held].min() if (~held).any() else '')
   sys.exit(1 if errors else 0)
