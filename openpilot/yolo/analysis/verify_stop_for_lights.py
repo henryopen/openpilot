@@ -71,7 +71,9 @@ def replay(paths):
       elif w == 'modelV2':
         if not ena:
           sfl.reset()
-          rows.append((seg, t, v, -1., 0., 0., 0., 0.))
+          # shouldStop is still recorded: the hold is only ever engaged, but reporting a
+          # disengaged frame as "the model says go" reads as a release that never happened
+          rows.append((seg, t, v, -1., 0., 0., 0., float(m.modelV2.action.shouldStop)))
           continue
         sfl.update(m.modelV2, v, vc, gas, lead)
         rows.append((seg, t, v,
