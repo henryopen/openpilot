@@ -78,13 +78,11 @@ if __name__ == '__main__':
     want = {int(x) for x in args.segments.split(',')}
     paths = [x for x in paths if int(x.rstrip('/').split('--')[-1]) in want]
 
-  from opendbc.car.car_helpers import interfaces
+  from cereal import car, messaging
   from openpilot.common.params import Params
-  from openpilot.selfdrive.car.card import convert_carControl  # noqa: F401  (import check only)
 
-  import capnp  # noqa: F401
-  from cereal import car
-  cp = car.CarParams.from_bytes(Params().get("CarParams", block=False) or b'')
+  # the same CarParams plannerd gets, so the replay is the car's own configuration
+  cp = messaging.log_from_bytes(Params().get("CarParams", block=True), car.CarParams)
   print('car %s, openpilotLongitudinalControl %s' % (cp.carFingerprint, cp.openpilotLongitudinalControl))
   print('%d segments' % len(paths))
 
