@@ -36,8 +36,18 @@ from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN
 
-# The model is planning a stop when its own speed plan reaches this; it leaves at the higher
-# one so a plan hovering around the line cannot chatter the mode.
+# The model is planning a stop when its own plan stops reaching as far as we would travel in
+# the next few seconds; it leaves at the longer one so a plan hovering around the line cannot
+# chatter the mode. A stop collapses the plan's length well before it collapses its speed:
+# over 2026-09-11's drives this arms at a median 111 m against 28 m, and holds the mode on
+# for less of the drive rather than more (15.8% against 18.7%), because it also lets go
+# sooner once the plan opens back up.
+STOP_PLAN_TIME_ON = 8.0     # seconds of travel the plan has to fall short of
+STOP_PLAN_TIME_OFF = 9.0
+STOP_PLAN_LEN = 50.0        # ...or simply this short, which no cruising plan ever is
+
+# Where the stop is, once we believe there is one. Kept separate from the gate above: this
+# is what the floor divides by, and the far end of a 110 m plan would ask for nothing.
 STOP_SPEED_ON = 2.0         # m/s, 7.2 km/h
 STOP_SPEED_OFF = 3.5
 
@@ -116,24 +126,32 @@ class JunctionHandoff:
     return bool(car_state.leftBlinker or car_state.rightBlinker) and \
         LANE_TURN_SPEED_MIN <= v_ego < LANE_TURN_SPEED_MAX
 
-  def _planned_stop(self, model):
+  def _planned_stop(self, model, v_ego):
     """How far ahead the model plans to be stopped, or None if it does not."""
     xs, vs = model.position.x, model.velocity.x
     n = min(len(xs), len(vs))
     if not n:
       return None
+
+    # the gate: the plan no longer reaches as far as we would travel in the next few seconds
+    reach = STOP_PLAN_TIME_OFF if self.model_detected else STOP_PLAN_TIME_ON
+    plan_len = float(xs[n - 1])
+    if v_ego <= 1.0 or not (plan_len < STOP_PLAN_LEN or plan_len < v_ego * reach):
+      return None
+
+    # the distance: where the plan actually slows, which is what the floor works from
     limit = STOP_SPEED_OFF if self.model_detected else STOP_SPEED_ON
     for i in range(n):
       if vs[i] < limit:
         return float(xs[i])
-    return None
+    return plan_len
 
   def update(self, model, car_state, v_ego, lead):
     if v_ego > DISABLE_SPEED or self._turning(car_state, v_ego):
       self.reset()
       return
 
-    self.stop_x = self._planned_stop(model)
+    self.stop_x = self._planned_stop(model, v_ego)
     self.model_detected = self.stop_x is not None
 
     threshold = max(v_ego * LEAD_LOOKAHEAD, 0.0)
