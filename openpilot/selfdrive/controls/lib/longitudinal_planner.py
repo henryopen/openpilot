@@ -383,6 +383,17 @@ class LongitudinalPlanner:
 
     output_a_target, self.mpc.source, _ = min(candidates, key=lambda c: c[0])
 
+    # a_min bounds what the solver may plan for the junction stop, but the accel handed on
+    # is read back off the trajectory, and that can ask for more than the solve was allowed.
+    # Replaying 9/9 it reached -2.84 against a bound of -1.50, on frames where the stop was
+    # 14 m off at 27 km/h and the geometry really did need 2.03 - open loop, so the car in
+    # the log never slowed and the point kept counting down towards it. A closed loop should
+    # not get there, but the bound is the whole reason this may commit on a guess, so hold
+    # the stop to it wherever the approach came from. Only the stop: a lead that is nearer
+    # brakes on its own terms.
+    if stop_x is not None and self.mpc.source == LongitudinalPlanSource.e2e:
+      output_a_target = max(output_a_target, STOP_MAX_DECEL)
+
     # The model plans a stop but brakes at about two thirds of what reaching it takes, and
     # the shortfall compounds. Hold it to the deceleration the distance it says it has needs.
     # This can only ever brake harder, and it is only reachable when the handoff is armed -
