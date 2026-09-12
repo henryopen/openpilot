@@ -78,7 +78,8 @@ if __name__ == '__main__':
     want = {int(x) for x in args.segments.split(',')}
     paths = [x for x in paths if int(x.rstrip('/').split('--')[-1]) in want]
 
-  from cereal import car, messaging
+  import openpilot.cereal.messaging as messaging
+  from opendbc.car.structs import car
   from openpilot.common.params import Params
 
   # the same CarParams plannerd gets, so the replay is the car's own configuration
