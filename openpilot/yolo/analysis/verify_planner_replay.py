@@ -127,7 +127,11 @@ if __name__ == '__main__':
       # solver for, and that bound is the argument for committing at all. The handoff's
       # floor is a separate thing that can go firmer, and it overwrites a_target outright -
       # so only frames where the floor did NOT bite say anything about this bound.
-      own = held & (floor >= a)
+      # the floor overwrites a_target outright, so after it bites the two are equal. A
+      # frame where they match to the float and the floor is asking for braking is the
+      # floor's, not the stop's - comparing with >= hands those to the wrong one.
+      overridden = (np.abs(floor - a) < 1e-6) & (floor < 0)
+      own = held & ~overridden
       print('committed frames        : %d (floor also biting on %d)' % (held.sum(), (held & ~own).sum()))
       if own.any():
         print('  stop point alone      : p50 %.2f, min %.2f (bound %.2f)%s' %
