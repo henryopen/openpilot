@@ -1,21 +1,33 @@
 #!/usr/bin/env python3
-"""Which ECUs answer diagnostics here, and does the body one look like it takes IO control?
+"""Can anything on this car be commanded over CAN at all? Ask, in one pass, read only.
 
-The wipers and the low beams have no command anywhere in the community DBC. The only
-lighting command in it is CF_VSM_HBACmd, which rides in SCC12 and FCA11 and is about the
-high beam. But that DBC is what the community has reversed, not what the car implements,
-and there is a second way to make an ECU move something: UDS IO control by identifier
-(service 0x2F), which is what a workshop tool uses to run an actuator on the bench.
+The question before "which address is the wiper" is "is there any write path". Broadcast
+frames are not one: CGW1 is the BCM telling everyone where the stalks are, and overwriting
+it cannot move a stalk that is hard wired into the BCM. The way a factory line moves an
+actuator is diagnostics - UDS - and openpilot already proves that channel is open, because
+it queries firmware versions over it every boot.
 
-This script only ASKS. TesterPresent to see who is home, then read-only identifiers. It
-writes nothing and moves nothing. Single-frame UDS by hand rather than the isotp helper,
-because every request here fits in one frame and the helper needs openpilot's plumbing.
+This walks the whole thing and writes nothing:
 
-  sudo systemctl stop comma      # openpilot must not be driving the panda
+  1. who answers TesterPresent on 0x700-0x7ff          - finds the body ECU's address
+  2. what they say their identity is (0x22, read only) - confirms a real UDS stack
+  3. do they admit to IO control 0x2F                  - asked with an invalid identifier,
+       so a supporting ECU answers "request out of range" and a non-supporting one
+       answers "service not supported". Nothing is actuated either way.
+  4. do they admit to routineControl 0x31              - same trick. HKG actuator tests
+       are often routines rather than IO control.
+  5. will the body ECU open an extended session 0x10 03 - the session actuator tests need
+
+If step 3 or 4 comes back "out of range" from a body ECU, there IS a write path and the
+remaining work is finding the identifier. If everything says "service not supported",
+CAN is a dead end for this and the answer is a relay.
+
+  sudo systemctl stop comma
   cd /data/openpilot && PYTHONPATH=/data/openpilot python openpilot/yolo/analysis/probe_ecus.py
-  sudo systemctl start comma     # put it back
+  sudo systemctl start comma
 
-Ignition has to be on.
+IGNITION MUST BE ON. With the car asleep the bus is silent and nothing answers - that is
+not a result, it is a missing precondition. The script checks and tells you.
 """
 import argparse
 import sys
@@ -26,28 +38,29 @@ sys.path.insert(0, '/data/openpilot')
 from panda import Panda
 from opendbc.car.structs import CarParams
 
-# What openpilot already talks to, plus the body side it has never had a reason to ask.
 KNOWN = {
   0x7d0: 'fwdRadar', 0x7d4: 'eps', 0x7c4: 'fwdCamera', 0x7e0: 'engine', 0x7e1: 'transmission',
   0x7b3: 'hvac', 0x7b1: 'parkingAdas', 0x730: 'adas', 0x7c6: 'cluster', 0x7b7: 'cornerRadar',
   0x7a0: 'body?', 0x770: 'body/IPM?', 0x760: 'gateway?', 0x7a5: 'smartKey?', 0x7d1: 'abs?',
 }
 RX_OFFSET = 0x08
+NRC = {0x10: 'general reject', 0x11: 'service not supported', 0x12: 'subfunction not supported',
+       0x13: 'wrong length', 0x22: 'conditions not correct', 0x31: 'request out of range',
+       0x33: 'security access denied', 0x7e: 'service not supported in session',
+       0x7f: 'service not supported in session'}
 
 
-def single_frame(payload: bytes) -> bytes:
-  """UDS single frame: length nibble then the service bytes, padded to 8."""
+def frame(payload: bytes) -> bytes:
   assert len(payload) <= 7
   return bytes([len(payload)]) + payload + b'\x00' * (7 - len(payload))
 
 
-def ask(p, bus, addrs, payload, wait=0.35):
-  """Send one request to each address, collect whatever comes back."""
+def ask(p, bus, addrs, payload, wait=0.4):
   p.can_clear(0xFFFF)
-  frame = single_frame(payload)
+  f = frame(payload)
   for a in addrs:
     try:
-      p.can_send(a, frame, bus)
+      p.can_send(a, f, bus)
     except Exception:
       pass
   time.sleep(wait)
@@ -56,90 +69,131 @@ def ask(p, bus, addrs, payload, wait=0.35):
     if src != bus:
       continue
     tx = addr - RX_OFFSET
-    if tx in addrs:
-      out.setdefault(tx, bytes(dat))
+    if tx in addrs and tx not in out:
+      out[tx] = bytes(dat)
   return out
 
 
-def describe(dat: bytes) -> str:
-  if len(dat) < 2:
-    return dat.hex()
-  sid = dat[1]
-  if sid == 0x7f:
+def verdict(dat: bytes):
+  """(is_negative, nrc, text)"""
+  if len(dat) < 3:
+    return None, 0, dat.hex()
+  if dat[1] == 0x7f:
     nrc = dat[3] if len(dat) > 3 else 0
-    meaning = {0x11: 'service not supported', 0x12: 'subfunction not supported',
-               0x22: 'conditions not correct', 0x31: 'request out of range',
-               0x33: 'security access denied', 0x7f: 'not in this session'}.get(nrc, '')
-    return 'refused (NRC %02X %s)' % (nrc, meaning)
-  return dat.hex()
+    return True, nrc, 'refused: %02X %s' % (nrc, NRC.get(nrc, ''))
+  return False, 0, 'positive: ' + dat.hex()
+
+
+def bus_alive(p, bus, seconds=2.0):
+  p.can_clear(0xFFFF)
+  t0 = time.monotonic()
+  n = 0
+  while time.monotonic() - t0 < seconds:
+    n += sum(1 for _, _, src in p.can_recv() if src == bus)
+    time.sleep(0.05)
+  return n
 
 
 def main():
   ap = argparse.ArgumentParser()
   ap.add_argument('--bus', type=int, default=0)
-  ap.add_argument('--scan', action='store_true', help='sweep 0x700-0x7ff rather than the known list')
-  ap.add_argument('--obd', action='store_true', help='switch the OBD port multiplexing on')
+  ap.add_argument('--obd', action='store_true', help='switch OBD port multiplexing on')
+  ap.add_argument('--quick', action='store_true', help='only the known addresses, not the full sweep')
   args = ap.parse_args()
 
   p = Panda()
   p.reset()
-  print('panda connected, safety was %s' % p.health()['safety_mode'])
-  # elm327 is the diagnostics-only mode: isotp out, nothing else.
+  print('panda ok, safety was %s' % p.health()['safety_mode'])
   p.set_safety_mode(CarParams.SafetyModel.elm327, 1)
   if args.obd:
     p.set_obd(True)
-  time.sleep(0.2)
+  time.sleep(0.3)
 
-  addrs = list(range(0x700, 0x800)) if args.scan else sorted(KNOWN)
-  print('asking %d addresses on bus %d who is there...\n' % (len(addrs), args.bus))
-
-  alive = {}
-  for chunk in [addrs[i:i + 16] for i in range(0, len(addrs), 16)]:
-    alive.update(ask(p, args.bus, chunk, b'\x3e\x00'))
-
-  if not alive:
-    print('nobody answered.')
-    print('  - is the ignition on?')
-    print('  - is openpilot stopped?  sudo systemctl stop comma')
-    print('  - try --obd, and try --bus 1')
+  n = bus_alive(p, args.bus)
+  print('bus %d traffic: %d frames in 2 s' % (args.bus, n))
+  if n == 0:
+    print('\nThe bus is silent - the car is asleep. Turn the ignition on and run this again.')
+    print('Nothing below would mean anything with the bus down.')
     p.set_safety_mode(CarParams.SafetyModel.noOutput)
     return
 
-  print('%-8s %-13s %s' % ('addr', 'guess', 'TesterPresent'))
-  for a in sorted(alive):
-    print('0x%03X    %-13s %s' % (a, KNOWN.get(a, ''), describe(alive[a])))
-
+  addrs = sorted(KNOWN) if args.quick else list(range(0x700, 0x800))
+  print('\n[1] TesterPresent to %d addresses...' % len(addrs))
+  alive = {}
+  for i in range(0, len(addrs), 16):
+    alive.update(ask(p, args.bus, addrs[i:i + 16], b'\x3e\x00'))
+  if not alive:
+    print('    nobody answered. Try --obd, or --bus 1.')
+    p.set_safety_mode(CarParams.SafetyModel.noOutput)
+    return
   found = sorted(alive)
-  print('\nidentifiers (read only):')
-  for did, what in ((0xF190, 'VIN'), (0xF18C, 'serial'), (0xF186, 'session')):
+  for a in found:
+    print('    0x%03X  %-13s %s' % (a, KNOWN.get(a, ''), verdict(alive[a])[2]))
+
+  print('\n[2] identity (read only)')
+  for did, what in ((0xF190, 'VIN'), (0xF18C, 'serial'), (0xF187, 'partNo')):
     res = ask(p, args.bus, found, b'\x22' + did.to_bytes(2, 'big'))
     for a in sorted(res):
-      dat = res[a]
-      txt = describe(dat)
-      if dat[1] == 0x62:
+      neg, _, txt = verdict(res[a])
+      if not neg:
         try:
-          txt = dat[4:].decode('ascii', 'replace').strip('\x00 \xff') or dat.hex()
+          txt = res[a][4:].decode('ascii', 'replace').strip('\x00 \xff') or txt
         except Exception:
-          txt = dat.hex()
-      print('  0x%03X %-8s %s' % (a, what, txt))
+          pass
+      print('    0x%03X %-7s %s' % (a, what, txt))
 
-  # Does anyone even admit to service 0x2F? Asking with an obviously invalid identifier is
-  # the polite way to find out: a supporting ECU refuses with "request out of range",
-  # one without the service refuses with "service not supported".
-  print('\nIO control (0x2F) probe with a deliberately invalid identifier:')
+  print('\n[3] IO control 0x2F, asked with a deliberately invalid identifier')
+  print('    "request out of range"  = SUPPORTS it, we just named the wrong thing  <-- what we want')
+  print('    "service not supported" = no write path here')
   res = ask(p, args.bus, found, b'\x2f\xff\xff\x00')
+  supports_2f = []
   for a in sorted(res):
-    d = describe(res[a])
-    hint = ''
-    if 'out of range' in d or 'conditions' in d:
-      hint = '   <- supports 0x2F, the identifier was just wrong'
-    elif 'service not supported' in d:
-      hint = '   <- no IO control here'
-    print('  0x%03X  %s%s' % (a, d, hint))
+    neg, nrc, txt = verdict(res[a])
+    star = ''
+    if neg and nrc in (0x31, 0x22, 0x33, 0x13):
+      star = '   <== SUPPORTS 0x2F'
+      supports_2f.append(a)
+    elif not neg:
+      star = '   <== answered positively?!'
+      supports_2f.append(a)
+    print('    0x%03X  %-45s%s' % (a, txt, star))
+
+  print('\n[4] routineControl 0x31, same trick')
+  res = ask(p, args.bus, found, b'\x31\x01\xff\xff')
+  supports_31 = []
+  for a in sorted(res):
+    neg, nrc, txt = verdict(res[a])
+    star = ''
+    if neg and nrc in (0x31, 0x22, 0x33, 0x13):
+      star = '   <== SUPPORTS 0x31'
+      supports_31.append(a)
+    print('    0x%03X  %-45s%s' % (a, txt, star))
+
+  print('\n[5] extended diagnostic session 0x10 03 (the session actuator tests need)')
+  res = ask(p, args.bus, found, b'\x10\x03')
+  opens = []
+  for a in sorted(res):
+    neg, _, txt = verdict(res[a])
+    if not neg:
+      opens.append(a)
+    print('    0x%03X  %s%s' % (a, txt, '   <== session opened' if not neg else ''))
+  # be polite: drop everyone back to the default session
+  ask(p, args.bus, found, b'\x10\x01', wait=0.2)
+
+  print('\n--- so ---')
+  if supports_2f or supports_31:
+    print('There IS a diagnostic write path on this car.')
+    print('  0x2F IO control : %s' % (', '.join('0x%03X' % a for a in supports_2f) or 'none'))
+    print('  0x31 routines   : %s' % (', '.join('0x%03X' % a for a in supports_31) or 'none'))
+    print('  extended session: %s' % (', '.join('0x%03X' % a for a in opens) or 'none'))
+    print('Next is finding the identifier for the wipers, which is a search, not a question')
+    print('of whether it is possible.')
+  else:
+    print('No ECU admitted to 0x2F or 0x31. If that holds with the ignition on and after')
+    print('trying --obd, CAN is a dead end for driving the wipers and the answer is a relay.')
 
   p.set_safety_mode(CarParams.SafetyModel.noOutput)
-  print('\nput back to noOutput. Nothing was written. '
-        'Remember: sudo systemctl start comma')
+  print('\npanda back to noOutput. Nothing was written. Remember: sudo systemctl start comma')
 
 
 if __name__ == '__main__':
