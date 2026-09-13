@@ -64,8 +64,12 @@ def name_for(addr, bit):
 def main():
   ap = argparse.ArgumentParser()
   ap.add_argument('--bus', type=int, default=0)
-  ap.add_argument('--all', action='store_true', help='every address, not just the body ones')
+  ap.add_argument('--known-only', action='store_true',
+                  help='only the named body messages; default is everything, because the DBC '
+                       'describes 65%% of the live bits on this bus and the rest is where an '
+                       'undocumented command would be')
   args = ap.parse_args()
+  args.all = not args.known_only
 
   sm = messaging.SubMaster(['can'])
   last = {}
@@ -93,6 +97,8 @@ def main():
         counts[(msg.address, bit)] += 1
         # a counter or checksum flips constantly; say so rather than spamming
         tag = '  (flips a lot, probably a counter)' if counts[(msg.address, bit)] > 50 else ''
+        if msg.address not in WATCH:
+          tag += '   [address not in the DBC]'
         print('0x%03X     %-14s %-6d %d -> %d   %s%s' %
               (msg.address, WATCH.get(msg.address, ''), bit,
                (prev >> bit) & 1, (val >> bit) & 1, name_for(msg.address, bit), tag))
