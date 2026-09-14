@@ -100,9 +100,17 @@ class Controls:
     # Check which actuators can be enabled
     standstill = abs(CS.vEgo) <= max(self.CP.minSteerSpeed, 0.3) or CS.standstill
     # with always on lateral, steering stays available while openpilot is not engaged, as
-    # long as nothing is blocking engagement - main off, door, gear, calibration and pedals
-    # all land in engageable, so this does not need to check them again
-    lateral_allowed = self.sm['selfdriveState'].active or (self.always_on_lateral and self.sm['selfdriveState'].engageable)
+    # long as nothing is blocking engagement - main off, door, gear and calibration all land
+    # in engageable, so this does not need to check them again.
+    #
+    # The pedals are the one exception. pedalPressed carries NO_ENTRY as well as USER_DISABLE,
+    # so reading engageable alone takes the steering away for as long as the brake is held -
+    # which is the opposite of what always on lateral is for: braking hands back the
+    # longitudinal, it does not say the driver wants to steer himself. So the pedal is
+    # allowed to block engagement while not blocking lateral; every other reason still does.
+    blocked = any(e.noEntry and str(e.name) != 'pedalPressed' for e in self.sm['onroadEvents'])
+    lateral_engageable = self.sm['selfdriveState'].engageable or not blocked
+    lateral_allowed = self.sm['selfdriveState'].active or (self.always_on_lateral and lateral_engageable)
     CC.latActive = lateral_allowed and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
                    (not standstill or self.CP.steerAtStandstill)
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
