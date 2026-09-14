@@ -64,7 +64,27 @@ A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.48, 0.35, 0.32, 0.3, 0.2]
 # 0.31 vs 0.26 at 72-90. So the gap that was felt is 36-54 km/h; above that today's car is
 # already the quicker of the two and the flat 0.5 was never being used. Only 36 and 54 move.
 # 40 -> 60 km/h goes from 14.6 s to 12.1 s (08-29 was 11.1 s), 50 -> 70 from 16.3 to 13.4.
-A_CRUISE_MAX_VALS_FREE = [1.2, 1.17, 1.0, 0.50, 0.45, 0.35, 0.3, 0.2]
+#
+# 2026-09-14: 72 km/h and above lift, asked for after an interchange ramp took 45 s to go
+# 61 -> 107 km/h. That stretch was 92% cruise-led with the command sitting at 0.27-0.32, so
+# it was this array and nothing else. The claim above that "above 54 today's car is already
+# the quicker" was read off 08-29, a drive that never had a clear road at those speeds; it
+# does not say what the band should be.
+#
+# The anchor is the driver's own foot on the same two drives: with the throttle pressed and
+# no brake he took 0.52 m/s^2 at the median through 54-72 km/h and 0.51 through 72-90, a
+# quarter of the time over 0.92, peaking at 1.33. Under openpilot the same bands got 0.24
+# and 0.22 at the median. The car is not short of the power either - left to itself it
+# reached 0.90 and 0.92 in those bands - so the ceiling was the whole of it.
+#
+# Set below that median rather than at it, and kept monotonic: 54 km/h stays where 09-09 put
+# it and 72 joins it rather than passing it, or the car would accelerate harder at 72 than at
+# 54. Interpolated, 90 km/h goes 0.300 -> 0.420 and 105 km/h 0.272 -> 0.387 (+42%); holding
+# the ceiling throughout, 61 -> 105 km/h takes 29 s against 38. Only the free curve moves:
+# behind a lead the MPC is in charge and this is not
+# read, and the driver has not asked for anything there.
+#                          0    10km/h  18    36    54    72    90   144
+A_CRUISE_MAX_VALS_FREE = [1.2, 1.17, 1.0, 0.50, 0.45, 0.45, 0.42, 0.3]
 # How much more room than the MPC is asking for before the road counts as clear. A fixed
 # distance was considered and measured worse: the MPC's target gap is
 # v^2/(2*COMFORT_BRAKE) - v_lead^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so 50 m
