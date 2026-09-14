@@ -1150,6 +1150,8 @@ function resetSmooth(){ shownF = null; lastT = 0; }
 
 /* ═════ 待機畫面控制 ═════ */
 let lastData = 0;
+// 車機待機時 /stream 是 1 Hz，所以這麼久沒東西進來就是線斷了，不是車在待機
+const DEAD_MS = 6000;
 let manualStandby = false;   // 使用者主動進待機選 AP：資料再多也不自動跳回 HUD
 function showStandbyScreen(msg, ok){
   const el=document.getElementById('standby'); if(!el) return;
@@ -1163,8 +1165,17 @@ function hideStandbyScreen(){
 setInterval(()=>{                       // 時鐘 ＋ SSE 停送資料的看門狗
   const c=document.getElementById('clock');
   if(c){ const t=new Date(); c.textContent=`${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`; }
-  if(es && lastData && Date.now()-lastData>5000){   // 連線還在但資料停了：畫面不能continue顯示過時數值
-    lastData=0; setConn('standby'); showIdle(); showStandbyScreen('已連線，openpilot 待機','ok');
+  // 看門狗：車機待機時 /stream 還是照送 1 Hz（onroad 10 Hz），所以「完全沒有資料進來」
+  // 不會是 openpilot 待機 —— 那個情況 onmessage 收得到、fromSSE 回 null，上面已經處理了。
+  // 這裡只剩一種可能：連線死了而 EventSource 不知道。從家用 wifi 換到車機熱點就是這樣，
+  // 舊的 TCP 沒有人送 RST，封包直接進黑洞，es 掛在那裡永遠不觸發 onerror，connect() 也就
+  // 永遠不會被叫回來。2026-09-14 整趟車就是這樣：Pi 早就連上 weedle-94cc 拿到 43 網段，
+  // 畫面上車機卻一直停在舊的 192.168.2.x，只能重開機。
+  if(es && lastData && Date.now()-lastData>DEAD_MS){
+    es.close(); es=null; lastData=0;
+    window.__esHost='';        // 舊位址已經不是車機在的地方，留著會蓋掉 host.json 的答案
+    setConn('offline'); showIdle(); showStandbyScreen('連線中斷，重試中…');
+    connect();
   }
 }, 1000);
 
