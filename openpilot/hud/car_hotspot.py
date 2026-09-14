@@ -50,10 +50,14 @@ def nmcli(*args, timeout=45):
 
 
 def active_wifi():
-  """-> (station connection name or None, hotspot up?)"""
+  """-> (station connection name or None, hotspot up?, wlan0's address)
+
+  The address comes back with the answer rather than being read again by whoever logs it:
+  sampled a second time it is a different moment, and a hotspot that came up and rolled back
+  in between reads as a contradiction that was never there."""
   ok, out = nmcli("-t", "-f", "NAME,TYPE", "con", "show", "--active")
   if not ok:
-    return None, False
+    return None, False, "?"
   station, hotspot = None, False
   for line in out.splitlines():
     name, _, kind = line.rpartition(":")
@@ -63,18 +67,22 @@ def active_wifi():
       hotspot = True
     else:
       station = name
-  # "in --active" is not "up". NetworkManager lists the profile from the moment it starts
-  # bringing it up, and it stays listed while a failed activation rolls back - on 2026-09-14
-  # a con up that never took still read as the hotspot being on, with wlan0 sitting on the
-  # home lease the whole time. Believe the address instead: the profile pins HOTSPOT_IP, so
-  # wlan0 being somewhere else means the AP is not up, whatever the connection list says.
+  # "In --active" is not "up": NetworkManager lists the profile from the moment it starts
+  # bringing it up and keeps it listed while a failed activation rolls back. The profile pins
+  # HOTSPOT_IP, so wlan0 being somewhere else means the AP is not serving, whatever the
+  # connection list says - and what the Pi needs is an AP that serves, not one that is listed.
   #
-  # Getting this wrong is expensive. station is None at the same moment, so the loop takes
-  # the "elif hotspot" branch, which only retries while parked and only every RETRY_HOME -
-  # driving, it does nothing at all, and the Pi has no way in until the car is parked again.
-  if hotspot and wlan_ip() != HOTSPOT_IP:
+  # This is a guard, not a diagnosis. It was added on 2026-09-14 chasing a drive where the Pi
+  # never found the car, on the strength of a log line that read "on the hotspot" with wlan0
+  # on the home lease - which turned out to be two samples a moment apart rather than a
+  # contradiction, and is why the address now travels with the answer. The failure it would
+  # cause is real either way: station reads None at the same moment, so the loop takes the
+  # "elif hotspot" branch, which retries only while parked and only every RETRY_HOME. Driving,
+  # it would do nothing at all. Whether that is what happened that morning is still unknown.
+  ip = wlan_ip()
+  if hotspot and ip != HOTSPOT_IP:
     hotspot = False
-  return station, hotspot
+  return station, hotspot, ip
 
 
 def known_stations():
@@ -116,8 +124,8 @@ def wlan_ip() -> str:
   return "?"
 
 
-def say(state: str) -> None:
-  line = f"{datetime.datetime.now().isoformat(timespec='seconds')} {state} [wlan0 {wlan_ip()}]"
+def say(state: str, ip: str) -> None:
+  line = f"{datetime.datetime.now().isoformat(timespec='seconds')} {state} [wlan0 {ip}]"
   print(line, flush=True)
   try:
     if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_MAX:
@@ -132,7 +140,7 @@ def main():
   last_home_try = 0.0
   said = None
   while True:
-    station, hotspot = active_wifi()
+    station, hotspot, ip = active_wifi()
 
     if station is not None:
       if not offroad():
@@ -165,7 +173,7 @@ def main():
       nmcli("con", "up", HOTSPOT, timeout=60)
 
     if state != said:
-      say(state)
+      say(state, ip)
       said = state
     time.sleep(POLL)
 
