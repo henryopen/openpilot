@@ -88,7 +88,24 @@ T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 #
 # 1.7 was measured first and was not worth having: over the last ten seconds of those stops
 # it asked for 0.5 m more room, because the approach is at 20.7 km/h by then and v^2 is small.
-COMFORT_BRAKE = 1.5
+#
+# 2026-09-14, same evening: reverted to 2.0 after one drive. It did not move the stopping
+# distance the driver asked about - "just as close" - and it cost two things that were not
+# paid for. The reasoning above only ever looked at a lead slower than us. Written out, what
+# the MPC sees is
+#
+#     error = dRel + (v_lead^2 - v_ego^2) / (2*COMFORT_BRAKE) - t_follow*v_ego - STOP_DISTANCE
+#
+# so lowering this scales that middle term by 4/3 in BOTH directions. Behind a lead pulling
+# away at 15 m/s while we do 10, it hands the solver 41.7 m of room where 2.0 gave 31.2 - ten
+# metres of licence to accelerate, at any speed, which is why the driver felt it get quicker
+# on a drive that never left town and never touched the raised part of A_CRUISE_MAX_VALS_FREE.
+# And because the term is v_lead^2, it multiplies the radar's own noise in vLead by the same
+# 4/3: at 15 m/s, +-1 m/s of lead speed moves the obstacle +-10 m instead of +-7.5, and the
+# accel command moves with it. That is the jerkiness.
+#
+# What this says about the stopping distance is that COMFORT_BRAKE is not the knob either.
+COMFORT_BRAKE = 2.0
 # This car stops systematically short of whatever is asked for: 40 stops on 2026-09-06 sat
 # at 3.6-4.9 m against the 6 m target, and seven stops on 09-08 sat at 1.8-4.0 m. The cause
 # is not established - it is either a dRel bias or something in how the MPC closes the last
