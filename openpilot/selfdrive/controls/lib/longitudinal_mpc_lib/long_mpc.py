@@ -68,7 +68,27 @@ T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 # at 36.7 m needing 1.32, and the individual approaches gain 5-9 m of run-up (stop #4:
 # 25.6 m needing 1.67 -> 30.7 m needing 1.23). Only the v^2 term moves, so low-speed
 # following distance is left where the driver asked for it on 09-06.
-COMFORT_BRAKE = 2.0
+#
+# 2026-09-14: 2.0 -> 1.5, because the car was stopping too close to be comfortable - 32 stops
+# that day sat at a median dRel of 4.31 m, six of them inside 3 m and the nearest at 1.94 m.
+# STOP_DISTANCE is the obvious knob and is the wrong one: 6.0 put the car at 3.6-4.9 m and
+# 7.0 moved the median to 4.31, a tenth of a metre for a whole one added. The reason is that
+# nothing is left to do by the time the constant term matters - on 26 of those 32 stops the
+# gap was already inside the target when the approach began, a median of 6.5 m inside, and
+# the MPC spent the last two seconds letting the brake off (-1.8 to -0.26 while the gap went
+# 4.0 -> 1.98 m) because no feasible plan gets the room back. What has to change is how much
+# room is kept on the way in, which is the v^2 term and therefore this.
+#
+# It only moves when the lead is slower than we are. Following a lead at our own speed, the
+# v_lead^2 term in get_stopped_equivalence_factor cancels it exactly and the equilibrium gap
+# is t_follow*v + STOP_DISTANCE regardless - measured over 6815 steady-following frames that
+# day, actual gap was 106% of 1.5v + 7 (quartiles 95-119%), so the distance the driver signed
+# off on 09-06 is untouched. Against a stopped lead nothing cancels and the target grows by
+# 2.6 m at 20 km/h, 5.8 at 30 and 10.3 at 40.
+#
+# 1.7 was measured first and was not worth having: over the last ten seconds of those stops
+# it asked for 0.5 m more room, because the approach is at 20.7 km/h by then and v^2 is small.
+COMFORT_BRAKE = 1.5
 # This car stops systematically short of whatever is asked for: 40 stops on 2026-09-06 sat
 # at 3.6-4.9 m against the 6 m target, and seven stops on 09-08 sat at 1.8-4.0 m. The cause
 # is not established - it is either a dRel bias or something in how the MPC closes the last
