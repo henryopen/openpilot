@@ -128,23 +128,38 @@ class JunctionHandoff:
 
   def _planned_stop(self, model, v_ego):
     """How far ahead the model plans to be stopped, or None if it does not."""
-    xs, vs = model.position.x, model.velocity.x
-    n = min(len(xs), len(vs))
-    if not n:
+    xs, ys, vs = model.position.x, model.position.y, model.velocity.x
+    n = min(len(xs), len(ys), len(vs))
+    if n < 2:
       return None
 
-    # the gate: the plan no longer reaches as far as we would travel in the next few seconds
+    # the gate: the plan no longer reaches as far as we would travel in the next few seconds.
+    #
+    # Measured along the path, not as x[-1]. x is the distance straight down the axis the car
+    # is pointing, so a bend folds the plan towards us and it reads as one that stops: on
+    # 2026-09-14, going round an 83 m bend at 41 km/h, x[-1] was 58.7 m against v * 8 = 91 m
+    # while the plan itself ran 114.4 m - 56 m of the shortfall was the projection and none
+    # of it was a junction. Over that day's two drives this fired on 1581 frames in a bend
+    # (lateral accel over 1 m/s^2) and the arc length leaves 251 of them, while the 47 real
+    # stops keep every one they had, 40 of 47, and the six with nothing in front stay 6 of 6.
+    #
+    # The indicator veto below cannot cover this: a bend you follow round is not a turn you
+    # signal, and the blinker was off on every one of those frames.
     reach = STOP_PLAN_TIME_OFF if self.model_detected else STOP_PLAN_TIME_ON
-    plan_len = float(xs[n - 1])
+    px = np.array([xs[i] for i in range(n)])   # capnp readers do not slice
+    py = np.array([ys[i] for i in range(n)])
+    plan_len = float(np.sum(np.hypot(np.diff(px), np.diff(py))))
     if v_ego <= 1.0 or not (plan_len < STOP_PLAN_LEN or plan_len < v_ego * reach):
       return None
 
-    # the distance: where the plan actually slows, which is what the floor works from
+    # the distance: where the plan actually slows, which is what the floor works from. Still
+    # read off x: what the floor does with it is v^2 / 2d down the road ahead, and the gate
+    # above has already ruled out the bends where the two readings part company.
     limit = STOP_SPEED_OFF if self.model_detected else STOP_SPEED_ON
     for i in range(n):
       if vs[i] < limit:
         return float(xs[i])
-    return plan_len
+    return float(xs[n - 1])
 
   def update(self, model, car_state, v_ego, lead):
     if v_ego > DISABLE_SPEED or self._turning(car_state, v_ego):
