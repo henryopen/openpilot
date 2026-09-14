@@ -233,7 +233,7 @@
 
   <div class="bar">
     <div class="m"><div class="k">相對速度</div><div class="v" id="m1">—</div></div>
-    <div class="m"><div class="k">縱向 aTarget</div><div class="v" id="m3">0.00<u>m/s²</u></div></div>
+    <div class="m"><div class="k">縱向 aTarget / 上限</div><div class="v" id="m3">0.00<u>m/s²</u></div></div>
     <div class="m"><div class="k">轉向扭力</div><div class="v" id="m4">0.00</div><div class="trk"><i id="m4b" style="width:0"></i></div></div>
     <div class="m"><div class="k">橫向G 目標 <i>/</i> 實際</div><div class="v" id="m5">0.00 / 0.00</div></div>
   </div>
@@ -965,7 +965,15 @@ function render(F){
   const m1=$('m1');
   m1.innerHTML = m?`${m.v>0?'+':''}${m.v.toFixed(1)}<u>km/h</u>`:'—';
   m1.className='v '+(m?(m.v<-5?'bad':m.v<0?'am':'ok'):'dim');
-  $('m3').innerHTML=`${F.aT>=0?'+':''}${F.aT.toFixed(2)}<u>m/s²</u>`;
+  // 縱向：指令值旁邊放這一幀的巡航上限。加速時兩者相等 = 車不是「不想加」，是已經頂到
+  // 天花板（A_CRUISE_MAX 的速度曲線）；差很多 = 有東西壓著它，看左邊的來源 chip 是誰。
+  // 上限由 planner 送來（longitudinalPlanSP.aCruiseMax），這裡不自己算。
+  const m3=$('m3');
+  const capped = F.aT>0.01 && F.aMax>0 && F.aT >= F.aMax-0.02;
+  m3.innerHTML = (F.aT>=0?'+':'')+F.aT.toFixed(2)
+    + (F.aMax>0 && F.aT>-0.01 ? `<i> / </i>${F.aMax.toFixed(2)}` : '')
+    + '<u>m/s²</u>' + (capped?'<u style="color:#ffb020">上限</u>':'');
+  m3.className='v'+(capped?' am':'');
   document.getElementById('m4').innerHTML=`${F.tq.toFixed(2)}${F.sat?'<u style="color:#ff2d2d">飽和</u>':''}`;
   document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
   document.getElementById('m4b').style.background=F.sat?'#ff2d2d':'#5aa9ff';
@@ -1045,7 +1053,7 @@ function showIdle(){
   render({vEgo:0, vCruise:0, engaged:false, road:'', src:'cruise',
           slRaw:0, slOfs:0, slNext:0, slNextD:0,
           bsdL:false, bsdR:false, blkL:false, blkR:false, blinkL:false, blinkR:false,
-          aT:0, tq:0, sat:false, lDes:0, lAct:0,
+          aT:0, aMax:0, tq:0, sat:false, lDes:0, lAct:0,
           alert1:'', alert2:'', alertStatus:'normal',
           stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[]});
 }
@@ -1206,7 +1214,7 @@ function fromSSE(J){
     bsdL: !!cs.leftBlindspot,  bsdR: !!cs.rightBlindspot,
     blkL: !!msp.leftLaneChangeEdgeBlock, blkR: !!msp.rightLaneChangeEdgeBlock,
     blinkL: !!cs.leftBlinker,  blinkR: !!cs.rightBlinker,
-    aT: ct.aTarget||0, tq: ct.torque||0, sat: !!ct.sat,
+    aT: ct.aTarget||0, aMax: ct.aCruiseMax||0, tq: ct.torque||0, sat: !!ct.sat,
     lDes: (ct.curvature||0)*v*v,   // 目標橫向加速度 = v^2 * 曲率
     lAct: (cs.yawRate||0)*v,       // 實際橫向加速度 = v * 偏航率
     alert1: ss.alertText1||'', alert2: ss.alertText2||'', alertStatus: ss.alertStatus||'normal',

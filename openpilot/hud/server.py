@@ -428,6 +428,10 @@ def _produce():
         # where the MPC is trying to sit, worked out by the planner with the car's own
         # constants. The page used to derive this itself and had drifted on all three.
         data["control"]["followDistance"] = float(sm["longitudinalPlanSP"].followDistance)
+        # the ceiling cruise was allowed this frame. aTarget sitting on it is the difference
+        # between "nothing is asking for more" and "something is holding it down", which is
+        # what the driver is looking at the number to find out.
+        data["control"]["aCruiseMax"] = float(sm["longitudinalPlanSP"].aCruiseMax)
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
                                sm["selfdriveState"], _frame, gps_ok))
       except Exception as e:

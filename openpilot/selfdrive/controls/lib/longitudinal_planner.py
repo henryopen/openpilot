@@ -216,7 +216,12 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
   j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
   target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
-  return target_accel
+  # the ceiling comes back too: on an open road it is what holds the car back, and from the
+  # outside that is indistinguishable from the car simply choosing not to accelerate. The
+  # display cannot re-derive it - it is the speed curve, the set-speed scaling, the lateral
+  # budget and the coast limit, and a copy of that would drift the way the follow distance
+  # did - so whoever applies it is the one that reports it.
+  return target_accel, float(max_accel)
 
 
 class LongitudinalPlanner:
@@ -237,6 +242,7 @@ class LongitudinalPlanner:
     self.stop_for_lights = StopForLights()
     self.junction = JunctionHandoff()
     self.a_cruise = init_a
+    self.a_cruise_max = 0.
     self.v_cruise_dash = 0.
     self.follow_distance = 0.
     self.output_a_target = init_a
@@ -334,9 +340,10 @@ class LongitudinalPlanner:
     lead_one = sm['radarState'].leadOne
     self.follow_distance = (get_safe_obstacle_distance(v_ego, t_follow)
                             - get_stopped_equivalence_factor(float(lead_one.vLead))) if lead_one.present else 0.
-    self.a_cruise = get_cruise_accel(sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
-                                     self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
-                                     accel_coast, self.allow_throttle, lead_free)
+    self.a_cruise, self.a_cruise_max = get_cruise_accel(
+      sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
+      self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
+      accel_coast, self.allow_throttle, lead_free)
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)
@@ -457,4 +464,5 @@ class LongitudinalPlanner:
     sp_send.longitudinalPlanSP.vCruise = float(self.v_cruise_dash)
     sp_send.longitudinalPlanSP.modelHandoff = bool(self.junction.active)
     sp_send.longitudinalPlanSP.followDistance = float(self.follow_distance)
+    sp_send.longitudinalPlanSP.aCruiseMax = float(self.a_cruise_max)
     pm.send('longitudinalPlanSP', sp_send)

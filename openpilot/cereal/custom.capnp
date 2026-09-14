@@ -40,6 +40,13 @@ struct LongitudinalPlanSP @0xaedffd8f31e7b55d {
   # the formula and all three constants had drifted away from long_mpc's.
   followDistance @3 :Float32;
 
+  # The ceiling cruise was allowed this frame, after the speed curve, the lead-free curve,
+  # the set-speed scaling, the lateral budget and the coast limit. On an open road this is
+  # what holds the car back, and aTarget sitting on it looks exactly like the car choosing
+  # not to accelerate - which is the question the driver actually has. Same reason as
+  # followDistance for sending it rather than letting the display work it out again.
+  aCruiseMax @4 :Float32;
+
   enum Reason {
     cruise @0;
     lead @1;
