@@ -28,6 +28,13 @@ CAR_HOTSPOT_IP = "192.168.43.1"
 FALLBACK_HOSTS = [CAR_HOTSPOT_IP, "192.168.2.122"]  # AP 上的固定位址；LAN 上的 C4（.143 於 2026-09-02 失效）
 HUD_DIR = Path(__file__).resolve().parent
 CACHE_FILE = HUD_DIR / "last_host.txt"
+# Which network this was on and whether the car answered, kept across reboots. On 2026-09-14
+# the screen sat empty for a whole drive and the reboot that fixed it erased the journal, so
+# there was nothing to say whether the Pi had joined the car's AP or something else on the
+# same subnet - the car's Hotspot is 192.168.43.1/24 and an Android tether is 192.168.43.1/24
+# too, so the address alone cannot tell them apart. The SSID can, so write that down.
+NET_LOG = HUD_DIR / "net.log"
+NET_LOG_MAX = 200_000
 
 _found: str | None = None
 _ssid: str = ""
@@ -140,8 +147,23 @@ def scan_once() -> str | None:
   return None
 
 
+def net_log(event: str) -> None:
+  """One line per change of network or of whether the car is reachable. Only on change - the
+  loop runs every 10-15 s and a drive would otherwise be thousands of identical lines."""
+  line = (f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {event} ssid={read_ssid() or '-'} "
+          f"self={own_ip() or '-'} car={_found or '-'}")
+  try:
+    if NET_LOG.exists() and NET_LOG.stat().st_size > NET_LOG_MAX:
+      NET_LOG.unlink()
+    with NET_LOG.open("a") as f:
+      f.write(line + "\n")
+  except OSError:
+    pass
+
+
 def discover_loop():
   global _found, _ssid
+  said = None
   while True:
     with _lock:
       current = _found
@@ -149,6 +171,10 @@ def discover_loop():
       s2 = read_ssid()
       with _lock:
         _ssid = s2
+      key = ("up", s2, current)
+      if key != said:
+        net_log("car reachable")
+        said = key
       # Poll the SSID while waiting: hopping to the car's hotspot changes the subnet, and
       # sleeping the whole interval out first would add that much to the time the screen
       # sits empty.
@@ -162,6 +188,10 @@ def discover_loop():
     with _lock:
       _found = found
       _ssid = ssid
+    key = ("scan", ssid, found)
+    if key != said:
+      net_log("car found" if found else "car NOT found")
+      said = key
     if found:
       try:
         CACHE_FILE.write_text(found)
