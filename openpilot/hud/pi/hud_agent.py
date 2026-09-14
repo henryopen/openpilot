@@ -150,8 +150,8 @@ def scan_once() -> str | None:
 def net_log(event: str) -> None:
   """One line per change of network or of whether the car is reachable. Only on change - the
   loop runs every 10-15 s and a drive would otherwise be thousands of identical lines."""
-  line = (f"{time.strftime('%Y-%m-%dT%H:%M:%S')} {event} ssid={read_ssid() or '-'} "
-          f"self={own_ip() or '-'} car={_found or '-'}")
+  ts = time.strftime('%Y-%m-%dT%H:%M:%S')
+  line = f"{ts} {event} ssid={read_ssid() or '-'} self={own_ip() or '-'} car={_found or '-'}"
   try:
     if NET_LOG.exists() and NET_LOG.stat().st_size > NET_LOG_MAX:
       NET_LOG.unlink()
