@@ -21,6 +21,7 @@ drive is never interrupted by the Pi losing its link for a few seconds.
 
   sudo systemctl enable --now car-hotspot
 """
+import datetime
 import os
 import subprocess
 import time
@@ -30,6 +31,13 @@ GRACE = 75.0          # seconds from boot before giving up on a known network
 POLL = 20.0
 RETRY_HOME = 300.0    # while parked on the hotspot, how often to look for home again
 OFFROAD = "/data/params/d/IsOffroad"
+# Where the handover actually went. print() alone goes to the journal, and this device has no
+# /var/log/journal - it is all in memory, so a reboot takes it with it. On 2026-09-14 the Pi
+# spent a drive unable to find the car and by the time there was anything to look at, the
+# reboot that got the screen back had already erased the only record of when the hotspot came
+# up. Both halves of that question live on two different boxes; at least keep this half.
+LOG = "/data/hotspot.log"
+LOG_MAX = 200_000     # bytes; a few lines a drive, so this is years. Truncated, not rotated.
 
 
 def nmcli(*args, timeout=45):
@@ -82,6 +90,32 @@ def uptime():
     return float(f.read().split()[0])
 
 
+def wlan_ip() -> str:
+  """Which address wlan0 is on, which is what says whether the hotspot is actually up: the
+  Hotspot profile pins 192.168.43.1, anything else is a station lease."""
+  try:
+    out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "wlan0"],
+                                  text=True, timeout=5, stderr=subprocess.DEVNULL)
+    for part in out.split():
+      if "." in part and "/" in part:
+        return part.split("/")[0]
+  except Exception:
+    pass
+  return "?"
+
+
+def say(state: str) -> None:
+  line = f"{datetime.datetime.now().isoformat(timespec='seconds')} {state} [wlan0 {wlan_ip()}]"
+  print(line, flush=True)
+  try:
+    if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_MAX:
+      os.remove(LOG)
+    with open(LOG, "a") as f:
+      f.write(line + "\n")
+  except OSError:
+    pass                # a log that cannot be written is not a reason to stop hosting
+
+
 def main():
   last_home_try = 0.0
   said = None
@@ -119,7 +153,7 @@ def main():
       nmcli("con", "up", HOTSPOT, timeout=60)
 
     if state != said:
-      print(state, flush=True)
+      say(state)
       said = state
     time.sleep(POLL)
 
