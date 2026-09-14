@@ -36,7 +36,42 @@ COST_E_DIM = 5
 COST_DIM = COST_E_DIM + 1
 CONSTR_DIM = 4
 
-X_EGO_OBSTACLE_COST = 3.
+# 2026-09-15: 3 -> 30, for a stopping distance the driver has been asking about since 09-06.
+#
+# The gap error this weights is divided by (v_ego + 10) in the cost expression below, so at a
+# standstill one metre of it is worth 3*(1/10)^2 = 0.03 against A_CHANGE_COST's 200*0.1^2 =
+# 2.0 for moving the command by 0.1 m/s^2. The solver will give up 8.2 m of gap rather than
+# change what it is asking for, and that is exactly what it does: the target it works to is
+# 7.0 at rest, and over 8 routes and 151 engaged minutes it stops at a median 3.39 m with 35%
+# of stops inside 3 m, against 4.61 m when the driver drives the same roads himself. Neither
+# STOP_DISTANCE (6.0 -> 7.0) nor COMFORT_BRAKE (2.0 -> 1.5) moved it, because both only move
+# that same soft target rather than what the solver is willing to pay to reach it.
+#
+# Swept over 60614 real frames from 11 routes up to 112 km/h, each weight fed the same
+# recorded states and the output put through the planner's own min(MPC, a_cruise):
+#
+#                     stopping      following    closing     opening     72+ km/h
+#   3 (stock)           83%          +0.000      +0.000      +0.000      +0.000
+#   10                  87%          +0.029      -0.101      +0.027      +0.036
+#   30                  99%          +0.060      -0.282      +0.058      +0.089
+#   100                126%          +0.103      -0.619      +0.077      +0.150
+#
+# 30 lands on the deceleration that stopping 5 m behind the lead actually takes; 100 brakes a
+# quarter harder than the geometry needs. Opening on a lead barely moves because the cruise
+# ceiling absorbs it - the MPC asks +1.103 there and 0.481 comes out, with 68.6% of frames
+# capped against 40.4% at stock - and 72 km/h and above is +0.089 for the same reason.
+#
+# The cost is jerk. Replayed at 20 Hz with the command fed back as its own a_prev, frames
+# over 2 m/s^3 go from 2.13% to 4.05% (the recorded drive itself is 3.26%, so the simulation
+# is smoother than the car and the real increase should be less than that 1.9 points).
+# Paying it back with A_CHANGE_COST 200 -> 300 does work on the jerk (3.13%) but takes the
+# stopping distance with it (87%): the two are the same trade inside one cost function.
+#
+# A geometric floor outside the MPC was written and measured instead (lead_stop.py, kept but
+# not wired up). At 20 Hz it holds for a median of 0.05 s at a time, 125 of 173 holds shorter
+# than 0.3 s, because min(floor, output) has no smoothing at the seam - see STOPPING.md 9.4.
+# This has no seam: it is the same solver, asked to value distance more.
+X_EGO_OBSTACLE_COST = 30.
 X_EGO_COST = 0.
 V_EGO_COST = 0.
 A_EGO_COST = 0.
