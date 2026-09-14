@@ -27,6 +27,7 @@ import subprocess
 import time
 
 HOTSPOT = "Hotspot"
+HOTSPOT_IP = "192.168.43.1"   # pinned in the profile (ipv4.addresses, method shared)
 GRACE = 75.0          # seconds from boot before giving up on a known network
 POLL = 20.0
 RETRY_HOME = 300.0    # while parked on the hotspot, how often to look for home again
@@ -62,6 +63,17 @@ def active_wifi():
       hotspot = True
     else:
       station = name
+  # "in --active" is not "up". NetworkManager lists the profile from the moment it starts
+  # bringing it up, and it stays listed while a failed activation rolls back - on 2026-09-14
+  # a con up that never took still read as the hotspot being on, with wlan0 sitting on the
+  # home lease the whole time. Believe the address instead: the profile pins HOTSPOT_IP, so
+  # wlan0 being somewhere else means the AP is not up, whatever the connection list says.
+  #
+  # Getting this wrong is expensive. station is None at the same moment, so the loop takes
+  # the "elif hotspot" branch, which only retries while parked and only every RETRY_HOME -
+  # driving, it does nothing at all, and the Pi has no way in until the car is parked again.
+  if hotspot and wlan_ip() != HOTSPOT_IP:
+    hotspot = False
   return station, hotspot
 
 
