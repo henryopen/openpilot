@@ -7,6 +7,8 @@ from opendbc.car.lateral import FRICTION_THRESHOLD, get_friction
 from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
+from openpilot.selfdrive.controls.lib.nn_feedforward import load_model
+from openpilot.common.swaglog import cloudlog
 from openpilot.common.pid import PIDController
 
 # At higher speeds (25+mph) we can assume:
@@ -98,6 +100,14 @@ class LatControlTorque(LatControl):
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
     self.jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * LP_FILTER_CUTOFF_HZ), self.dt)
 
+    # Neural feedforward, trained on this car's logs. One latAccelFactor cannot cover a rack
+    # whose measured factor runs 1.44 at 15 km/h to 8.48 at 110. Falls back to the linear
+    # conversion when there is no model file for the car - rename the json to turn it off,
+    # which needs no rebuild, unlike a param key.
+    self.nn = load_model(CP.carFingerprint)
+    self.nn_past_frames = [int(round(t / self.dt)) for t in (0.3, 0.2, 0.1)]
+    cloudlog.info(f"lateral feedforward: {'neural' if self.nn else 'linear'}")
+
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
     self.torque_params.latAccelOffset = latAccelOffset
@@ -107,6 +117,16 @@ class LatControlTorque(LatControl):
   def update_limits(self):
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params),
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
+
+  def _torque_from_lateral_accel(self, lateral_accel, v_ego, lateral_jerk):
+    if self.nn is None:
+      return self.torque_from_lateral_accel(lateral_accel, self.torque_params)
+    # The model was trained against the acceleration the car was actually making, so the
+    # history comes from the request buffer - in steady state the two agree, and the buffer
+    # is what exists at this point in the frame.
+    buf = self.lat_accel_request_buffer
+    past = [buf[max(len(buf) - 1 - n, 0)] for n in self.nn_past_frames]
+    return self.nn.evaluate([v_ego, lateral_accel, lateral_jerk] + past)
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
@@ -151,7 +171,7 @@ class LatControlTorque(LatControl):
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < self.integrator_reset_speed
       output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
-      output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
+      output_torque = self._torque_from_lateral_accel(output_lataccel, CS.vEgo, desired_lateral_jerk)
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)
