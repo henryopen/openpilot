@@ -37,10 +37,20 @@ VERSION = 1
 # while the steering rack still has to be forced round against a stationary tyre. Measured
 # on this car, the same torque produces 0.08 of the lateral acceleration the model predicts
 # at 10-20 km/h and 2.8 of it above 70. The error is what shrinks with speed, so scale the
-# error back up rather than inventing a second feedforward. Same curve as the one openpilot
-# used to carry here and that StarPilot and CarrotPilot both still do.
+# error back up rather than inventing a second feedforward.
+#
+# The curve first taken here on 09-06 was StarPilot's, [12, 10.5, 8, 5]. That was the wrong
+# half of a pair: StarPilot runs it against KI = 0.35, and this car runs comma's KI = 0.15,
+# so the low gain arrived without the integrator that pays for it. What openpilot itself
+# carried, and what FrogPilot and CarrotPilot still carry, is 20% higher below 20 m/s.
+# Replayed over this car's 09-15 drives (100.0% reproduction of the logged error and P):
+# error goes up 1.185x at 3-7 km/h decaying to 1.099x by 60, which lifts median torque there
+# from 54.3 to 63.6 counts - across the 60 counts this rack needs before the wheel moves at
+# all, so the share of frames that clear it goes 46.4% -> 52.3%. The cost is saturation
+# +1.35pt and frame-to-frame movement +14.5%, against +12.9pt and +84% for the factor-table
+# plus lower-KP attempt that was rejected on 09-15 for exactly those two numbers.
 LOW_SPEED_X = [0, 10, 20, 30]
-LOW_SPEED_Y = [12, 10.5, 8, 5]
+LOW_SPEED_Y = [15, 13, 10, 5]
 LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
 
 # Upstream freezes the integrator below 5 m/s. That guard is for cars whose rack will not
