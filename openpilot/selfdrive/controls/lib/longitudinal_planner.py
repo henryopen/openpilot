@@ -133,6 +133,20 @@ PLAN_REASONS = {LongitudinalPlanSource.cruise: PlanReason.cruise,
 # holding cruise back for a lead the model is unsure about, see where it is used below
 RADAR_TO_CAMERA = 1.52
 WEAK_LEAD_MIN_PROB, WEAK_LEAD_MAX_PROB = 0.2, 0.5
+# How long the doubt has to last before it is allowed to take the throttle away. On
+# 2026-09-15 this fired 189 times on one drive for 35.1 s in total: a median of 0.10 s
+# each - two frames - with 177 of the 189 under half a second and 90% of them less than
+# three seconds apart, at a median 35 km/h. That is not a lead being held back from, it is
+# the model's probability crossing 0.2 and 0.5 while the car is trying to accelerate, and
+# every crossing zeroed a_cruise for a tenth of a second. The driver felt exactly that:
+# quick behind a lead, sluggish on an empty road, which is backwards from the tables
+# (A_CRUISE_MAX_VALS_FREE is >= A_CRUISE_MAX_VALS at every breakpoint) and only makes
+# sense once you see that both this and stop_for_lights can only fire with no lead.
+# Ten frames keeps the twelve episodes that lasted long enough to mean something and
+# drops the other 177. The reason for the check is unchanged - see the comment at the
+# use site - so the exit is immediate: doubt that clears should give the throttle back
+# on the same frame, it is only the onset that needs to prove itself.
+WEAK_LEAD_MIN_FRAMES = 10
 WEAK_LEAD_MIN_DIST, WEAK_LEAD_MAX_DIST = 45., 100.
 WEAK_LEAD_MIN_SPEED = 5.
 ALLOW_THROTTLE_THRESHOLD = 0.4
@@ -254,6 +268,7 @@ class LongitudinalPlanner:
 
     self.v_desired_filter = FirstOrderFilter(init_v, 2.0, self.dt)
     self.plan_reason = PlanReason.cruise
+    self.weak_lead_frames = 0
     self.curve_speed = CurveSpeedControl()
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
@@ -391,13 +406,16 @@ class LongitudinalPlanner:
     # simply not speeding up is a bounded thing to be wrong about: over 2.27 hours this
     # holds cruise back for 43 s an hour and a real lead turns up within six seconds 82% of
     # the time, so 8 s an hour of not accelerating at nothing.
-    weak_lead = False
+    weak_lead_now = False
     if not sm['radarState'].leadOne.present and v_ego > WEAK_LEAD_MIN_SPEED:
       leads = sm['modelV2'].leadsV3
       if len(leads):
         lead_x = leads[0].x[0] - RADAR_TO_CAMERA
-        weak_lead = (WEAK_LEAD_MIN_PROB <= leads[0].prob < WEAK_LEAD_MAX_PROB
-                     and WEAK_LEAD_MIN_DIST <= lead_x < WEAK_LEAD_MAX_DIST)
+        weak_lead_now = (WEAK_LEAD_MIN_PROB <= leads[0].prob < WEAK_LEAD_MAX_PROB
+                         and WEAK_LEAD_MIN_DIST <= lead_x < WEAK_LEAD_MAX_DIST)
+    # the onset has to hold, the release does not - see WEAK_LEAD_MIN_FRAMES
+    self.weak_lead_frames = self.weak_lead_frames + 1 if weak_lead_now else 0
+    weak_lead = self.weak_lead_frames >= WEAK_LEAD_MIN_FRAMES
     if weak_lead:
       self.a_cruise = min(self.a_cruise, 0.)
 
