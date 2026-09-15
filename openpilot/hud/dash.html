@@ -166,6 +166,10 @@
   #netInfo { padding:10px 16px; margin:-10px -4px; }  /* 放大點擊範圍，手指按得到 */
   #backHud { font-size:20px; font-weight:700; color:#8fd4a8; background:#122019;
     border:1px solid #2e6b45; border-radius:12px; padding:13px 30px; letter-spacing:1px; }
+  #nnffBtn { font-size:20px; font-weight:700; color:#cfe3f5; background:#16222e;
+    border:1px solid #2c465c; border-radius:12px; padding:13px 30px; letter-spacing:1px; }
+  #nnffBtn.cur { color:#7ee2a0; border-color:#2e6b45; background:#122019; }
+  #nnffBtn:disabled { opacity:.45 }
   #apRow { display:flex; gap:12px; }
   .apbtn { font-size:18px; font-weight:700; color:#9fb4c8; background:#101922;
     border:1px solid #24384a; border-radius:10px; padding:13px 20px; }
@@ -182,6 +186,7 @@
   <div id="netRow">
     <button id="backHud">返回 HUD</button>
     <button id="reconnBtn">重新連線 WiFi</button>
+    <button id="nnffBtn">轉向前饋 —</button>
     <div id="apRow"></div>
   </div>
 </div>
@@ -1326,6 +1331,29 @@ if(rb) rb.addEventListener('click', async ()=>{
   }catch(e){ rb.textContent='失敗：'+(e&&e.message||e); }
   setTimeout(()=>{ rb.textContent=old; rb.disabled=false; }, 5000);
 });
+
+/* 轉向前饋開關：神經網路（本車 13.8 小時 log 訓的）↔ 原本的線性換算。
+   車機的 latcontrol_torque 每秒重讀一次旗標檔，所以按下去下一秒就生效，不用重開。 */
+const nb=document.getElementById('nnffBtn');
+async function nnffRefresh(act){
+  if(!nb) return;
+  const h=window.__esHost; if(!h){ nb.textContent='轉向前饋 —'; nb.disabled=true; return; }
+  try{
+    const c=new AbortController(); const t=setTimeout(()=>c.abort(),4000);
+    const r=await fetch(`http://${h}:8902/nnff${act?'/toggle':''}`,{cache:'no-store',signal:c.signal});
+    clearTimeout(t);
+    const j=await r.json();
+    nb.disabled=!j.have_model;
+    nb.textContent='轉向前饋：'+(j.on?'神經網路':'線性');
+    nb.classList.toggle('cur', !!j.on);
+  }catch(e){ nb.textContent='轉向前饋 —'; }
+}
+if(nb) nb.addEventListener('click', async ()=>{
+  nb.disabled=true; nb.textContent='切換中…';
+  await nnffRefresh(true);
+  nb.disabled=false;
+});
+nnffRefresh(false); setInterval(()=>nnffRefresh(false), 10000);
 
 // HUD ↔ 待機互切：左上角 netInfo 點了進待機（選 AP 用）；「返回 HUD」跳回去
 const ni=document.getElementById('netInfo');

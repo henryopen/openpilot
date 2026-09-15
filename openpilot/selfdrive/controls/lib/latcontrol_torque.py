@@ -1,4 +1,5 @@
 import math
+import os
 import numpy as np
 from collections import deque
 
@@ -55,6 +56,10 @@ LOW_SPEED_X = [0, 10, 20, 30]
 LOW_SPEED_Y = [15, 13, 10, 5]
 LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
 
+# Presence of this file puts the lateral feedforward back on the linear conversion. Written
+# by the HUD's toggle, because the driver cannot SSH into the car from the driver's seat.
+NNFF_OFF_FLAG = '/data/nnff_off'
+
 # Upstream freezes the integrator below 5 m/s. That guard is for cars whose rack will not
 # move at low speed; this one is a full-time lateral car with minSteerSpeed = 0, so all it
 # does here is switch the integrator off for the whole junction speed range. Measured over
@@ -102,9 +107,13 @@ class LatControlTorque(LatControl):
 
     # Neural feedforward, trained on this car's logs. One latAccelFactor cannot cover a rack
     # whose measured factor runs 1.44 at 15 km/h to 8.48 at 110. Falls back to the linear
-    # conversion when there is no model file for the car - rename the json to turn it off,
-    # which needs no rebuild, unlike a param key.
-    self.nn = load_model(CP.carFingerprint)
+    # conversion when there is no model for the car, or when the flag file is present -
+    # a file rather than a param key so that turning it off needs no rebuild, and re-read
+    # once a second so the HUD button takes effect without a restart.
+    self.nn_model = load_model(CP.carFingerprint)
+    self.nn = None if os.path.isfile(NNFF_OFF_FLAG) else self.nn_model
+    self.nn_recheck_frames = int(round(1.0 / self.dt))
+    self.nn_recheck = self.nn_recheck_frames
     self.nn_past_frames = [int(round(t / self.dt)) for t in (0.3, 0.2, 0.1)]
     cloudlog.info(f"lateral feedforward: {'neural' if self.nn else 'linear'}")
 
@@ -131,6 +140,14 @@ class LatControlTorque(LatControl):
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
+
+    self.nn_recheck -= 1
+    if self.nn_recheck <= 0:
+      self.nn_recheck = self.nn_recheck_frames
+      nn = None if os.path.isfile(NNFF_OFF_FLAG) else self.nn_model
+      if (nn is None) != (self.nn is None):
+        cloudlog.info(f"lateral feedforward switched to {'neural' if nn else 'linear'}")
+      self.nn = nn
     measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
     measurement = measured_curvature * CS.vEgo ** 2
     future_desired_lateral_accel = desired_curvature * CS.vEgo ** 2

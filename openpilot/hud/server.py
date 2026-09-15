@@ -36,6 +36,11 @@ PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
             "longitudinalPlan", "longitudinalPlanSP", "controlsState", "gpsLocationExternal"]
 
+# The neural lateral feedforward toggle. Kept as a file rather than a param key so that
+# flipping it needs no rebuild; latcontrol_torque re-reads it once a second.
+NNFF_OFF_FLAG = "/data/nnff_off"
+NNFF_MODEL = "/data/openpilot/openpilot/selfdrive/controls/lib/nnff_models/HYUNDAI_CUSTIN_1ST_GEN.json"
+
 # what the planner says set the accel; the page shows these instead of the raw plan source
 # Keyed on the enum's raw value: a constant stringifies to its number while a value read
 # off a message gives its name, and relying on which one arrives here is asking for it.
@@ -451,6 +456,16 @@ class Handler(BaseHTTPRequestHandler):
   def log_message(self, fmt, *args):
     pass
 
+  def _json(self, obj):
+    body = json.dumps(obj).encode()
+    self.send_response(200)
+    self.send_header("Content-Type", "application/json")
+    self.send_header("Access-Control-Allow-Origin", "*")
+    self.send_header("Cache-Control", "no-store")
+    self.send_header("Content-Length", str(len(body)))
+    self.end_headers()
+    self.wfile.write(body)
+
   def do_GET(self):
     if self.path.startswith("/stream"):
       self.send_response(200)
@@ -473,13 +488,22 @@ class Handler(BaseHTTPRequestHandler):
       except (BrokenPipeError, ConnectionResetError, OSError):
         return
     elif self.path.startswith("/health"):
-      body = b'{"ok": true}'
-      self.send_response(200)
-      self.send_header("Content-Type", "application/json")
-      self.send_header("Access-Control-Allow-Origin", "*")
-      self.send_header("Content-Length", str(len(body)))
-      self.end_headers()
-      self.wfile.write(body)
+      self._json({"ok": True})
+    elif self.path.startswith("/nnff"):
+      # the neural lateral feedforward toggle. latcontrol_torque re-reads the flag file once
+      # a second, so this takes effect on the next second without restarting anything.
+      if "toggle" in self.path:
+        try:
+          if os.path.isfile(NNFF_OFF_FLAG):
+            os.remove(NNFF_OFF_FLAG)
+          else:
+            with open(NNFF_OFF_FLAG, "w") as f:
+              f.write("off\n")
+        except OSError as e:
+          self._json({"ok": False, "error": str(e)})
+          return
+      self._json({"ok": True, "on": not os.path.isfile(NNFF_OFF_FLAG),
+                  "have_model": os.path.isfile(NNFF_MODEL)})
     else:
       self.send_response(404)
       self.send_header("Content-Length", "0")
