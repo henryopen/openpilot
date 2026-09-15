@@ -29,6 +29,22 @@ LaneChangeDirection = log.LaneChangeDirection
 ACTUATOR_FIELDS = tuple(car.CarControl.Actuators.schema.fields.keys())
 
 
+# Below this the car is not steered at all. Measured on 2026-09-15 over 155 minutes: it takes
+# 60-68 counts to break the wheel away from rest under 15 km/h, the controller's output reverses
+# direction about every 0.1 s down there, and STEER_DELTA_UP of 3 means 0.46 s to climb that far -
+# so 47% of the attempts to build torque never reach the point where the wheel moves at all. The
+# driver feels that as "it just does not turn" and takes over, which is also where the torque
+# fights his. Three of the five MDPS ToiUnavail faults that day sat between 2.9 and 4.9 km/h.
+#
+# Giving that band up costs 4.9% of the time lateral is active, and what it gives up is a band
+# that was not steering the car anyway. The driver ran 5 km/h on his previous car for the same
+# reason. Two thresholds so it does not chatter on and off at the boundary; upstream's
+# minSteerSpeed is left alone because that field means "the rack will not take commands below
+# this", which is a different statement about a different car.
+LAT_MIN_SPEED_OFF = 5 * CV.KPH_TO_MS
+LAT_MIN_SPEED_ON = 7 * CV.KPH_TO_MS
+
+
 class Controls:
   def __init__(self) -> None:
     self.params = Params()
@@ -37,6 +53,7 @@ class Controls:
     cloudlog.info("controlsd got CarParams")
 
     self.always_on_lateral = self.params.get_bool("AlwaysOnLateral")
+    self.lat_below_min_speed = True
 
     self.CI = interfaces[self.CP.carFingerprint](self.CP)
 
@@ -111,8 +128,12 @@ class Controls:
     blocked = any(e.noEntry and str(e.name) != 'pedalPressed' for e in self.sm['onroadEvents'])
     lateral_engageable = self.sm['selfdriveState'].engageable or not blocked
     lateral_allowed = self.sm['selfdriveState'].active or (self.always_on_lateral and lateral_engageable)
+    if CS.vEgo < LAT_MIN_SPEED_OFF:
+      self.lat_below_min_speed = True
+    elif CS.vEgo > LAT_MIN_SPEED_ON:
+      self.lat_below_min_speed = False
     CC.latActive = lateral_allowed and not CS.steerFaultTemporary and not CS.steerFaultPermanent and \
-                   (not standstill or self.CP.steerAtStandstill)
+                   (not standstill or self.CP.steerAtStandstill) and not self.lat_below_min_speed
     CC.longActive = CC.enabled and not any(e.overrideLongitudinal for e in self.sm['onroadEvents']) and self.CP.openpilotLongitudinalControl
 
     actuators = CC.actuators
