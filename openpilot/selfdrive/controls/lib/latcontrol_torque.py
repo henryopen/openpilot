@@ -64,6 +64,16 @@ NNFF_OFF_FLAG = '/data/nnff_off'
 # this is a guard, not a working limit.
 NN_ACCEL_LIMIT = 3.1
 
+# Below this request the linear conversion is used, above it the network, and in between the
+# two are crossfaded. Straight-line driving does not need the network - the constant is only
+# wrong by the time the rack is being forced round, and it is the straights that the driver
+# feels as "it will not centre". Replayed over the 09-16 drives, on frames asking for less
+# than 0.1 m/s^2 at over 30 km/h: the linear conversion puts 5.5% of frames above the 60
+# counts this rack needs before the wheel moves, the network 23.5%. Four times as much
+# correction on a straight road, in the right direction but harder than the car needs.
+NN_BLEND_LO = 0.15
+NN_BLEND_HI = 0.50
+
 # Upstream freezes the integrator below 5 m/s. That guard is for cars whose rack will not
 # move at low speed; this one is a full-time lateral car with minSteerSpeed = 0, so all it
 # does here is switch the integrator off for the whole junction speed range. Measured over
@@ -146,12 +156,17 @@ class LatControlTorque(LatControl):
     The request is a physical quantity and stays inside that - 0.03% of frames exceed 3 - but
     it is clipped anyway, because a network has no reason to behave outside its training set.
     """
+    linear = self.torque_from_lateral_accel(lateral_accel, self.torque_params)
+    blend = float(np.clip((abs(lateral_accel) - NN_BLEND_LO) / (NN_BLEND_HI - NN_BLEND_LO), 0.0, 1.0))
+    if blend == 0.0:
+      return linear
+
     buf = self.lat_accel_request_buffer
     past = [float(np.clip(buf[max(len(buf) - 1 - n, 0)], -NN_ACCEL_LIMIT, NN_ACCEL_LIMIT))
             for n in self.nn_past_frames]
     inputs = [v_ego, float(np.clip(lateral_accel, -NN_ACCEL_LIMIT, NN_ACCEL_LIMIT)),
               float(np.clip(lateral_jerk, -MAX_LAT_JERK, MAX_LAT_JERK))] + past
-    return -self.nn.evaluate(inputs)
+    return (1.0 - blend) * linear + blend * -self.nn.evaluate(inputs)
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
