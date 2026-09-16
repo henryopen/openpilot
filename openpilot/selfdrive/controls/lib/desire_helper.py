@@ -21,13 +21,20 @@ LANE_CHANGE_START_TIME = 0.5
 # are complementary, so a blinker under this speed is a turn and over it is a lane change,
 # with no band in between where neither applies.
 LANE_TURN_SPEED_MAX = LANE_CHANGE_SPEED_MIN
-# Below this a blinker is more likely to be pulling over, parking, or crawling in traffic
-# than taking a junction, and handing the model a turn desire there would be inventing one.
-# Measured over 2831 frames of this car actually turning - blinker on and more than 45
-# degrees of wheel - the median speed is 10.3 km/h. A 15 km/h floor, which is what the
-# hunch "below that a blinker means pulling over" produced, keeps 9.7% of them; 5 km/h
-# keeps 89.4% and still excludes crawling and standing still.
-LANE_TURN_SPEED_MIN = 5 * CV.KPH_TO_MS
+# Below this a blinker is more likely to be pulling over, parking, or standing still than
+# taking a junction, and handing the model a turn desire there would be inventing one.
+#
+# Measured over 37297 frames of this car actually turning - blinker on and more than 45
+# degrees of wheel, across four drives on 09-16 - the median speed is 9.9 km/h and the 25th
+# percentile is 1.2. The 5 km/h this was set to on 09-09, from 2831 frames, keeps 64.6% of
+# them rather than the 89.4% that smaller sample suggested; it was cutting 131.9 seconds of
+# turning at a median of 205 degrees of wheel.
+#
+# 2 km/h keeps 73.3%. What it still excludes is the part that should be excluded: 74 of
+# those 131.9 seconds are under 1.1 km/h, which is the driver working the wheel while
+# stopped or shuffling in a car park, and where standstill takes lateral away regardless -
+# the threshold now sits just above that rather than well inside the turns.
+LANE_TURN_SPEED_MIN = 2 * CV.KPH_TO_MS
 
 class DesireHelper:
   def __init__(self):
