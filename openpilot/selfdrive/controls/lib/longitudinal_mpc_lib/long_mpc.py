@@ -77,9 +77,56 @@ V_EGO_COST = 0.
 A_EGO_COST = 0.
 J_EGO_COST = 5.
 A_CHANGE_COST = 200.
-DANGER_ZONE_COST = 100.
+# Weight on violating the constraint below. Raised from 100 with LEAD_DANGER_FACTOR, see
+# there: on its own it is worth 0.05 m of stopping distance, because at a standstill the
+# stock factor puts the constraint at 0.75 * 7.0 = 5.25 m and the car already stops outside
+# it, so there is nothing for a bigger weight to push against.
+DANGER_ZONE_COST = 400.
 CRASH_DISTANCE = .25
-LEAD_DANGER_FACTOR = 0.75
+# Where the car comes to rest was never something this solver was asked to achieve. The gap
+# term in the cost is one of six, divided by (v_ego + 10), and what STOP_DISTANCE does is
+# set a constant in the target it works towards - the resting place is a by-product of how
+# far it got, not a specification. Measured over 24 stops behind a stationary lead on
+# 2026-09-16 the car sat at a median dRel of 5.57 m against the 7.0 it was working to, and
+# neither 6.0 -> 7.0 on STOP_DISTANCE (worth 0.1-0.3 m) nor 3 -> 30 on X_EGO_OBSTACLE_COST
+# closed it.
+#
+# The same distance is also in a CONSTRAINT, which is a different kind of statement:
+#
+#     ((x_obstacle - x_ego) - lead_danger_factor * desired_dist) / (v_ego + 10.) >= 0
+#
+# At a standstill desired_dist collapses to STOP_DISTANCE, so a factor of 1.0 down there
+# reads "never inside 7 m" and the solver has to find a plan that honours it rather than
+# trading it against jerk. At speed desired_dist is the v^2/(2*COMFORT_BRAKE) term, which
+# asks for 76 m at 50 km/h - a number nothing can honour and which the car is already 3.9 m
+# inside when the approach starts - so the factor has to stay at stock up there or the
+# problem is infeasible and the slack does the talking anyway.
+#
+# Closed-loop replay of 2026-09-16, fidelity established first (predicted median 5.96 m
+# against an actual 5.73; per-case error median 0.79 m, so medians only). 17 stops:
+#
+#                          median    q1-q3      closest   worst a   jerk >2
+#   stock                    5.78   5.22-6.39      3.98     -3.47     2.78%
+#   factor 1.0 under 6 m/s   6.62   6.36-6.94      5.15     -3.49     3.08%
+#   + DANGER_ZONE_COST 400   7.03   6.88-7.37      6.11     -3.49     3.09%
+#
+# and it does not disturb following, 72 stretches over 25 minutes:
+#
+#    0-20 km/h   gap 12.4 -> 12.9 m   worst -1.55 -> -1.87
+#   20-40 km/h   gap 19.7 -> 20.0 m   worst -2.21 -> -2.39
+#   40-70 km/h   unchanged to 0.01 m
+#     70+ km/h   unchanged
+#
+# because above 6 m/s the constraint is the same one it always was, and below it the gap
+# the car already keeps is outside what the constraint asks for.
+#
+# The junction path was checked too, since stop_for_lights' imaginary car goes through the
+# same constraint: 12 stops move by 0.4 m, which is inside that replay's own fidelity
+# (base +0.96 against a recorded +0.21). junction_handoff's a_floor is what governs there,
+# not this - the first version of that replay left it out and stopped 0 of 12.
+LEAD_DANGER_BP = [6., 10.]      # m/s
+LEAD_DANGER_VALS = [1.0, 0.75]
+LEAD_DANGER_FACTOR = LEAD_DANGER_VALS[-1]
 LIMIT_COST = 1e6
 ACADOS_SOLVER_TYPE = 'SQP_RTI'
 
@@ -457,7 +504,7 @@ class LongitudinalMpc:
     self.params[:,2] = np.min(x_obstacles, axis=1)
     self.params[:,3] = np.copy(self.a_prev)
     self.params[:,4] = t_follow
-    self.params[:,5] = LEAD_DANGER_FACTOR
+    self.params[:,5] = np.interp(self.x0[1], LEAD_DANGER_BP, LEAD_DANGER_VALS)
 
     self.run()
     if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
