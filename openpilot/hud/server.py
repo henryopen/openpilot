@@ -437,6 +437,9 @@ def _produce():
         # between "nothing is asking for more" and "something is holding it down", which is
         # what the driver is looking at the number to find out.
         data["control"]["aCruiseMax"] = float(sm["longitudinalPlanSP"].aCruiseMax)
+        # and which of the four limits it came from, because the number alone does not say
+        # and they are not fixed by the same change
+        data["control"]["aCruiseMaxSrc"] = str(sm["longitudinalPlanSP"].aCruiseMaxSource)
         data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
                                sm["selfdriveState"], _frame, gps_ok))
       except Exception as e:

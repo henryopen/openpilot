@@ -43,9 +43,42 @@ from openpilot.common.swaglog import cloudlog
 # much already and only cruise is held down. Only the 10 m/s point moves, to halfway back
 # towards eco's 0.5; 54 km/h and above stay where the taper put them, so the flat 0.5-to-72
 # stretch that was called too eager does not come back.
+#
+# 2026-09-17: both curves reshaped, because the shape was backwards. The driver's own foot
+# over 10 engaged minutes of throttle with no brake and nothing inside 40 m, against what
+# the free curve was handing out at the same speed:
+#
+#      km/h      his median / p75      free curve
+#      0-10        0.29 / 0.70            1.19        system 4x him
+#     10-18        0.41 / 0.68            1.09        system 2.7x him
+#     18-27        0.56 / 0.92            0.88        about right
+#     27-36        0.57 / 0.80            0.62        about right
+#     45-54        0.60 / 0.80            0.46        him 1.3x system
+#     54-63        1.28 / 1.40            0.45        him 2.8x system
+#     63-72        1.36 / 1.51            0.45        him 3.0x system
+#     72-81        1.49 / 1.54            0.44        him 3.4x system
+#     90-110       1.20 / 1.37            0.40        him 3.0x system
+#
+# He accelerates gently from rest and hard once moving; the curves did the opposite. The
+# two complaints - "in town with the lead far away it accelerates hard enough to feel
+# unsafe" and "on the on-ramp it is too weak to merge" - are the two ends of that one
+# error, not two problems.
+#
+# Two caveats this is set conservatively against. The high-speed sample is small (906
+# frames over 54-110 km/h, about 9 seconds) and self-selected, because the reason to press
+# the throttle is thinking it is too slow. And 2026-09-14 measured 54-72 km/h at a median
+# of 0.52 on a larger sample where today says 1.28. So the new values move towards the
+# foot without arriving at it: 0.68 at 72 km/h against his 1.36, which is still half.
+#
+# Monotonic-decreasing is given up on purpose. The previous note kept it so the car would
+# not accelerate harder at 72 than at 54, but the driver does exactly that (0.57 at 36,
+# 1.36 at 72), so the constraint described a preference nobody has.
+#
+# Integrated through the ceiling, 0-30 km/h goes 8.5 -> 9.7 s, 0-50 19.4 -> 18.9,
+# 40-70 18.2 -> 13.3 and 61-107 30.1 -> 19.9.
 #                     0    10km/h  18    36    54    72    90   144
 A_CRUISE_MAX_BP =   [0.,   2.8,   5.,   10.,  15.,  20.,  25., 40.]
-A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.48, 0.35, 0.32, 0.3, 0.2]
+A_CRUISE_MAX_VALS = [1.0,  0.95,  0.85, 0.48, 0.40, 0.38, 0.34, 0.26]
 # With nothing close ahead the ceiling above is what holds the car back, not the MPC. Over
 # the 2026-09-09 drive, with the nearest lead beyond the gate below, the plan sat within 8%
 # of this ceiling for 75% of the frames at 15-25 km/h, 82% at 25-36, 80% at 36-45, 70% at
@@ -83,8 +116,12 @@ A_CRUISE_MAX_VALS = [1.2,  1.17,  1.0,  0.48, 0.35, 0.32, 0.3, 0.2]
 # the ceiling throughout, 61 -> 105 km/h takes 29 s against 38. Only the free curve moves:
 # behind a lead the MPC is in charge and this is not
 # read, and the driver has not asked for anything there.
+#
+# 2026-09-17: reshaped with the curve above - see the measurement of the driver's own foot
+# there. This one keeps the gap over A_CRUISE_MAX_VALS at every breakpoint, and takes the
+# whole of the increase in the 36-144 km/h range where the merging complaint lives.
 #                          0    10km/h  18    36    54    72    90   144
-A_CRUISE_MAX_VALS_FREE = [1.2, 1.17, 1.0, 0.50, 0.45, 0.45, 0.42, 0.3]
+A_CRUISE_MAX_VALS_FREE = [1.0, 0.95, 0.85, 0.58, 0.62, 0.68, 0.64, 0.50]
 # How much more room than the MPC is asking for before the road counts as clear. A fixed
 # distance was considered and measured worse: the MPC's target gap is
 # v^2/(2*COMFORT_BRAKE) - v_lead^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so 50 m
@@ -125,6 +162,7 @@ J_CRUISE_COMFORT = 0.16
 V_CRUISE_DEADZONE = 0.25
 CONTROL_N_T_IDX = ModelConstants.T_IDXS[:CONTROL_N]
 PlanReason = custom.LongitudinalPlanSP.Reason
+AccelLimit = custom.LongitudinalPlanSP.AccelLimit
 PLAN_REASONS = {LongitudinalPlanSource.cruise: PlanReason.cruise,
                 LongitudinalPlanSource.lead0: PlanReason.lead,
                 LongitudinalPlanSource.lead1: PlanReason.lead,
@@ -224,16 +262,27 @@ def get_coast_accel(pitch):
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
                      lead_free=False):
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego, lead_free)
+  # Which of the four things below ended up being the ceiling. The number on its own does
+  # not say - the driver asked to see it because a car sitting on its ceiling looks the
+  # same whichever one put it there, and the answer decides what to go and change.
+  source = AccelLimit.e2e if e2e else (AccelLimit.free if lead_free else AccelLimit.lead)
 
   if not e2e:
-    max_accel = scale_for_set_speed(max_accel, v_cruise)
+    scaled = scale_for_set_speed(max_accel, v_cruise)
+    if scaled < max_accel - 1e-4:
+      source = AccelLimit.setSpeed
+    max_accel = scaled
     a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
     a_y = v_ego ** 2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
     a_x_allowed = math.sqrt(max(a_total_max ** 2 - a_y ** 2, 0.))
+    if a_x_allowed < max_accel - 1e-4:
+      source = AccelLimit.lateral
     max_accel = min(max_accel, a_x_allowed)
     if not allow_throttle:
       clipped_accel_coast = max(accel_coast, ACCEL_MIN)
       coast_limit = np.interp(v_ego, [MIN_ALLOW_THROTTLE_SPEED, MIN_ALLOW_THROTTLE_SPEED*2], [max_accel, clipped_accel_coast])
+      if coast_limit < max_accel - 1e-4:
+        source = AccelLimit.coast
       max_accel = min(max_accel, coast_limit)
 
   # Ignore the last fraction of a km/h. The law above is proportional all the way to zero
@@ -255,7 +304,7 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
   # display cannot re-derive it - it is the speed curve, the set-speed scaling, the lateral
   # budget and the coast limit, and a copy of that would drift the way the follow distance
   # did - so whoever applies it is the one that reports it.
-  return target_accel, float(max_accel)
+  return target_accel, float(max_accel), source
 
 
 class LongitudinalPlanner:
@@ -278,6 +327,7 @@ class LongitudinalPlanner:
     self.junction = JunctionHandoff()
     self.a_cruise = init_a
     self.a_cruise_max = 0.
+    self.a_cruise_max_source = AccelLimit.free
     self.v_cruise_dash = 0.
     self.follow_distance = 0.
     self.output_a_target = init_a
@@ -375,7 +425,7 @@ class LongitudinalPlanner:
     lead_one = sm['radarState'].leadOne
     self.follow_distance = (get_safe_obstacle_distance(v_ego, t_follow)
                             - get_stopped_equivalence_factor(float(lead_one.vLead))) if lead_one.present else 0.
-    self.a_cruise, self.a_cruise_max = get_cruise_accel(
+    self.a_cruise, self.a_cruise_max, self.a_cruise_max_source = get_cruise_accel(
       sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
       self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
       accel_coast, self.allow_throttle, lead_free)
@@ -503,4 +553,5 @@ class LongitudinalPlanner:
     sp_send.longitudinalPlanSP.modelHandoff = bool(self.junction.active)
     sp_send.longitudinalPlanSP.followDistance = float(self.follow_distance)
     sp_send.longitudinalPlanSP.aCruiseMax = float(self.a_cruise_max)
+    sp_send.longitudinalPlanSP.aCruiseMaxSource = self.a_cruise_max_source
     pm.send('longitudinalPlanSP', sp_send)

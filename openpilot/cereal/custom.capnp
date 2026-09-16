@@ -47,6 +47,20 @@ struct LongitudinalPlanSP @0xaedffd8f31e7b55d {
   # followDistance for sending it rather than letting the display work it out again.
   aCruiseMax @4 :Float32;
 
+  # Which of the four limits aCruiseMax came from. The value alone does not say, and a car
+  # sat on its ceiling looks identical whichever one put it there - but what to change is
+  # different for each, so the driver asked to see it rather than infer it.
+  aCruiseMaxSource @5 :AccelLimit;
+
+  enum AccelLimit {
+    free @0;        # the no-lead speed curve
+    lead @1;        # the with-a-lead speed curve
+    setSpeed @2;    # scaled down because the set speed itself is low
+    lateral @3;     # the cornering budget took it, sqrt(a_total^2 - a_y^2)
+    coast @4;       # throttle not allowed, held to the coasting acceleration
+    e2e @5;         # experimental mode or a junction handoff: ACCEL_MAX, no curve
+  }
+
   enum Reason {
     cruise @0;
     lead @1;

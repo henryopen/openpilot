@@ -995,9 +995,18 @@ function render(F){
   // 上限由 planner 送來（longitudinalPlanSP.aCruiseMax），這裡不自己算。
   const m3=$('m3');
   const capped = F.aT>0.01 && F.aMax>0 && F.aT >= F.aMax-0.02;
+  // 上限是四個東西取最小的結果，光看數字分不出是誰壓的，而它們要改的地方不一樣：
+  // 淨空/前車 = 速度曲線（A_CRUISE_MAX_VALS[_FREE]）；設定速度 = 設定值太低被打折
+  // （scale_for_set_speed）；轉彎 = 橫向預留吃掉縱向；收油 = 不准給油只能滑行；
+  // 模型 = 實驗模式或路口交接，直接用 ACCEL_MAX 不看曲線。
+  const A_SRC = {free:'淨空', lead:'前車', setSpeed:'設定速度',
+                 lateral:'轉彎', coast:'收油', e2e:'模型'};
+  const srcTxt = A_SRC[F.aMaxSrc] || '';
   m3.innerHTML = (F.aT>=0?'+':'')+F.aT.toFixed(2)
     + (F.aMax>0 && F.aT>-0.01 ? `<i> / </i>${F.aMax.toFixed(2)}` : '')
-    + '<u>m/s²</u>' + (capped?'<u style="color:#ffb020">上限</u>':'');
+    + '<u>m/s²</u>'
+    + (srcTxt ? `<u style="color:${capped?'#ffb020':'#7d8ea0'}">${srcTxt}</u>` : '')
+    + (capped?'<u style="color:#ffb020">上限</u>':'');
   m3.className='v'+(capped?' am':'');
   document.getElementById('m4').innerHTML=`${F.tq.toFixed(2)}${F.sat?'<u style="color:#ff2d2d">飽和</u>':''}`;
   document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
@@ -1078,7 +1087,7 @@ function showIdle(){
   render({vEgo:0, vCruise:0, engaged:false, road:'', src:'cruise',
           slRaw:0, slOfs:0, slNext:0, slNextD:0,
           bsdL:false, bsdR:false, blkL:false, blkR:false, blinkL:false, blinkR:false,
-          aT:0, aMax:0, tq:0, sat:false, lDes:0, lAct:0,
+          aT:0, aMax:0, aMaxSrc:'', tq:0, sat:false, lDes:0, lAct:0,
           alert1:'', alert2:'', alertStatus:'normal',
           stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[]});
 }
@@ -1250,7 +1259,8 @@ function fromSSE(J){
     bsdL: !!cs.leftBlindspot,  bsdR: !!cs.rightBlindspot,
     blkL: !!msp.leftLaneChangeEdgeBlock, blkR: !!msp.rightLaneChangeEdgeBlock,
     blinkL: !!cs.leftBlinker,  blinkR: !!cs.rightBlinker,
-    aT: ct.aTarget||0, aMax: ct.aCruiseMax||0, tq: ct.torque||0, sat: !!ct.sat,
+    aT: ct.aTarget||0, aMax: ct.aCruiseMax||0, aMaxSrc: ct.aCruiseMaxSrc||'',
+    tq: ct.torque||0, sat: !!ct.sat,
     lDes: (ct.curvature||0)*v*v,   // 目標橫向加速度 = v^2 * 曲率
     lAct: (cs.yawRate||0)*v,       // 實際橫向加速度 = v * 偏航率
     alert1: ss.alertText1||'', alert2: ss.alertText2||'', alertStatus: ss.alertStatus||'normal',
