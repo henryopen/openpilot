@@ -188,13 +188,19 @@ T_DIFFS = np.diff(T_IDXS, prepend=[0.])
 #
 # What this says about the stopping distance is that COMFORT_BRAKE is not the knob either.
 COMFORT_BRAKE = 2.0
-# This car stops systematically short of whatever is asked for: 40 stops on 2026-09-06 sat
-# at 3.6-4.9 m against the 6 m target, and seven stops on 09-08 sat at 1.8-4.0 m. The cause
-# is not established - it is either a dRel bias or something in how the MPC closes the last
-# few metres - so this is compensation, not a fix, asked for by the driver. Note the term is
-# constant across speed, so following distance goes up by the same metre everywhere, not
-# only at rest.
-STOP_DISTANCE = 7.0
+# Where to come to rest behind a stopped car, measured as the radar measures it - dRel
+# reads a systematic 0.85 m shorter than the real gap, so 6.0 here is about 6.9 m to the
+# eye. The term is constant across speed, so it also adds itself to the following distance
+# at every speed, not only at rest.
+#
+# This was 7.0, and before that 6.0, as compensation: the car used to stop a long way short
+# of whatever was asked for (40 stops on 2026-09-06 at 3.6-4.9 m against a 6 m target) and
+# raising the number was the only lever anyone had. It barely worked - 6.0 -> 7.0 moved the
+# median 0.1-0.3 m - because the number was a constant inside a target the solver was never
+# required to reach. With the constraint change above it is required to, so this is now a
+# specification of where to stop rather than a nudge, and it reads as what the driver
+# actually wants: 6.0, asked for on 2026-09-16 after seeing the replay land on 7.03.
+STOP_DISTANCE = 6.0
 MIN_X_LEAD_FACTOR = 0.5
 
 # All three personalities are deliberately identical, asked for on 2026-09-09. The distance
