@@ -15,17 +15,17 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
-# Below this, do not start slowing for a corner at all. 20 km/h ruled out the junction turns
-# this actually meets: replaying the 09-16 drive, dropping the floor adds 461 frames of
-# entering, and 316 of them are between 15 and 20 km/h at a median curvature of 0.0498 -
-# signalled turns into junctions, predicted lateral acceleration 2.22 against a threshold of
-# 1.79. Those are the corners the driver was asking about.
+# There is no speed floor. A 20 km/h one sat here and ruled out the junction turns this is
+# for: replaying the 09-16 drive, removing it adds 461 frames of entering, 316 of them
+# between 15 and 20 km/h at a median curvature of 0.0498 with the indicator on - signalled
+# turns into junctions, predicted lateral acceleration 2.22 against a threshold of 1.79.
 #
-# It is not dropped entirely. Under 10 km/h the same replay shows 72 frames at a curvature of
-# exactly 0.0000 - the car is stopped or crawling and the model is looking at a bend further
-# on. Slowing for a corner you have not reached, at a speed already below what the corner
-# allows, does nothing except take throttle away at a junction.
-MIN_V = 10 * CV.KPH_TO_MS
+# Nothing is needed in its place. Whether a corner warrants slowing is already decided by
+# v_target, which is what this corner allows at _A_LAT_REG_MAX, and below it update() returns
+# zero. On the same replay that test alone removes every low-speed frame: of the frames that
+# cross the entering threshold under 10 km/h, the number where v_ego actually exceeds
+# v_target is zero - at 5 km/h the corner ahead allows 9.5, at 12 it allows 14.5. A speed
+# floor is a second guess at a question v_target answers exactly.
 V_FLOOR = 15 * CV.KPH_TO_MS  # ...but once slowing, this is as far down as it goes
 PARAMS_UPDATE_PERIOD = 3.   # seconds
 
@@ -118,7 +118,7 @@ class CurveSpeedControl:
         self.state = CurveState.overriding
 
       elif self.state == CurveState.enabled:
-        if self.v_ego > MIN_V and self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH * tol:
+        if self.max_pred_lat_acc >= _ENTERING_PRED_LAT_ACC_TH * tol:
           self.state = CurveState.entering
 
       elif self.state == CurveState.overriding:
@@ -179,7 +179,7 @@ class CurveSpeedControl:
     self.is_active = self._update_state_machine()
     self.a_target = self._update_solution()
 
-    # sunnypilot's controller returns a speed and floors it: max(v_target, MIN_V). This
+    # sunnypilot's controller returns a speed and floors it at a minimum. This
     # port returns an acceleration instead, and the floor did not come with it, so nothing
     # stopped it slowing all the way down - it only exits the corner when current_lat_acc
     # falls under _LEAVING_LAT_ACC_TH, and since that is v^2 * curvature, a junction had to
