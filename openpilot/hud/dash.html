@@ -83,6 +83,17 @@
   .handoff{top:18px;right:300px;display:none;align-items:center;justify-content:center;
     padding:6px 12px;border:1px solid var(--amber);border-radius:8px;
     background:rgba(0,0,0,.55)}
+
+  /* 實驗模式。2026-09-16 加回來，條件是 selfdriveState.experimentalMode 本身 —— 也就是
+     駕駛在設定裡開的那個，不是 junction.active。兩者在 planner 做同一件事（讓模型的縱向
+     計畫進 min()），所以以前共用一個圖示，結果畫面在回答「是不是實驗模式」而答錯：
+     9/16 那趟 116 分鐘，experimentalMode 全程 0%，路口交接卻武裝了 73 次 329 秒。
+     現在兩個各自顯示、顏色不同，同時亮也分得出來。 */
+  .expm{top:18px;right:420px;display:none;align-items:center;justify-content:center;
+    padding:6px 12px;border:1px solid var(--blue);border-radius:8px;
+    background:rgba(0,0,0,.55)}
+  .expm.on{display:flex}
+  .exlbl{font-size:15px;font-weight:700;color:var(--blue);letter-spacing:.5px}
   .hflbl{font-size:15px;font-weight:700;color:var(--amber);letter-spacing:.5px;
     white-space:nowrap;text-shadow:0 0 8px rgba(0,0,0,.9);
     animation:hfpulse 1.6s ease-in-out infinite}
@@ -232,6 +243,7 @@
     <div class="a2" id="alert2"></div>
   </div>
 
+  <div class="ov expm" id="exBox"><span class="exlbl">實驗模式</span></div>
   <div class="ov handoff" id="hfBox"><span class="hflbl">路口交接</span></div>
 
   <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
@@ -945,6 +957,9 @@ function render(F){
   // 事，但只有後者會在直路上突然出現，所以要看得出是哪一個
   const hf=$('hfBox');
   if(hf) hf.className='ov handoff'+((F.engaged && F.handoff)?' on':'');
+  // 實驗模式 —— 駕駛自己設的那個，跟上面的路口交接是兩回事
+  const ex=$('exBox');
+  if(ex) ex.className='ov expm'+(F.exp?' on':'');
   const sla=$('cSLA');
   if(F.slaAge>=0 && F.slaAge<8 && F.slaTarget>0){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
@@ -1215,7 +1230,7 @@ function fromSSE(J){
   const F={
     clk:(J.clock||{}).t||'', clkOk:!!(J.clock||{}).ok,
     dDes:ct.followDistance||0,
-    vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff,
+    vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff, exp:!!ss.experimentalMode,
     engaged: !!(ss.enabled||ss.active),
     avail: !!cs.cruiseAvailable,   // 儀表 MAIN 亮著（但 OP 可能還沒按啟動）
     road: lm.roadName||'—',
