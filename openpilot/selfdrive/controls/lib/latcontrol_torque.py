@@ -60,6 +60,10 @@ LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
 # by the HUD's toggle, because the driver cannot SSH into the car from the driver's seat.
 NNFF_OFF_FLAG = '/data/nnff_off'
 
+# The widest |lateral acceleration| the model was trained on. Requests stay well inside it;
+# this is a guard, not a working limit.
+NN_ACCEL_LIMIT = 3.1
+
 # Upstream freezes the integrator below 5 m/s. That guard is for cars whose rack will not
 # move at low speed; this one is a full-time lateral car with minSteerSpeed = 0, so all it
 # does here is switch the integrator off for the whole junction speed range. Measured over
@@ -127,15 +131,27 @@ class LatControlTorque(LatControl):
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params),
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
 
-  def _torque_from_lateral_accel(self, lateral_accel, v_ego, lateral_jerk):
-    if self.nn is None:
-      return self.torque_from_lateral_accel(lateral_accel, self.torque_params)
-    # The model was trained against the acceleration the car was actually making, so the
-    # history comes from the request buffer - in steady state the two agree, and the buffer
-    # is what exists at this point in the frame.
+  def _nn_feedforward(self, lateral_accel, v_ego, lateral_jerk):
+    """Feedforward torque for a requested lateral acceleration, in this file's sign convention.
+
+    Two things this has to get right, both of which were wrong when it first went on the car:
+
+    Sign. The model was trained on carOutput.actuatorsOutput.torque, which is what goes out on
+    CAN - already negated relative to the output_torque this file works in, because update()
+    returns -output_torque. So the model's answer is negated here. Measured on the drive that
+    ran without this: the correlation between requested lateral acceleration and the torque
+    actually sent went from -0.786 to +0.153, i.e. the car pushed against the turn.
+
+    Range. The model has seen |lateral acceleration| up to 3.13 m/s^2 and nothing outside it.
+    The request is a physical quantity and stays inside that - 0.03% of frames exceed 3 - but
+    it is clipped anyway, because a network has no reason to behave outside its training set.
+    """
     buf = self.lat_accel_request_buffer
-    past = [buf[max(len(buf) - 1 - n, 0)] for n in self.nn_past_frames]
-    return self.nn.evaluate([v_ego, lateral_accel, lateral_jerk] + past)
+    past = [float(np.clip(buf[max(len(buf) - 1 - n, 0)], -NN_ACCEL_LIMIT, NN_ACCEL_LIMIT))
+            for n in self.nn_past_frames]
+    inputs = [v_ego, float(np.clip(lateral_accel, -NN_ACCEL_LIMIT, NN_ACCEL_LIMIT)),
+              float(np.clip(lateral_jerk, -MAX_LAT_JERK, MAX_LAT_JERK))] + past
+    return -self.nn.evaluate(inputs)
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
@@ -187,14 +203,32 @@ class LatControlTorque(LatControl):
       pid_log.error = float(error)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < self.integrator_reset_speed
-      output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
-      output_torque = self._torque_from_lateral_accel(output_lataccel, CS.vEgo, desired_lateral_jerk)
+      if self.nn is None:
+        output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
+        output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
+        ff_torque = self.torque_from_lateral_accel(ff, self.torque_params)
+      else:
+        # The network converts a requested lateral acceleration to the torque this rack needs
+        # for it, which is a statement about the car and only holds for accelerations the car
+        # can actually make. The PID's output is not that - it is a control signal, and on the
+        # drive this first went out on it reached 4150 m/s^2 against a training range of 3.13,
+        # so 36% of frames were extrapolation. Feed the network the request, which is physical,
+        # and leave the feedback on the linear conversion where any magnitude is meaningful.
+        ff_torque = self._nn_feedforward(ff, CS.vEgo, desired_lateral_jerk)
+        feedback_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=0.0,
+                                            freeze_integrator=freeze_integrator)
+        output_torque = ff_torque + self.torque_from_lateral_accel(feedback_lataccel, self.torque_params)
+        output_torque = float(np.clip(output_torque, -self.steer_max, self.steer_max))
+        output_lataccel = feedback_lataccel
 
       pid_log.active = True
       pid_log.p = float(self.pid.p)
       pid_log.i = float(self.pid.i)
       pid_log.d = float(self.pid.d)
-      pid_log.f = float(self.pid.f)
+      # with the neural feedforward the PID carries no feedforward term of its own, so log the
+      # request that went to the network instead - same meaning, so the field stays comparable
+      # across the two paths
+      pid_log.f = float(self.pid.f if self.nn is None else ff)
       pid_log.output = float(-output_torque) # TODO: log lat accel?
       pid_log.actualLateralAccel = float(measurement)
       pid_log.desiredLateralAccel = float(setpoint)
