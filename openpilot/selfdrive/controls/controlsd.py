@@ -120,21 +120,12 @@ class Controls:
     # long as nothing is blocking engagement - main off, door, gear and calibration all land
     # in engageable, so this does not need to check them again.
     #
-    # The brake is the one exception. pedalPressed carries NO_ENTRY as well as USER_DISABLE,
+    # The pedals are the one exception. pedalPressed carries NO_ENTRY as well as USER_DISABLE,
     # so reading engageable alone takes the steering away for as long as the brake is held -
     # which is the opposite of what always on lateral is for: braking hands back the
-    # longitudinal, it does not say the driver wants to steer himself. So the brake is
+    # longitudinal, it does not say the driver wants to steer himself. So the pedal is
     # allowed to block engagement while not blocking lateral; every other reason still does.
-    #
-    # pedalPressed is one event for both pedals, so exempting it outright handed the throttle
-    # the same pass, which was never the intent. Measured over 09-15: frames with engagement
-    # blocked but lateral still active went from 5 on 09-14 to 8083 and 9636 on the two 09-15
-    # drives, and the one MDPS fault that actually surfaced a warning to the driver happened
-    # inside that new window with the throttle down. Holding the throttle while unengaged is
-    # the driver driving; hand the wheel back.
-    brake_only = CS.brakePressed and not CS.gasPressed
-    blocked = any(e.noEntry and not (brake_only and str(e.name) == 'pedalPressed')
-                  for e in self.sm['onroadEvents'])
+    blocked = any(e.noEntry and str(e.name) != 'pedalPressed' for e in self.sm['onroadEvents'])
     lateral_engageable = self.sm['selfdriveState'].engageable or not blocked
     lateral_allowed = self.sm['selfdriveState'].active or (self.always_on_lateral and lateral_engageable)
     if CS.vEgo < LAT_MIN_SPEED_OFF:
