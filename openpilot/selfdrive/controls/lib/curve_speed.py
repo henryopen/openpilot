@@ -15,7 +15,17 @@ from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
 
-MIN_V = 20 * CV.KPH_TO_MS   # below this, do not start slowing for a corner at all
+# Below this, do not start slowing for a corner at all. 20 km/h ruled out the junction turns
+# this actually meets: replaying the 09-16 drive, dropping the floor adds 461 frames of
+# entering, and 316 of them are between 15 and 20 km/h at a median curvature of 0.0498 -
+# signalled turns into junctions, predicted lateral acceleration 2.22 against a threshold of
+# 1.79. Those are the corners the driver was asking about.
+#
+# It is not dropped entirely. Under 10 km/h the same replay shows 72 frames at a curvature of
+# exactly 0.0000 - the car is stopped or crawling and the model is looking at a bend further
+# on. Slowing for a corner you have not reached, at a speed already below what the corner
+# allows, does nothing except take throttle away at a junction.
+MIN_V = 10 * CV.KPH_TO_MS
 V_FLOOR = 15 * CV.KPH_TO_MS  # ...but once slowing, this is as far down as it goes
 PARAMS_UPDATE_PERIOD = 3.   # seconds
 
