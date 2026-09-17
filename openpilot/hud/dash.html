@@ -150,13 +150,23 @@
   .bar{position:absolute;left:0;right:0;bottom:0;height:76px;display:flex;z-index:3;
     border-top:1px solid #16212c;
     background:linear-gradient(180deg,rgba(4,7,10,.86),rgba(4,7,10,.96) 40%,rgba(4,7,10,.99))}
-  .m{flex:1;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;
+  /* 格寬按各格最長內容給，不平均分：等分時「相對速度」只放一個破折號卻佔 256px，把
+     縱向那格推到 274px 才開始，而縱向自己放不下來源標籤，溢出 35px 被隔壁的數字蓋掉。
+     量出來的需求是 175/386/165/231/248，總和 1205 < 1280，剩下的都給油量那格。 */
+  .m{flex:0 0 auto;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;
     padding:0 18px 9px;position:relative}
+  .m:nth-child(1){flex-basis:175px}
+  .m:nth-child(2){flex-basis:386px}
+  .m:nth-child(3){flex-basis:165px}
+  .m:nth-child(4){flex-basis:231px}
+  .m:nth-child(5){flex:1 1 auto}
   .m+.m::before{content:"";position:absolute;left:0;bottom:12px;width:1px;height:26px;background:#16212c}
-  .m .k{font-size:10px;letter-spacing:1.3px;color:var(--dim);white-space:nowrap;font-weight:600}
+  .m .k{font-size:12px;letter-spacing:1.3px;color:var(--dim);white-space:nowrap;font-weight:600}
   .m .v{font-size:35px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.05;
     white-space:nowrap;text-shadow:var(--sh)}
   .m .v u{text-decoration:none;font-size:12.5px;color:var(--dim2);font-weight:600;margin-left:3px}
+  /* 加速上限來源要在行進間瞄一眼就讀到，單位不用 - 所以只放大這個 */
+  .m .v u.src{font-size:22px;margin-left:7px}
   .m .v i{font-style:normal;color:var(--dim)}
   .v.ok{color:var(--green)} .v.am{color:var(--amber)} .v.bad{color:var(--red)} .v.dim{color:#3b4b5b}
   .trk{position:absolute;left:18px;right:18px;bottom:4px;height:3px;background:rgba(14,22,30,.9);
@@ -1009,8 +1019,8 @@ function render(F){
   m3.innerHTML = (F.aT>=0?'+':'')+F.aT.toFixed(2)
     + (F.aMax>0 && F.aT>-0.01 ? `<i> / </i>${F.aMax.toFixed(2)}` : '')
     + '<u>m/s²</u>'
-    + (srcTxt ? `<u style="color:${capped?'#ffb020':'#7d8ea0'}">${srcTxt}</u>` : '')
-    + (capped?'<u style="color:#ffb020">上限</u>':'');
+    + (srcTxt ? `<u class="src" style="color:${capped?'#ffb020':'#7d8ea0'}">${srcTxt}</u>` : '')
+    + (capped?'<u class="src" style="color:#ffb020">上限</u>':'');
   m3.className='v'+(capped?' am':'');
   document.getElementById('m4').innerHTML=`${F.tq.toFixed(2)}${F.sat?'<u style="color:#ff2d2d">飽和</u>':''}`;
   document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
