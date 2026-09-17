@@ -412,9 +412,16 @@ def _produce():
         # Fuel by subtraction from the last fill. Returns {} until it has a basis, and
         # holds its last answer while the cluster's economy reads invalid (it does that
         # for about a minute after a fill), so the display never shows a bogus number.
+        # kept on its own except: everything below shares one, and the display losing
+        # speed, radar and the model because the fuel arithmetic tripped is far worse
+        # than losing the litres.
         _cs = sm["carState"]
-        _f = _fuel.update(float(_cs.odometer), float(_cs.avgFuelEconomy),
-                          float(_cs.fuelGauge))
+        try:
+          _f = _fuel.update(float(_cs.odometer), float(_cs.avgFuelEconomy),
+                            float(_cs.fuelGauge))
+        except Exception as e:
+          _f = None
+          data["fuelError"] = str(e)
         if _f:
           data["fuel"] = {k: (round(v, 2) if isinstance(v, float) else v)
                           for k, v in _f.items()}
