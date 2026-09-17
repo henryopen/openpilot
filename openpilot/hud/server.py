@@ -31,6 +31,7 @@ from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.hud.radar_tracker import TargetTracker, relevant
+from openpilot.hud.fuel_tracker import FuelTracker
 
 PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
@@ -57,6 +58,8 @@ _lock = threading.Lock()
 _snapshot = b'{"standby": true}'
 _frame = 0
 _model_cache = None
+# Fuel remaining by subtraction; see fuel_tracker.py for why the float is not read directly
+_fuel = FuelTracker()
 # The producer runs in a daemon thread while the main thread serves HTTP, so an exception in
 # it kills the thread and leaves the process up: systemd sees a healthy service, the stream
 # keeps sending the last snapshot forever, and the display freezes on a frame that looks
@@ -154,6 +157,8 @@ def _car_state(cs):
     # 0.0-1.0 of the tank. Sent as the fraction carState carries; the page turns it into
     # litres, because the capacity is a property of the car and not of the signal.
     "fuelGauge": float(cs.fuelGauge),
+    "odometer": float(cs.odometer),
+    "avgFuelEconomy": float(cs.avgFuelEconomy),
   }
 
 
@@ -404,6 +409,15 @@ def _produce():
     if onroad:
       try:
         data["carState"] = _car_state(sm["carState"])
+        # Fuel by subtraction from the last fill. Returns {} until it has a basis, and
+        # holds its last answer while the cluster's economy reads invalid (it does that
+        # for about a minute after a fill), so the display never shows a bogus number.
+        _cs = sm["carState"]
+        _f = _fuel.update(float(_cs.odometer), float(_cs.avgFuelEconomy),
+                          float(_cs.fuelGauge))
+        if _f:
+          data["fuel"] = {k: (round(v, 2) if isinstance(v, float) else v)
+                          for k, v in _f.items()}
         data["selfdriveState"] = _selfdrive_state(sm["selfdriveState"])
         data["radarState"] = _radar_state(sm["radarState"])
         dt = max(1e-3, min(0.5, now - last_target_t))

@@ -1016,17 +1016,23 @@ function render(F){
   document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
   document.getElementById('m4b').style.background=F.sat?'#ff2d2d':'#5aa9ff';
   document.getElementById('m5').innerHTML=`${F.lDes.toFixed(2)} <i>/</i> ${F.lAct.toFixed(2)}`;
-  // 油量：carState.fuelGauge 是 0-1，這裡換成公升。油箱 58 L（原廠規格），兩次加油驗過：
-  // 09-16 加 47.763 L 加滿、09-02 加 36.582 L 加滿，都指向 0.2514 L/count + 7.72 L 死區。
-  // 浮筒在晃，原始值行進間抖 ±0.5 L，所以慢速濾波再顯示，不然數字一直跳。
-  const fuelL = F.fuel * FUEL_TANK_L;
-  if(F.fuel > 0.001){
-    fuelEMA = (fuelEMA === null) ? fuelL : fuelEMA + (fuelL - fuelEMA) * 0.02;
+  // 油量：主要顯示的是「上次加滿扣掉用油量」的累減值（車機 fuel_tracker 算好送來），
+  // 不是浮筒。浮筒加滿後會鎖在頂端十幾公里不動，而且行進間晃 ±0.5 L，只拿它偵測加油。
+  // 括號裡是浮筒讀數，兩者差很多時就知道該看哪個。油箱 58 L，兩次加油校準過。
+  const fuelL = F.fuel * FUEL_TANK_L;      // 浮筒
+  const sub = F.fuelSub;                   // 累減，沒有就退回浮筒
+  const shown = (sub && sub.litres > 0) ? sub.litres : (F.fuel > 0.001 ? fuelL : null);
+  if(shown !== null){
+    fuelEMA = (fuelEMA === null) ? shown : fuelEMA + (shown - fuelEMA) * 0.05;
     const pct = Math.max(0, Math.min(100, 100 * fuelEMA / FUEL_TANK_L));
     // 低油：浮筒的 0 counts 就已經是 7.7 L，所以警示要抓在那之上才有意義
     const col = fuelEMA < 10 ? '#ff2d2d' : (fuelEMA < 15 ? '#ffb020' : '#57d07f');
+    const tag = sub ? (sub.source === 'held' ? '<u style="color:#7d8ea0">保持</u>'
+                      : (sub.source === 'adopted' ? '<u style="color:#7d8ea0">暫用浮筒</u>' : ''))
+                    : '<u style="color:#7d8ea0">浮筒</u>';
     document.getElementById('m6').innerHTML =
-      `${fuelEMA.toFixed(1)}<u>L</u><i> / </i>${pct.toFixed(0)}<u>%</u>`;
+      `${fuelEMA.toFixed(1)}<u>L</u><i> / </i>${pct.toFixed(0)}<u>%</u>` + tag
+      + (sub && F.fuel > 0.001 ? `<i> 浮筒 ${fuelL.toFixed(0)}</i>` : '');
     document.getElementById('m6').style.color = col;
     const bar = document.getElementById('m6b');
     bar.style.width = pct + '%';
@@ -1111,7 +1117,7 @@ function showIdle(){
   render({vEgo:0, vCruise:0, engaged:false, road:'', src:'cruise',
           slRaw:0, slOfs:0, slNext:0, slNextD:0,
           bsdL:false, bsdR:false, blkL:false, blkR:false, blinkL:false, blinkR:false,
-          aT:0, aMax:0, aMaxSrc:'', tq:0, sat:false, lDes:0, lAct:0, fuel:0,
+          aT:0, aMax:0, aMaxSrc:'', tq:0, sat:false, lDes:0, lAct:0, fuel:0, fuelSub:null,
           alert1:'', alert2:'', alertStatus:'normal',
           stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[]});
 }
@@ -1289,6 +1295,7 @@ function fromSSE(J){
     lAct: (cs.yawRate||0)*v,       // 實際橫向加速度 = v * 偏航率
     alert1: ss.alertText1||'', alert2: ss.alertText2||'', alertStatus: ss.alertStatus||'normal',
     stop: !!ct.stop, stopD: ct.stopDistance||0, fuel: cs.fuelGauge||0,
+    fuelSub: J.fuel||null,
     leads:[], lanes:[], edges:[], path:[],
   };
   (rs.leads||[]).forEach((L,i)=>{
