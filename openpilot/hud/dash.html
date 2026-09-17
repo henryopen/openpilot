@@ -557,7 +557,7 @@ function drawRoad(F){
   drawYolo(F);
 }
 
-const FUEL_TANK_L = 50.0;   // 見 m6 的說明
+const FUEL_TANK_L = 58.0;   // 見 m6 的說明
 let fuelEMA = null;
 
 /* ═════ YOLO 視覺辨識疊加（車機 :8903）═════ */
@@ -1016,15 +1016,15 @@ function render(F){
   document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
   document.getElementById('m4b').style.background=F.sat?'#ff2d2d':'#5aa9ff';
   document.getElementById('m5').innerHTML=`${F.lDes.toFixed(2)} <i>/</i> ${F.lAct.toFixed(2)}`;
-  // 油量：carState.fuelGauge 是 0-1，這裡換成公升。油箱 50 L 是 2026-09-16 加油量出來的
-  // （加滿後訊號頂在 200 counts 不動，190 counts 對應收據上的 47.763 L）。
+  // 油量：carState.fuelGauge 是 0-1，這裡換成公升。油箱 58 L（原廠規格），兩次加油驗過：
+  // 09-16 加 47.763 L 加滿、09-02 加 36.582 L 加滿，都指向 0.2514 L/count + 7.72 L 死區。
   // 浮筒在晃，原始值行進間抖 ±0.5 L，所以慢速濾波再顯示，不然數字一直跳。
   const fuelL = F.fuel * FUEL_TANK_L;
   if(F.fuel > 0.001){
     fuelEMA = (fuelEMA === null) ? fuelL : fuelEMA + (fuelL - fuelEMA) * 0.02;
     const pct = Math.max(0, Math.min(100, 100 * fuelEMA / FUEL_TANK_L));
-    // 低油：10 L 是原廠警示燈大約亮的量，再低就轉紅
-    const col = fuelEMA < 6 ? '#ff2d2d' : (fuelEMA < 10 ? '#ffb020' : '#57d07f');
+    // 低油：浮筒的 0 counts 就已經是 7.7 L，所以警示要抓在那之上才有意義
+    const col = fuelEMA < 10 ? '#ff2d2d' : (fuelEMA < 15 ? '#ffb020' : '#57d07f');
     document.getElementById('m6').innerHTML =
       `${fuelEMA.toFixed(1)}<u>L</u><i> / </i>${pct.toFixed(0)}<u>%</u>`;
     document.getElementById('m6').style.color = col;
