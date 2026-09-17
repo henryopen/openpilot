@@ -167,6 +167,9 @@
   .m .v u{text-decoration:none;font-size:12.5px;color:var(--dim2);font-weight:600;margin-left:3px}
   /* 加速上限來源要在行進間瞄一眼就讀到，單位不用 - 所以只放大這個 */
   .m .v u.src{font-size:22px;margin-left:7px}
+  /* 浮筒讀數是拿來對照主數字的參考值，不是主角 —— 跟來源標籤同級
+     ．35px 時它會把油量那格撐出畫面外 */
+  .m .v i.sub{font-size:22px}
   .m .v i{font-style:normal;color:var(--dim)}
   .v.ok{color:var(--green)} .v.am{color:var(--amber)} .v.bad{color:var(--red)} .v.dim{color:#3b4b5b}
   .trk{position:absolute;left:18px;right:18px;bottom:4px;height:3px;background:rgba(14,22,30,.9);
@@ -1042,7 +1045,7 @@ function render(F){
                     : '<u style="color:#7d8ea0">浮筒</u>';
     document.getElementById('m6').innerHTML =
       `${fuelEMA.toFixed(1)}<u>L</u><i> / </i>${pct.toFixed(0)}<u>%</u>` + tag
-      + (sub && F.fuel > 0.001 ? `<i> 浮筒 ${fuelL.toFixed(0)}</i>` : '');
+      + (sub && F.fuel > 0.001 ? `<i class="sub"> 浮筒 ${fuelL.toFixed(0)}</i>` : '');
     document.getElementById('m6').style.color = col;
     const bar = document.getElementById('m6b');
     bar.style.width = pct + '%';
@@ -1103,6 +1106,20 @@ const DEMOS = [
     leads:[{d:36,y:-0.3,v:1.2,radar:true,main:true}],   // 前車照常偵測，但沒有目標跟車線
     aT:0, tq:0, lDes:0, lAct:0,             // 沒在控制 -> 縱向/橫向輸出為 0
     alert1:'按 RES 啟用', alert2:'', alertStatus:'normal' },
+  { _t:'量測列滿載（版面檢查用）',
+    vEgo:54, vCruise:60, engaged:true, src:'lead0', road:'中華五路 往南',
+    slRaw:50, slOfs:10, slNext:40, slNextD:280, dDes:29.8,
+    stop:false, stopD:0,
+    lanes:[{y:mk(-5.2,.2),p:.60},{y:mk(-1.8,.2),p:.99},
+           {y:mk(1.85,.2),p:.99},{y:mk(5.2,.2),p:.55}],
+    edges:[{y:mk(-7.2,.2),s:.35},{y:mk(7.2,.2),s:.35}],
+    path:mk(0,.2),
+    leads:[{d:29.8,y:0.1,v:-17.6,radar:true,main:true}],
+    // 54 km/h 有前車那條曲線的天花板，aTarget 正好頂在上面 -> 標籤轉橘並多出「上限」
+    aT:0.40, aMax:0.40, aMaxSrc:'lead', tq:-0.42, sat:true, lDes:0.21, lAct:0.18,
+    // 累減法 9/16 那箱油算出來的數字，浮筒 98%
+    fuel:0.98, fuelSub:{litres:56.9, percent:98.1, source:'fill', used:1.09, since_km:15.2},
+    alert1:'', alert2:'', alertStatus:'normal' },
 ];
 
 let demoIdx=0, demoTimer=null;
@@ -1344,6 +1361,7 @@ function setConn(state, extra){           // live / standby / offline
 
 let es=null;
 async function connect(){
+  if(DEMO_FIX) return;   // 版面檢查模式：不連車機，否則待機狀態會一直蓋掉示範幀
   if(new URLSearchParams(location.search).has('play')) return;   // 回放模式不連線
   if(es){ es.close(); es=null; }
   for(;;){
@@ -1462,6 +1480,9 @@ async function refreshApRow(){
   }catch(e){}
 }
 refreshApRow(); setInterval(refreshApRow, 20000);
+
+/* ═════ 版面檢查：?demo=N 固定顯示第 N 組示範幀 ═════ */
+if(DEMO_FIX){ hideStandbyScreen(); startDemo(); }
 
 /* ═════ 回放 ═════ */
 if(new URLSearchParams(location.search).has('play')){
