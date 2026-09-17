@@ -256,6 +256,7 @@
     <div class="m"><div class="k">縱向 aTarget / 上限</div><div class="v" id="m3">0.00<u>m/s²</u></div></div>
     <div class="m"><div class="k">轉向扭力</div><div class="v" id="m4">0.00</div><div class="trk"><i id="m4b" style="width:0"></i></div></div>
     <div class="m"><div class="k">橫向G 目標 <i>/</i> 實際</div><div class="v" id="m5">0.00 / 0.00</div></div>
+    <div class="m"><div class="k">油量</div><div class="v" id="m6">—</div><div class="trk"><i id="m6b" style="width:0"></i></div></div>
   </div>
 </div>
 
@@ -555,6 +556,9 @@ function drawRoad(F){
 
   drawYolo(F);
 }
+
+const FUEL_TANK_L = 50.0;   // 見 m6 的說明
+let fuelEMA = null;
 
 /* ═════ YOLO 視覺辨識疊加（車機 :8903）═════ */
 // yolod 只回傳公尺座標，不回傳畫面：一趟下來是幾百 KB，不是幾百 MB。
@@ -1012,6 +1016,26 @@ function render(F){
   document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
   document.getElementById('m4b').style.background=F.sat?'#ff2d2d':'#5aa9ff';
   document.getElementById('m5').innerHTML=`${F.lDes.toFixed(2)} <i>/</i> ${F.lAct.toFixed(2)}`;
+  // 油量：carState.fuelGauge 是 0-1，這裡換成公升。油箱 50 L 是 2026-09-16 加油量出來的
+  // （加滿後訊號頂在 200 counts 不動，190 counts 對應收據上的 47.763 L）。
+  // 浮筒在晃，原始值行進間抖 ±0.5 L，所以慢速濾波再顯示，不然數字一直跳。
+  const fuelL = F.fuel * FUEL_TANK_L;
+  if(F.fuel > 0.001){
+    fuelEMA = (fuelEMA === null) ? fuelL : fuelEMA + (fuelL - fuelEMA) * 0.02;
+    const pct = Math.max(0, Math.min(100, 100 * fuelEMA / FUEL_TANK_L));
+    // 低油：10 L 是原廠警示燈大約亮的量，再低就轉紅
+    const col = fuelEMA < 6 ? '#ff2d2d' : (fuelEMA < 10 ? '#ffb020' : '#57d07f');
+    document.getElementById('m6').innerHTML =
+      `${fuelEMA.toFixed(1)}<u>L</u><i> / </i>${pct.toFixed(0)}<u>%</u>`;
+    document.getElementById('m6').style.color = col;
+    const bar = document.getElementById('m6b');
+    bar.style.width = pct + '%';
+    bar.style.background = col;
+  } else {
+    fuelEMA = null;
+    document.getElementById('m6').innerHTML = '—';
+    document.getElementById('m6b').style.width = '0';
+  }
   drawRoad(F);
 }
 
@@ -1087,7 +1111,7 @@ function showIdle(){
   render({vEgo:0, vCruise:0, engaged:false, road:'', src:'cruise',
           slRaw:0, slOfs:0, slNext:0, slNextD:0,
           bsdL:false, bsdR:false, blkL:false, blkR:false, blinkL:false, blinkR:false,
-          aT:0, aMax:0, aMaxSrc:'', tq:0, sat:false, lDes:0, lAct:0,
+          aT:0, aMax:0, aMaxSrc:'', tq:0, sat:false, lDes:0, lAct:0, fuel:0,
           alert1:'', alert2:'', alertStatus:'normal',
           stop:false, stopD:0, leads:[], lanes:[], edges:[], path:[]});
 }
@@ -1264,7 +1288,8 @@ function fromSSE(J){
     lDes: (ct.curvature||0)*v*v,   // 目標橫向加速度 = v^2 * 曲率
     lAct: (cs.yawRate||0)*v,       // 實際橫向加速度 = v * 偏航率
     alert1: ss.alertText1||'', alert2: ss.alertText2||'', alertStatus: ss.alertStatus||'normal',
-    stop: !!ct.stop, stopD: ct.stopDistance||0, leads:[], lanes:[], edges:[], path:[],
+    stop: !!ct.stop, stopD: ct.stopDistance||0, fuel: cs.fuelGauge||0,
+    leads:[], lanes:[], edges:[], path:[],
   };
   (rs.leads||[]).forEach((L,i)=>{
     if(!L.status) return;

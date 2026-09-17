@@ -151,6 +151,9 @@ def _car_state(cs):
     "leftBlindspot": bool(cs.leftBlindspot),
     "rightBlindspot": bool(cs.rightBlindspot),
     "yawRate": float(cs.yawRate),
+    # 0.0-1.0 of the tank. Sent as the fraction carState carries; the page turns it into
+    # litres, because the capacity is a property of the car and not of the signal.
+    "fuelGauge": float(cs.fuelGauge),
   }
 
 
