@@ -199,8 +199,11 @@ COMFORT_BRAKE = 2.0
 # median 0.1-0.3 m - because the number was a constant inside a target the solver was never
 # required to reach. With the constraint change above it is required to, so this is now a
 # specification of where to stop rather than a nudge, and it reads as what the driver
-# actually wants: 6.0, asked for on 2026-09-16 after seeing the replay land on 7.03.
-STOP_DISTANCE = 6.0
+# actually wants. 6.0 was asked for on 2026-09-16 after seeing the replay land on 7.03; the
+# driver confirmed on 2026-09-18 that the car now stops where it is told, and asked for 5.0.
+# That is the point of the constraint change - the number means something now, so it can be
+# set to the gap that is wanted rather than to whatever compensates for missing it.
+STOP_DISTANCE = 5.0
 MIN_X_LEAD_FACTOR = 0.5
 
 # All three personalities are deliberately identical, asked for on 2026-09-09. The distance
