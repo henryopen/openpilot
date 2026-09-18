@@ -76,9 +76,27 @@ from openpilot.common.swaglog import cloudlog
 #
 # Integrated through the ceiling, 0-30 km/h goes 8.5 -> 9.7 s, 0-50 19.4 -> 18.9,
 # 40-70 18.2 -> 13.3 and 61-107 30.1 -> 19.9.
+#
+# 2026-09-18: the pull-away was still 2.3-2.7x the driver's own. Over the 40 segments of
+# 09-18, accelerating frames with no brake, body acceleration median / p90:
+#
+#      km/h        system          him
+#      0-10      0.87 / 1.52    0.32 / 0.76
+#     10-18      0.69 / 0.92    0.30 / 0.65
+#     18-27      0.47 / 0.82    0.46 / 0.86   <- already his, leave it
+#     27-36      0.33 / 0.63    0.56 / 0.68
+#
+# The ceiling is the whole of it below 18 km/h: 57% of those frames have aTarget sitting
+# on aCruiseMax and none above it, so nothing else is in the way. The body then overshoots
+# the request by about 60% (229 frames past 1.0 m/s2 while aTarget asked 0.91), which is
+# why the ceiling is felt harder than it reads.
+#
+# The first two points come down to the driver's own p90; the 18 km/h point only moves a
+# little because 18-27 km/h already matches him and this is the endpoint the 10-18 band
+# interpolates to. Above 36 km/h nothing changes - the merging complaint lives there.
 #                     0    10km/h  18    36    54    72    90   144
 A_CRUISE_MAX_BP =   [0.,   2.8,   5.,   10.,  15.,  20.,  25., 40.]
-A_CRUISE_MAX_VALS = [1.0,  0.95,  0.85, 0.48, 0.40, 0.38, 0.34, 0.26]
+A_CRUISE_MAX_VALS = [0.72, 0.68,  0.78, 0.48, 0.40, 0.38, 0.34, 0.26]
 # With nothing close ahead the ceiling above is what holds the car back, not the MPC. Over
 # the 2026-09-09 drive, with the nearest lead beyond the gate below, the plan sat within 8%
 # of this ceiling for 75% of the frames at 15-25 km/h, 82% at 25-36, 80% at 36-45, 70% at
@@ -120,8 +138,13 @@ A_CRUISE_MAX_VALS = [1.0,  0.95,  0.85, 0.48, 0.40, 0.38, 0.34, 0.26]
 # 2026-09-17: reshaped with the curve above - see the measurement of the driver's own foot
 # there. This one keeps the gap over A_CRUISE_MAX_VALS at every breakpoint, and takes the
 # whole of the increase in the 36-144 km/h range where the merging complaint lives.
+#
+# 2026-09-18: the first three points follow the curve above down. They were identical to it
+# below 18 km/h and still are - the lead being far does not change how the driver pulls away
+# from rest, and 1084 frames of that drive had a lead present while this curve was in charge
+# (median 26 m), so leaving them high would have kept the pull-away everywhere it was felt.
 #                          0    10km/h  18    36    54    72    90   144
-A_CRUISE_MAX_VALS_FREE = [1.0, 0.95, 0.85, 0.58, 0.62, 0.68, 0.64, 0.50]
+A_CRUISE_MAX_VALS_FREE = [0.72, 0.68, 0.78, 0.58, 0.62, 0.68, 0.64, 0.50]
 # How much more room than the MPC is asking for before the road counts as clear. A fixed
 # distance was considered and measured worse: the MPC's target gap is
 # v^2/(2*COMFORT_BRAKE) - v_lead^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so 50 m
