@@ -35,12 +35,20 @@ _TURNING_LAT_ACC_TH = 1.6              # actual lat acc that means we are in the
 _LEAVING_LAT_ACC_TH = 1.3              # falling below this means the corner is opening up
 _FINISH_LAT_ACC_TH = 1.1               # and below this it is over
 _A_LAT_REG_MAX = 2.                    # most lateral acceleration we are willing to pull
-# ...but how much that is depends on the speed. 3 m/s2 is an ordinary turn into a junction
-# and an unpleasant one on a sweeper, so every lateral-acceleration threshold below is
-# scaled by this rather than fixed: 1.5x under 36 km/h, tapering to unchanged from 72 km/h
-# up, so nothing about high speed cornering moves.
+# ...but how much that is depends on the speed, and the 1.5x that sat here below 36 km/h was
+# written from the guess that 3 m/s2 is an ordinary turn into a junction. Measured instead:
+# over the 09-18 drives, at junctions taken with the indicator on and more than 45 degrees of
+# steering, the driver pulls a median of 0.89 m/s2 and a 90th percentile of 1.10. Openpilot
+# on the same corners pulls 1.20. The ceiling those thresholds were scaled to was 2.72 -
+# three times what the driver actually uses - so v_target came out above the speed the car
+# was already doing and the entering state handed back _LEAVING_ACC instead of braking. On
+# 1451 frames of signalled junction turns, 54.6% entered and 0.3% asked for any deceleration:
+# the car accelerates through the corner, which is what the driver reported.
+# Scaled to the driver's own numbers a junction is allowed 1.2-1.5 m/s2, which puts v_target
+# just under the speed these corners are actually taken at. Nothing above 72 km/h moves:
+# there is no measurement of this driver on fast sweepers to justify touching it.
 _LAT_TOL_BP = [0., 10., 20.]           # m/s
-_LAT_TOL_V = [1.5, 1.25, 1.0]
+_LAT_TOL_V = [0.6, 0.75, 1.0]
 
 # Smooth deceleration on the way in, by how sharp the corner ahead looks
 _ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]
