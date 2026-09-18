@@ -32,6 +32,20 @@ KP_INTERP = [250, 120, 65, 30, 11.5, 5.5, 3.5, 2.0, KP]
 LP_FILTER_CUTOFF_HZ = 1.2
 JERK_LOOKAHEAD_SECONDS = 0.19
 JERK_GAIN = 0.3
+
+# The P term on its own asks for far more than the controller can deliver. Measured over the
+# 09-18 drives its magnitude averages 3.34 against a PID output limit of latAccelFactor
+# (2.80 on this car) and peaks at 12.66. Past that limit the output sits at full lock, so a
+# sign change in the error swings it stop to stop and the wheel hunts instead of settling -
+# in four big-corner unwinds the output made 25 full-amplitude reversals at 0.4-1.2 Hz while
+# the setpoint and the measurement it was tracking made none between them.
+# Capping P's share gives the loop a linear range again: replayed over those same unwinds it
+# takes the reversals to 2. Anything below 1.0 buys no further reduction and only costs
+# steering effort, so this is the knee.
+# It only bites on big corners - |p| clears 1.0 on 81% of frames past 60 degrees of steering
+# and 95% past 120, against 6-12% everywhere else, so straights and ordinary corners are
+# untouched and this is not the 09-15 lower-KP attempt in disguise.
+P_MAX_CONTRIB = 1.0
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -209,6 +223,11 @@ class LatControlTorque(LatControl):
     # latAccelOffset corrects roll compensation bias from device roll misalignment relative to car roll
     ff -= self.torque_params.latAccelOffset
     ff += get_friction(error + JERK_GAIN * desired_lateral_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD, self.torque_params)
+
+    # Friction above keeps the full error: it saturates at FRICTION_THRESHOLD (0.3) and the cap
+    # below sits at 0.06 at 16 km/h, so sharing one clipped error would throw most of the
+    # friction compensation away and make the rack slower to break away, not faster.
+    error = float(np.clip(error, -P_MAX_CONTRIB / max(current_kp, 1e-3), P_MAX_CONTRIB / max(current_kp, 1e-3)))
 
     if not active:
       output_torque = 0.0
