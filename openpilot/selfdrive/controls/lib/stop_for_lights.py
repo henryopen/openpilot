@@ -71,7 +71,17 @@ AGREE_TAU = 0.5                    # how long the plan has to keep agreeing to b
 COMMIT_AGREE = 0.65                # and how much of that agreement commitment needs
 LET_GO_AGREE = 0.15                # below this the junction is gone
 HANDOFF = 6.0                      # inside this, ask for the stop rather than a speed
-STOP_GAP = 4.0                     # where the car comes to rest short of the plan's end
+# Where the car comes to rest short of the plan's end. 4.0 was measured on 2026-09-01 as
+# where it actually stopped, but it was never the thing putting it there: replaying 12 red
+# lights on 09-16, stop_distance read 0.00 at the moment the car stopped in all twelve - it
+# drove the whole tracked distance and this had no say. STOP_DISTANCE was a soft cost then,
+# so the MPC never reached the gap it was given, and the two errors covered for each other.
+# 09-17 (6854668) made STOP_DISTANCE a constraint and the MPC started stopping where it is
+# told, which is the first time this number did anything - and the driver's first sight of
+# it on 09-20 was the car stopping with the line still well ahead. Taken to 1.0 to watch:
+# the tracked point is the model's idea of where the nose belongs, not a car's back bumper,
+# so there is no gap to leave in front of it.
+STOP_GAP = 1.0                     # was 4.0, see above
 MAX_DECEL = -1.5                   # the firmest the MPC may brake for a call that is a guess
 COMMITTED = 15 * CV.KPH_TO_MS      # below this the stop is happening, see it through
 STOPPED = 0.5                      # standing still
