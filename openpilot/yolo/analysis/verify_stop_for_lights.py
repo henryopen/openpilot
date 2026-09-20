@@ -35,7 +35,6 @@ from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights
 from openpilot.tools.lib.logreader import LogReader
 
 KPH = 3.6
-MPC_STOP_DISTANCE = 7.0     # what the planner passes to obstacle_x
 HELD = 2.0                  # a stop is a halt this long
 ROLLING = 15 / KPH          # ...that we rolled into
 MOVING = 1.0                # m/s, pulled away
