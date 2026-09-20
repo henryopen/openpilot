@@ -1043,9 +1043,11 @@ function render(F){
     const tag = sub ? (sub.source === 'held' ? '<u style="color:#7d8ea0">保持</u>'
                       : (sub.source === 'adopted' ? '<u style="color:#7d8ea0">暫用浮筒</u>' : ''))
                     : '<u style="color:#7d8ea0">浮筒</u>';
+    // 百分比拿掉了：它是 L 除以 58 的同一個數，而浮筒擠成小字反而看不到。浮筒讀數
+    // 提到同一個字級，才能一眼比對累減值跟浮筒差多少（差很多就是該懷疑其中一邊）。
     document.getElementById('m6').innerHTML =
-      `${fuelEMA.toFixed(1)}<u>L</u><i> / </i>${pct.toFixed(0)}<u>%</u>` + tag
-      + (sub && F.fuel > 0.001 ? `<i class="sub"> 浮筒 ${fuelL.toFixed(0)}</i>` : '');
+      `${fuelEMA.toFixed(1)}<u>L</u>`
+      + (sub && F.fuel > 0.001 ? `<i> / </i>${fuelL.toFixed(0)}<u>浮筒</u>` : '') + tag;
     document.getElementById('m6').style.color = col;
     const bar = document.getElementById('m6b');
     bar.style.width = pct + '%';
