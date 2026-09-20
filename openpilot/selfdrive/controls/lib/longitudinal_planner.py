@@ -169,9 +169,25 @@ A_CRUISE_MIN = -1.2
 # keeps this off a real pull-away: of 3709 stopped frames where the lead was opening at
 # 0.3 m/s or more, this holds back none of them. The radar is required because vision's
 # range on a stopped car is what creates the false gap in the first place.
+#
+# 2026-09-20: 0.3 was letting most of it through. Over that drive's 11 stops, classified by
+# how far the car actually went after being released (under 10 m = it should not have gone),
+# the vRel in the half second before release was 0.17-0.41 on four of the five false starts
+# and 0.67-1.61 on all six real ones. Scanning the threshold:
+#
+#       vRel    blocks false    wrongly blocks real
+#       0.3        1 / 5              0 / 6
+#       0.5        4 / 5              0 / 6     <- the knee
+#       0.7        5 / 5              2 / 6
+#
+# 0.5 takes four of the five and still holds back none of the real pull-aways; 0.6 buys
+# nothing more. The fifth false start reads 0.75, inside the range real ones live in
+# (0.67, 0.74), so vRel alone cannot separate it and no second test is added for it here.
+# What it was costing: the gap got eaten 5.63 -> 4.86 -> 3.90 -> 2.58 m over the drive,
+# because each creep closed in a little and the next stop started from there.
 STANDSTILL_CREEP_SPEED = 0.5  # m/s
 STANDSTILL_CREEP_DIST = 9.0  # m
-STANDSTILL_CREEP_VREL = 0.3  # m/s
+STANDSTILL_CREEP_VREL = 0.5  # m/s
 # Comfort jerk for tracking the set speed. A plain proportional law on the speed error
 # (gain 1.0) saturates at max_accel or A_CRUISE_MIN for any error over ~1.2 m/s, so it holds
 # full accel or full decel until the last 4 km/h and then drops off abruptly. Shaping the
