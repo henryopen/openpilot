@@ -23,6 +23,9 @@ from openpilot.selfdrive.car.cruise import VCruiseHelper
 
 # keep in sync with ALT_EXP_ALWAYS_ON_LATERAL in opendbc/safety/declarations.h
 ALT_EXP_ALWAYS_ON_LATERAL = 32
+# and with ALT_EXP_PEDAL_HANDOVER there. selfdrived compares what the panda reports against
+# what is set here, so a mismatch is caught on the first frame rather than on the road.
+ALT_EXP_PEDAL_HANDOVER = 64
 
 
 REPLAY = "REPLAY" in os.environ
@@ -116,6 +119,11 @@ class Car:
     self.CP.alternativeExperience = 0
     if self.params.get_bool("AlwaysOnLateral"):
       self.CP.alternativeExperience |= ALT_EXP_ALWAYS_ON_LATERAL
+    # The pedals hand control over instead of ending it - see ALT_EXP_PEDAL_HANDOVER. Only
+    # where openpilot owns the longitudinal: with stock ACC the car decides what a pedal
+    # means and there is nothing here to hand back.
+    if self.CP.openpilotLongitudinalControl:
+      self.CP.alternativeExperience |= ALT_EXP_PEDAL_HANDOVER
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
     self.CP.passive = not controller_available or self.CP.dashcamOnly

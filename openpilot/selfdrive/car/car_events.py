@@ -144,6 +144,15 @@ class CarEvents:
       events.add(EventName.preEnableStandstill)
     if CS.gasPressed:
       events.add(EventName.gasPressedOverride)
+    # Stopped with nothing in control, a tap on the accelerator stands in for RESUME. Over the
+    # 09-16 to 09-20 drives the brake disengaged longitudinal 70 times and the driver pressed
+    # RESUME himself on 56 of them, so the button is not adding a decision - it is asking him
+    # to reach for it to say what he was going to do anyway. initialize_v_cruise brings back
+    # the speed that was set before, exactly as the button does, so nothing new happens here
+    # that pressing RESUME would not have done; it just does not need a hand off the wheel.
+    # Standstill only: moving, the accelerator already means override, and that stays.
+    if CS.gasPressed and not CS_prev.gasPressed and CS.standstill and not CC.enabled:
+      events.add(EventName.buttonEnable)
     if CS.vehicleSensorsInvalid:
       events.add(EventName.vehicleSensorsInvalid)
     if CS.invalidLkasSetting:

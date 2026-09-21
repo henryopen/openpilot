@@ -45,6 +45,18 @@ MonitoringPolicy = log.DriverMonitoringState.MonitoringPolicy
 
 IGNORED_SAFETY_MODES = (SafetyModel.silent, SafetyModel.noOutput)
 
+# The brake hands the longitudinal over above this and ends the drive below it, which is the
+# driver's way out along with MAIN. Above the panda's own standstill threshold (0.375 km/h)
+# on purpose: the software should let go first, so the authorisation outlives the decision.
+BRAKE_HANDOVER_MIN_SPEED = 0.5  # m/s
+# How long the handover is held after the pedal comes off. Measured over 2026-09-16 to 09-20:
+# of the 70 times the brake ended longitudinal control the driver pressed RESUME himself on
+# 56, and on the 25 where he did not touch the accelerator first he did it a median 2.92 s
+# later - a figure that includes reaching for the button. Taking that reach out puts the
+# intent nearer 1.5 s, and 1.5 s is also long enough that stop-and-go dabs do not chatter
+# engage/disengage, which would be worse than the button this is replacing.
+BRAKE_HANDOVER_HOLD_FRAMES = int(1.5 / DT_CTRL)
+
 
 class SelfdriveD:
   def __init__(self, CP=None):
@@ -111,6 +123,7 @@ class SelfdriveD:
       self.params.remove("ExperimentalMode")
 
     self.CS_prev = car.CarState.new_message()
+    self.brake_handover_frames = 0
     self.AM = AlertManager()
     self.events = Events()
 
@@ -241,9 +254,29 @@ class SelfdriveD:
           # body always wants to enable
           self.events.add(EventName.pcmEnable)
 
+      # Moving, the brake hands the longitudinal back rather than ending the drive, and holds
+      # it for a moment after the pedal comes off so that a second dab does not chatter the
+      # state machine. Stopped, it still ends it - that is the way out, along with MAIN.
+      # The panda carries the same rule under ALT_EXP_PEDAL_HANDOVER, or the authorisation
+      # would be gone by the time the pedal is released and there would be nothing to resume.
+      brake_hands_over = self.CP.openpilotLongitudinalControl and CS.brakePressed and \
+                         CS.vEgo > BRAKE_HANDOVER_MIN_SPEED
+      if brake_hands_over:
+        self.brake_handover_frames = BRAKE_HANDOVER_HOLD_FRAMES
+      elif self.brake_handover_frames > 0 and not CS.brakePressed:
+        self.brake_handover_frames -= 1
+      elif CS.brakePressed:
+        self.brake_handover_frames = 0     # stopped with the pedal down: let it disable
+
+      if self.brake_handover_frames > 0:
+        # gasPressedOverride rather than a name of its own: it carries ET.OVERRIDE_LONGITUDINAL
+        # with an empty alert, which is exactly what is wanted, and a new EventName would mean
+        # editing log.capnp's stock enum for no behaviour that is not already here.
+        self.events.add(EventName.gasPressedOverride)
+
       # Disable on rising edge of accelerator or brake. Also disable on brake when speed > 0
       if (CS.gasPressed and not self.CS_prev.gasPressed and self.disengage_on_accelerator) or \
-        (CS.brakePressed and (not self.CS_prev.brakePressed or not CS.standstill)) or \
+        (CS.brakePressed and not brake_hands_over and (not self.CS_prev.brakePressed or not CS.standstill)) or \
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill)):
         self.events.add(EventName.pedalPressed)
 
