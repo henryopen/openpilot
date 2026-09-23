@@ -53,10 +53,8 @@ _LAT_TOL_V = [0.6, 0.75, 1.0]
 # Smooth deceleration on the way in, by how sharp the corner ahead looks
 _ENTERING_SMOOTH_DECEL_V = [-0.2, -1.]
 _ENTERING_SMOOTH_DECEL_BP = [1.3, 3.]
-# What to do mid corner, by how hard it is actually pulling
-_TURNING_ACC_V = [0.5, 0., -0.4]
-_TURNING_ACC_BP = [1.5, 2.3, 3.]
 _LEAVING_ACC = 0.5                     # comfortable pull back up to speed on the way out
+_APPROACH_TC = 4.0                     # s: under v_target on the way in, close on it this gently
 
 # v_target is shown on the HUD beside MAX, but only the entering state ever looked at it: turning
 # took its acceleration from how hard the car was pulling alone, never lower than -0.4, and
@@ -195,12 +193,18 @@ class CurveSpeedControl:
       # it, costing 2-12 km/h a corner. Hand back _LEAVING_ACC rather than zero: a_cruise
       # is 0.35-0.44 at these speeds, so zero would keep blocking ordinary acceleration
       # once the braking is done.
+      # 09-23, the driver's rule for a corner: slow before it, neither gain nor lose speed in
+      # it, pick up only on the way out. So under v_target on the way in, close on it gently
+      # and stop gaining as it is reached, rather than a flat +0.5 into the bend.
       if self.v_ego <= self.v_target:
-        return _LEAVING_ACC
+        return float(np.clip((self.v_target - self.v_ego) / _APPROACH_TC, 0.0, _LEAVING_ACC))
       return float(np.interp(self.max_pred_lat_acc / tol, _ENTERING_SMOOTH_DECEL_BP, _ENTERING_SMOOTH_DECEL_V))
     if self.state == CurveState.turning:
-      return float(np.interp(self.current_lat_acc / tol, _TURNING_ACC_BP, _TURNING_ACC_V))
-    return _LEAVING_ACC   # leaving
+      # hold the speed. This used to come off a table of how hard the car was pulling, which
+      # went positive as soon as the wheel came back a little (+0.5 under 1.5 m/s^2 x tol) -
+      # the car sped up mid-corner. Over v_target, _update_solution still slows it.
+      return 0.0
+    return _LEAVING_ACC   # leaving: the corner is opening, pick the speed back up
 
   def update(self, sm, long_enabled: bool, long_override: bool, v_ego: float, a_ego: float) -> None:
     self.long_enabled = long_enabled
