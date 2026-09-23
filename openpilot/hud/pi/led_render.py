@@ -118,16 +118,6 @@ def ic_car(d, ox, color, t, pulse=False):
   d.rectangle([ox + 44, 50, ox + 54, 58], fill=c)
 
 
-def ic_light(d, ox, lit, t, blink=False):
-  """紅綠燈（直式）。lit: 'red' / 'yellow' / 'green'。"""
-  d.rounded_rectangle([ox + 17, 1, ox + 47, 63], radius=8, fill=(30, 30, 30), outline=GRAY)
-  on = not blink or (t * 2) % 1.0 < 0.6
-  for i, (name, col) in enumerate((("red", RED), ("yellow", YELLOW), ("green", GREEN))):
-    cy = 12 + i * 20
-    c = col if (name == lit and on) else _mix(col, 0.15)
-    d.ellipse([ox + 23, cy - 8, ox + 41, cy + 8], fill=c)
-
-
 def ic_curve(d, ox, t):
   """黃色菱形彎道標誌。"""
   d.polygon([(ox + 32, 1), (ox + 63, 32), (ox + 32, 63), (ox + 1, 32)], fill=YELLOW)
@@ -153,17 +143,20 @@ def ic_foot(d, ox, t):
 
 
 def ic_warn_turn(d, ox, t, left=True):
-  """台灣三角形警告標誌（紅框白底）＋黑色 90° 轉彎箭頭。動畫只做紅框呼吸，不做方向燈式的流水。"""
+  """台灣三角形警告標誌（紅框白底）＋黑色彎箭頭。動畫只做紅框呼吸，不做方向燈式的流水。
+
+  先畫右轉，左轉直接水平鏡像 —— 兩邊保證一模一樣（9/23 左轉曾經畫成直角、右轉看起來是彎的）。"""
   k = 0.65 + 0.35 * (0.5 + 0.5 * math.sin(t * 3.5))
-  d.polygon([(ox + 32, 1), (ox + 63, 61), (ox + 1, 61)], fill=_mix(RED, k))
-  d.polygon([(ox + 32, 12), (ox + 54, 55), (ox + 10, 55)], fill=WHITE)
-  s = -1 if left else 1                      # 箭頭往哪邊
-  sx = ox + 32 - 6 * s                       # 直的那一段偏向反方向，留空間給箭頭
-  y = 41
-  d.line([(sx, 55), (sx, y)], fill=BLACK, width=7)
-  hx = sx + 10 * s
-  d.line([(sx - 3 * s, y), (hx, y)], fill=BLACK, width=7)
-  d.polygon([(hx + 10 * s, y), (hx, y - 9), (hx, y + 9)], fill=BLACK)
+  tile = Image.new("RGB", (ICON, ICON), BLACK)
+  g = ImageDraw.Draw(tile)
+  g.polygon([(32, 1), (63, 61), (1, 61)], fill=_mix(RED, k))
+  g.polygon([(32, 12), (54, 55), (10, 55)], fill=WHITE)
+  g.line([(24, 55), (24, 46)], fill=BLACK, width=6)            # 直的一段
+  g.arc([24, 37, 42, 55], start=180, end=270, fill=BLACK, width=6)  # 圓心 (33,46)：左端接直線、上端接箭頭
+  g.polygon([(43, 37), (33, 29), (33, 45)], fill=BLACK)        # 箭頭朝右
+  if left:
+    tile = tile.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+  d._image.paste(tile, (ox, 0))
 
 
 def ic_lane_change(d, ox, t, right=True):
@@ -237,9 +230,11 @@ def full_alert(text, t, a=RED, b=BLACK, hz=3.0):
 
 # ---------------------------------------------------------------- 狀態機的畫面 → 圖
 
-_DECEL = {  # control.reason → (圖示, 字)
+# control.reason → (圖示, 字)。stoplight 只代表 OP 要在前面停（路口、停止線都算）——
+# YOLO 沒上，OP 分不出是不是紅燈，所以 FORBIDDEN 在屏上寫「紅燈」、畫紅綠燈。
+_DECEL = {
   "lead0": ("chev", "前車減速"), "lead1": ("chev", "前車減速"), "lead2": ("chev", "前車減速"),
-  "weaklead": ("chev", "前車減速"), "stoplight": ("light", "前方紅燈"), "curve": ("curve", "前方彎道"),
+  "weaklead": ("chev", "前車減速"), "stoplight": ("octagon", "前方停車"), "curve": ("curve", "前方彎道"),
 }
 
 
@@ -259,8 +254,8 @@ def draw(screen, t, now_dt=None):
     return compose(ic_foot, "準備減速", YELLOW, t)
   if k == "decel":
     icon, text = _DECEL.get(p.get("reason", ""), ("chev", "減速中"))
-    if icon == "light":
-      return compose(lambda d, o, t: ic_light(d, o, "red", t, blink=True), text, RED, t)
+    if icon == "octagon":
+      return compose(ic_octagon, text, RED, t)
     if icon == "curve":
       return compose(ic_curve, text, YELLOW, t)
     return compose(lambda d, o, t: ic_chevrons(d, o, YELLOW, t, up=False), text, YELLOW, t)
@@ -269,11 +264,11 @@ def draw(screen, t, now_dt=None):
   if k == "hard_brake":
     return full_alert("前車急煞", t)
   if k == "stopped":
-    if p.get("kind") == "light":
-      return compose(lambda d, o, t: ic_light(d, o, "red", t), f"紅燈 {p.get('secs', 0)}秒", RED, t)
+    if p.get("kind") == "junction":
+      return compose(ic_octagon, f"停等 {p.get('secs', 0)}秒", RED, t)
     return compose(lambda d, o, t: ic_car(d, o, GRAY, t), "停等中", WHITE, t)
-  if k == "launch":
-    return compose(lambda d, o, t: ic_light(d, o, "green", t, blink=True), "起步中", GREEN, t)
+  if k == "launch":                                # OP 不判斷綠燈：只說車要走了，圖示是往前延伸的路
+    return compose(lambda d, o, t: ic_road(d, o, GREEN, t), "起步中", GREEN, t)
   if k == "turn":
     left = p.get("dir") == "left"
     return compose(lambda d, o, t: ic_warn_turn(d, o, t, left=left), "準備左轉" if left else "準備右轉", WHITE, t)

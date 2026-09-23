@@ -5,12 +5,14 @@
 
 畫面衝突的處理（2026-09-23 跟使用者定的）：
   1. 本來就是同一件事的合併成一個畫面：
-     - 減速的原因（前車／紅燈／彎道）是同一個減速畫面的內容，不是各自插播
+     - 減速的原因（前車／前方停車／彎道）是同一個減速畫面的內容，不是各自插播。
+       reason=stoplight 只代表 OP 要在前面停（路口、停止線都會）；YOLO 沒上，分不出紅燈，屏上不講燈號
      - 巡航和跟車是同一個畫面：前車每分鐘會掉失 2.6-2.9 次（9/8 實測），分開的話每 20 秒跳一次。
        前車連續出現 LEAD_ON 秒才顯示距離，連續消失 LEAD_OFF 秒才收起來
   2. 會被下一個畫面馬上蓋掉的，拉長：
      - 起步一直顯示到 LAUNCH_DONE（不然零點幾秒就被加速蓋掉）
-     - 等紅燈／停等在停住那一刻就決定，停等期間不改判
+     - 路口停等／跟車停等在停住那一刻就決定，停等期間不改判
+     - 停住要開到 MOVING_V 才算離開，而且模型前方路線是通的才叫起步（只是往前挪不算）
      - 前車急煞至少 ALERT_HOLD 秒
   3. 切換規則：往嚴重的方向立刻切；往輕微的方向，目前畫面要播滿 MIN_SHOW 秒、
      而且新畫面要連續被選中 DEBOUNCE 秒才切。
@@ -32,6 +34,7 @@ LEAD_ON, LEAD_OFF = 3.0, 5.0
 LAUNCH_DONE = 15 * KPH  # 起步畫面維持到這個速度
 LAUNCH_MAX = 8.0        # 秒：起步畫面最長（沒加速上去就算了）
 STOPPED_V = 0.3         # m/s 以下當作停住
+MOVING_V = 1.0          # m/s 以上才算離開停住
 FOLLOW_STOP_GAP = 15.0  # m：停住時前車在這距離內 = 跟車停等，否則看停車前的原因
 
 # 縱向門檻（m/s²），進入／離開分開做遲滯
@@ -127,18 +130,25 @@ class Director:
     shown_d_rel = d_rel if present else (self.last_d_rel if self.lead_shown else None)
 
     # --- 停住／起步
-    stopped = v < STOPPED_V and (cs.get("standstill", False) or v < 0.1)
+    # 停住要到 MOVING_V 才算離開：停等時往前挪 0.2 m/s 不是起步（9/23 重放 12:35:15 誤報過）。
+    # 起步還要模型前方路線是通的（stopAhead == 0）—— 前面規劃又要停，就只是往前挪，不叫起步。
+    # OP 不會判斷綠燈（YOLO 沒上），所以這裡只講「車子要走了」，不講燈號。
+    stop_ahead = float(_g(d, "modelV2", "stopAhead", default=0.0) or 0.0)
+    if self.stopped_since is None:
+      stopped = v < STOPPED_V and (cs.get("standstill", False) or v < 0.1)
+    else:
+      stopped = v < MOVING_V
     if stopped:
       if self.stopped_since is None:
         self.stopped_since = now
         close = present and d_rel is not None and d_rel < FOLLOW_STOP_GAP
-        self.stop_kind = "follow" if close or self.last_decel_reason != "stoplight" else "light"
+        self.stop_kind = "follow" if close or self.last_decel_reason != "stoplight" else "junction"
       self.launch_since = None
     else:
-      if self.stopped_since is not None:            # 剛從停住開始動
+      if self.stopped_since is not None and stop_ahead == 0:   # 剛從停住開到 MOVING_V、前方是通的
         self.launch_since = now
       self.stopped_since = None
-    launching = (self.launch_since is not None and v < LAUNCH_DONE
+    launching = (self.launch_since is not None and v < LAUNCH_DONE and stop_ahead == 0
                  and now - self.launch_since < LAUNCH_MAX)
     if not launching:
       self.launch_since = None
@@ -152,7 +162,6 @@ class Director:
     # 觸發 21 次、20 秒內真的停住 16 次（76%）、中位提早 5.3 秒。
     # ⛔ 不要用 control.stopDistance：規劃沒停下來時它回的是整段 10 秒的行駛距離，不是 0（同樣資料 29%）；
     # ⛔ control.stop（shouldStop）行進中一次都沒亮過。
-    stop_ahead = float(_g(d, "modelV2", "stopAhead", default=0.0) or 0.0)
     if not stopped and stop_ahead > 0 and v > 1.0:
       return Screen("stop", {"dist": stop_ahead})
 
@@ -168,8 +177,8 @@ class Director:
       return Screen("coast")
     if stopped:
       waited = now - self.stopped_since
-      if self.stop_kind == "light":
-        return Screen("stopped", {"kind": "light", "secs": int(waited)})
+      if self.stop_kind == "junction":             # 前面沒車、停前是 stoplight：路口／停止線，不一定是紅燈
+        return Screen("stopped", {"kind": "junction", "secs": int(waited)})
       return Screen("stopped", {"kind": "follow", "dRel": d_rel})
     if launching:
       return Screen("launch")
