@@ -74,6 +74,27 @@ LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
 # by the HUD's toggle, because the driver cannot SSH into the car from the driver's seat.
 NNFF_OFF_FLAG = '/data/nnff_off'
 
+# The low-speed gain above - KP_INTERP times the low-speed error scale - is there so a junction
+# turn can force the rack round a stationary tyre. On a near-straight road it is far more than
+# the few degrees of trim there need, and the wheel hunts: over the 09-23 drives there were 70
+# stretches (259 s) of the wheel swinging back and forth at under 35 km/h with no hand on it,
+# 54 of them with the request under 0.1 m/s^2, 67 with the wheel inside 30 degrees and none
+# past 90. Split into its terms, the swing is P's: setpoint 0.018, P 0.566, I 0.009,
+# feedforward 0.061 (detrended std, medians), and never saturated.
+# So P is scaled down only while the road is straight. "Straight" is the larger of the
+# requested curvature and the curvature the wheel is actually at, so a turn and the unwind out
+# of it keep the full gain: 0.003 1/m is about 7 degrees of wheel, 0.008 about 20. On those
+# drives every frame past 60 degrees and every frame over 50 km/h keeps 1.0. Speed fades it
+# out between 30 and 50 km/h, where the hunting stops. The integrator still sees the full
+# error, so the long-run trim on a straight is unchanged.
+# The 0.5 is not derived: a plant model fitted to these drives could not reproduce the wheel
+# (free-run R^2 -0.08), so it is set to be compared on the road with the HUD switch below.
+STRAIGHT_P_SCALE = 0.5
+STRAIGHT_CURV_BP = [0.003, 0.008]   # 1/m
+STRAIGHT_SPEED_BP = [30 / 3.6, 50 / 3.6]
+# Presence of this file keeps the full gain on straights too - the HUD's switch, as above.
+STRAIGHT_P_OFF_FLAG = '/data/straight_p_off'
+
 # The widest |lateral acceleration| the model was trained on. Requests stay well inside it;
 # this is a guard, not a working limit.
 NN_ACCEL_LIMIT = 3.1
@@ -144,6 +165,8 @@ class LatControlTorque(LatControl):
     self.nn_recheck = self.nn_recheck_frames
     self.nn_past_frames = [int(round(t / self.dt)) for t in (0.3, 0.2, 0.1)]
     cloudlog.info(f"lateral feedforward: {'neural' if self.nn else 'linear'}")
+    self.straight_p = not os.path.isfile(STRAIGHT_P_OFF_FLAG)
+    cloudlog.info(f"straight-road P scale: {'on' if self.straight_p else 'off'}")
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -193,6 +216,10 @@ class LatControlTorque(LatControl):
       if (nn is None) != (self.nn is None):
         cloudlog.info(f"lateral feedforward switched to {'neural' if nn else 'linear'}")
       self.nn = nn
+      sp = not os.path.isfile(STRAIGHT_P_OFF_FLAG)
+      if sp != self.straight_p:
+        cloudlog.info(f"straight-road P scale switched {'on' if sp else 'off'}")
+      self.straight_p = sp
     measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
     measurement = measured_curvature * CS.vEgo ** 2
     future_desired_lateral_accel = desired_curvature * CS.vEgo ** 2
@@ -237,8 +264,15 @@ class LatControlTorque(LatControl):
       pid_log.error = float(error)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < self.integrator_reset_speed
+      p_scale = 1.0
+      if self.straight_p:
+        road_curvature = max(abs(desired_curvature), abs(measured_curvature))
+        straight = 1.0 - float(np.interp(road_curvature, STRAIGHT_CURV_BP, [0.0, 1.0]))
+        slow = float(np.interp(CS.vEgo, STRAIGHT_SPEED_BP, [1.0, 0.0]))
+        p_scale = 1.0 - (1.0 - STRAIGHT_P_SCALE) * straight * slow
       if self.nn is None:
-        output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator)
+        output_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=ff, freeze_integrator=freeze_integrator,
+                                          p_scale=p_scale)
         output_torque = self.torque_from_lateral_accel(output_lataccel, self.torque_params)
         ff_torque = self.torque_from_lateral_accel(ff, self.torque_params)
       else:
@@ -250,7 +284,7 @@ class LatControlTorque(LatControl):
         # and leave the feedback on the linear conversion where any magnitude is meaningful.
         ff_torque = self._nn_feedforward(ff, CS.vEgo, desired_lateral_jerk)
         feedback_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=0.0,
-                                            freeze_integrator=freeze_integrator)
+                                            freeze_integrator=freeze_integrator, p_scale=p_scale)
         output_torque = ff_torque + self.torque_from_lateral_accel(feedback_lataccel, self.torque_params)
         output_torque = float(np.clip(output_torque, -self.steer_max, self.steer_max))
         output_lataccel = feedback_lataccel

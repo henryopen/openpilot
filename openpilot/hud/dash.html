@@ -66,7 +66,7 @@
   /* 狀態 chips */
   .chips{top:132px;left:20px;display:flex;flex-direction:column;gap:7px;align-items:flex-start}
   /* .ov 整層不收點擊；前饋標籤要能在行駛中直接點，單獨打開，並加大可點範圍 */
-  #cNN{pointer-events:auto;cursor:pointer;padding:9px 18px}
+  #cNN,#cSTR{pointer-events:auto;cursor:pointer;padding:9px 18px}
   .chip{padding:5px 13px;border-radius:5px;font-size:17px;font-weight:800;letter-spacing:.4px;
     background:rgba(6,11,16,.82);border:1px solid var(--line);color:var(--dim2);text-shadow:none}
   .chip.on{color:var(--green);border-color:rgba(47,212,90,.5);background:rgba(47,212,90,.12)}
@@ -252,6 +252,7 @@
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
     <span class="chip" id="cNN">前饋 —</span>
+    <span class="chip" id="cSTR">直線 —</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1460,6 +1461,29 @@ if(nb) nb.addEventListener('click', async ()=>{
   nb.disabled=false;
 });
 nnffRefresh(false); setInterval(()=>nnffRefresh(false), 10000);
+
+/* 直線降 P（latcontrol_torque 的 STRAIGHT_P_SCALE）：低速接近直線時 P 只用一半，轉彎不變。
+   09-23 加的，0.5 不是推出來的，所以放一個開關讓駕駛在同一段路直接比：柔＝降、原＝原本增益 */
+const cst=document.getElementById('cSTR');
+let cstBusy=false;
+async function straightRefresh(act){
+  if(!cst) return;
+  const h=window.__esHost; if(!h){ cst.textContent='直線 —'; cst.className='chip'; return; }
+  try{
+    const c=new AbortController(); const t=setTimeout(()=>c.abort(),4000);
+    const r=await fetch(`http://${h}:8902/straight${act?'/toggle':''}`,{cache:'no-store',signal:c.signal});
+    clearTimeout(t);
+    const j=await r.json();
+    cst.textContent='直線 '+(j.on?'柔':'原'); cst.className='chip'+(j.on?' on':' wait');
+  }catch(e){ cst.textContent='直線 —'; cst.className='chip'; }
+}
+if(cst) cst.addEventListener('click', async ()=>{
+  if(cstBusy) return;
+  cstBusy=true; cst.textContent='切換中…';
+  await straightRefresh(true);
+  setTimeout(()=>{ cstBusy=false; }, 2000);
+});
+straightRefresh(false); setInterval(()=>straightRefresh(false), 10000);
 
 // HUD ↔ 待機互切：左上角 netInfo 點了進待機（選 AP 用）；「返回 HUD」跳回去
 const ni=document.getElementById('netInfo');

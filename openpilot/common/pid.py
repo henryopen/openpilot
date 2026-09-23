@@ -39,9 +39,10 @@ class PIDController:
     self.pos_limit = pos_limit
     self.neg_limit = neg_limit
 
-  def update(self, error, error_rate=0.0, speed=0.0, feedforward=0., freeze_integrator=False):
+  def update(self, error, error_rate=0.0, speed=0.0, feedforward=0., freeze_integrator=False, p_scale=1.0):
+    # p_scale scales the proportional term alone; the integrator still sees the full error
     self.speed = speed
-    self.p = self.k_p * float(error)
+    self.p = self.k_p * float(error) * p_scale
     self.d = self.k_d * error_rate
     self.f = feedforward
 
