@@ -65,6 +65,8 @@
 
   /* 狀態 chips */
   .chips{top:132px;left:20px;display:flex;flex-direction:column;gap:7px;align-items:flex-start}
+  /* .ov 整層不收點擊；前饋標籤要能在行駛中直接點，單獨打開，並加大可點範圍 */
+  #cNN{pointer-events:auto;cursor:pointer;padding:9px 18px}
   .chip{padding:5px 13px;border-radius:5px;font-size:17px;font-weight:800;letter-spacing:.4px;
     background:rgba(6,11,16,.82);border:1px solid var(--line);color:var(--dim2);text-shadow:none}
   .chip.on{color:var(--green);border-color:rgba(47,212,90,.5);background:rgba(47,212,90,.12)}
@@ -1442,13 +1444,15 @@ async function nnffRefresh(act){
     if(cnn){ cnn.textContent='前饋 '+(j.on?'神經':'線性'); cnn.className='chip'+(j.on?' on':' wait'); }
   }catch(e){ nb.textContent='轉向前饋 —'; if(cnn){ cnn.textContent='前饋 —'; cnn.className='chip'; } }
 }
-// 行駛畫面也要看得到現在是哪一種（09-23：按鈕只在待機畫面，行駛中不知道有沒有啟用）。
-// 只顯示不切換 —— 點了進待機畫面，要切換在那裡按，免得行駛中誤觸
+// 行駛畫面也要看得到、也要能直接切（09-23 駕駛要求：按鈕只在待機畫面，行駛中既看不到也切不了）。
+// 點一下就切；切完鎖 2 秒，連點不會來回跳
 const cnn=document.getElementById('cNN');
-if(cnn) cnn.addEventListener('click', ()=>{
-  manualStandby=true;
-  showStandbyScreen('轉向前饋在下面切換；按「返回 HUD」回來','ok');
-  refreshApRow();
+let cnnBusy=false;
+if(cnn) cnn.addEventListener('click', async ()=>{
+  if(cnnBusy) return;
+  cnnBusy=true; cnn.textContent='切換中…';
+  await nnffRefresh(true);
+  setTimeout(()=>{ cnnBusy=false; }, 2000);
 });
 if(nb) nb.addEventListener('click', async ()=>{
   nb.disabled=true; nb.textContent='切換中…';
