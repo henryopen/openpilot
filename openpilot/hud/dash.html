@@ -957,7 +957,8 @@ function render(F){
   } else { nx.className='slnx'; __slnRaw=-1; }
   const e=$('cEng');
   // MAIN 亮但 OP 未啟動是個要知道的狀態：儀表看起來 ON，其實還要按一下才接管
-  e.textContent=F.engaged?'ENGAGED':(F.avail?'MAIN ON · 按鍵啟動':'MAIN OFF');
+  // 踏板交出縱向（overriding）時也是 MAIN ON：放開會自己接回，所以不寫「按鍵啟動」
+  e.textContent=F.engaged?'ENGAGED':(F.paused?'MAIN ON':(F.avail?'MAIN ON · 按鍵啟動':'MAIN OFF'));
   e.className='chip'+(F.engaged?' on':(F.avail?' wait':''));
   const nr=(F.leads||[]).filter(l=>l.radar).length;
   set('cRad', nr?`雷達確認 ${nr}`:'純視覺');
@@ -1299,7 +1300,11 @@ function fromSSE(J){
     clk:(J.clock||{}).t||'', clkOk:!!(J.clock||{}).ok,
     dDes:ct.followDistance||0,
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff, exp:!!ss.experimentalMode,
-    engaged: !!(ss.enabled||ss.active),
+    // ENGAGED＝縱向真的在作用。踩煞車（行進中）／踩油門時 OP 狀態是 overriding：enabled 還是 true，
+    // 但縱向已經交給駕駛，放開才接回。09-23 這段一直顯示 ENGAGED，駕駛以為 OP 還在控制，
+    // 40 次踩煞車裡 17 次自己按 CANCEL。
+    engaged: !!(ss.enabled||ss.active) && ss.state!=='overriding',
+    paused: ss.state==='overriding',
     avail: !!cs.cruiseAvailable,   // 儀表 MAIN 亮著（但 OP 可能還沒按啟動）
     road: lm.roadName||'—',
     src: ct.reason||ct.src||'cruise',
