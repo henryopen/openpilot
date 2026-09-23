@@ -66,7 +66,7 @@
   /* 狀態 chips */
   .chips{top:132px;left:20px;display:flex;flex-direction:column;gap:7px;align-items:flex-start}
   /* .ov 整層不收點擊；前饋標籤要能在行駛中直接點，單獨打開，並加大可點範圍 */
-  #cNN,#cSTR{pointer-events:auto;cursor:pointer;padding:9px 18px}
+  #cNN,#cSTR,#cDZ{pointer-events:auto;cursor:pointer;padding:9px 18px}
   .chip{padding:5px 13px;border-radius:5px;font-size:17px;font-weight:800;letter-spacing:.4px;
     background:rgba(6,11,16,.82);border:1px solid var(--line);color:var(--dim2);text-shadow:none}
   .chip.on{color:var(--green);border-color:rgba(47,212,90,.5);background:rgba(47,212,90,.12)}
@@ -253,6 +253,7 @@
     <span class="chip wait" id="cSLA" style="display:none"></span>
     <span class="chip" id="cNN">前饋 —</span>
     <span class="chip" id="cSTR">直線 —</span>
+    <span class="chip" id="cDZ">緩衝 —</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1462,28 +1463,32 @@ if(nb) nb.addEventListener('click', async ()=>{
 });
 nnffRefresh(false); setInterval(()=>nnffRefresh(false), 10000);
 
-/* 直線降 P（latcontrol_torque 的 STRAIGHT_P_SCALE）：低速接近直線時 P 只用一半，轉彎不變。
-   09-23 加的，0.5 不是推出來的，所以放一個開關讓駕駛在同一段路直接比：柔＝降、原＝原本增益 */
-const cst=document.getElementById('cSTR');
-let cstBusy=false;
-async function straightRefresh(act){
-  if(!cst) return;
-  const h=window.__esHost; if(!h){ cst.textContent='直線 —'; cst.className='chip'; return; }
-  try{
-    const c=new AbortController(); const t=setTimeout(()=>c.abort(),4000);
-    const r=await fetch(`http://${h}:8902/straight${act?'/toggle':''}`,{cache:'no-store',signal:c.signal});
-    clearTimeout(t);
-    const j=await r.json();
-    cst.textContent='直線 '+(j.on?'柔':'原'); cst.className='chip'+(j.on?' on':' wait');
-  }catch(e){ cst.textContent='直線 —'; cst.className='chip'; }
+/* 駕駛在同一段路直接比較用的開關（09-23）。車機那邊是旗標檔，存在＝關閉，每秒重讀一次。
+     直線：latcontrol_torque 低速接近直線時 P 只用一半（柔）／原本增益（原）
+     緩衝：long_deadzone 小幅加減速要求時不加不減（開）／照原本跟著加減（關） */
+function flagChip(id, path, name, onTxt, offTxt){
+  const el=document.getElementById(id); if(!el) return;
+  let busy=false;
+  async function refresh(act){
+    const h=window.__esHost; if(!h){ el.textContent=name+' —'; el.className='chip'; return; }
+    try{
+      const c=new AbortController(); const t=setTimeout(()=>c.abort(),4000);
+      const r=await fetch(`http://${h}:8902/${path}${act?'/toggle':''}`,{cache:'no-store',signal:c.signal});
+      clearTimeout(t);
+      const j=await r.json();
+      el.textContent=name+' '+(j.on?onTxt:offTxt); el.className='chip'+(j.on?' on':' wait');
+    }catch(e){ el.textContent=name+' —'; el.className='chip'; }
+  }
+  el.addEventListener('click', async ()=>{
+    if(busy) return;
+    busy=true; el.textContent='切換中…';
+    await refresh(true);
+    setTimeout(()=>{ busy=false; }, 2000);
+  });
+  refresh(false); setInterval(()=>refresh(false), 10000);
 }
-if(cst) cst.addEventListener('click', async ()=>{
-  if(cstBusy) return;
-  cstBusy=true; cst.textContent='切換中…';
-  await straightRefresh(true);
-  setTimeout(()=>{ cstBusy=false; }, 2000);
-});
-straightRefresh(false); setInterval(()=>straightRefresh(false), 10000);
+flagChip('cSTR', 'straight', '直線', '柔', '原');
+flagChip('cDZ', 'deadzone', '緩衝', '開', '關');
 
 // HUD ↔ 待機互切：左上角 netInfo 點了進待機（選 AP 用）；「返回 HUD」跳回去
 const ni=document.getElementById('netInfo');

@@ -18,6 +18,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (get_
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
+from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
 from openpilot.common.swaglog import cloudlog
@@ -358,6 +359,7 @@ class LongitudinalPlanner:
     self.plan_reason = PlanReason.cruise
     self.weak_lead_frames = 0
     self.curve_speed = CurveSpeedControl()
+    self.deadzone = LongDeadzone(dt)
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -555,6 +557,14 @@ class LongitudinalPlanner:
         and lead.dRel < STANDSTILL_CREEP_DIST and lead.vRel < STANDSTILL_CREEP_VREL
         and not sm['carState'].gasPressed):
       output_a_target = min(output_a_target, 0.0)
+
+    # A steady foot between small corrections - see long_deadzone. Only for what cruise or a
+    # lead asked; a corner, a junction, the model's stop or a planned stop go straight through.
+    # v_desired_filter below integrates this output, so the MPC starts its next solve from the
+    # speed actually being held rather than the one it had wanted.
+    dz_eligible = (self.plan_reason in (PlanReason.cruise, PlanReason.lead)
+                   and not self.output_should_stop and not self.junction.active and not reset_state)
+    output_a_target = self.deadzone.update(output_a_target, v_ego, dz_eligible)
 
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 

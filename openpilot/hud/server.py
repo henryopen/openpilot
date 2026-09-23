@@ -42,6 +42,7 @@ SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV
 # flipping it needs no rebuild; latcontrol_torque re-reads it once a second.
 NNFF_OFF_FLAG = "/data/nnff_off"
 STRAIGHT_P_OFF_FLAG = "/data/straight_p_off"   # latcontrol_torque's straight-road P scale
+LONG_DEADZONE_OFF_FLAG = "/data/long_deadzone_off"   # long_deadzone's hold band
 NNFF_MODEL = "/data/openpilot/openpilot/selfdrive/controls/lib/nnff_models/HYUNDAI_CUSTIN_1ST_GEN.json"
 
 # what the planner says set the accel; the page shows these instead of the raw plan source
@@ -544,19 +545,21 @@ class Handler(BaseHTTPRequestHandler):
           return
       self._json({"ok": True, "on": not os.path.isfile(NNFF_OFF_FLAG),
                   "have_model": os.path.isfile(NNFF_MODEL)})
-    elif self.path.startswith("/straight"):
-      # the straight-road P scale in latcontrol_torque, same file-flag arrangement as /nnff
+    elif self.path.startswith(("/straight", "/deadzone")):
+      # driver A/B switches, same file-flag arrangement as /nnff: the flag's presence turns the
+      # feature off, and the process re-reads it once a second
+      flag = STRAIGHT_P_OFF_FLAG if self.path.startswith("/straight") else LONG_DEADZONE_OFF_FLAG
       if "toggle" in self.path:
         try:
-          if os.path.isfile(STRAIGHT_P_OFF_FLAG):
-            os.remove(STRAIGHT_P_OFF_FLAG)
+          if os.path.isfile(flag):
+            os.remove(flag)
           else:
-            with open(STRAIGHT_P_OFF_FLAG, "w") as f:
+            with open(flag, "w") as f:
               f.write("off\n")
         except OSError as e:
           self._json({"ok": False, "error": str(e)})
           return
-      self._json({"ok": True, "on": not os.path.isfile(STRAIGHT_P_OFF_FLAG)})
+      self._json({"ok": True, "on": not os.path.isfile(flag)})
     else:
       self.send_response(404)
       self.send_header("Content-Length", "0")
