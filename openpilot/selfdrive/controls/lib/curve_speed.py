@@ -58,6 +58,22 @@ _TURNING_ACC_V = [0.5, 0., -0.4]
 _TURNING_ACC_BP = [1.5, 2.3, 3.]
 _LEAVING_ACC = 0.5                     # comfortable pull back up to speed on the way out
 
+# v_target is shown on the HUD beside MAX, but only the entering state ever looked at it: turning
+# took its acceleration from how hard the car was pulling alone, never lower than -0.4, and
+# leaving always handed back +0.5. So the display could say 33 while the car held 51. On the
+# 09-23 drive (route 39 seg 26, 13:37) a corner seen late was entered at 55 km/h: turning sat on
+# -0.4 for seven seconds, the car pulled 3.5 m/s^2 of lateral acceleration, v_target went down to
+# 33 and the car only to 46, and when the corner eased the table went positive while the wheel
+# was still at -30 degrees - the driver had to take it, close to the outside of the bend.
+# In every state now: over v_target by more than the margin, slow toward it, closing the gap in
+# about _OVERSPEED_TC; over it at all, no acceleration. v_target itself is unchanged - it is
+# already looser than this driver: 1.39 allowed at 15-30 km/h against his own median of 1.39,
+# 1.52 at 30-45 against 1.23. Openpilot's own corners at 45-60 km/h pull 1.71 at the median and
+# 2.80 at the 90th percentile against 1.73 allowed; it is that top end this reaches.
+_OVERSPEED_MARGIN = 2 * CV.KPH_TO_MS
+_OVERSPEED_TC = 2.0                    # s
+_OVERSPEED_A_MIN = -1.5                # m/s^2
+
 
 class CurveState(IntEnum):
   disabled = 0
@@ -155,6 +171,16 @@ class CurveSpeedControl:
     return self.state in ACTIVE_STATES
 
   def _update_solution(self) -> float:
+    a = self._state_solution()
+    if self.state in ACTIVE_STATES and self.v_target > 0.:
+      over = self.v_ego - self.v_target
+      if over > 0.:
+        a = min(a, 0.)                                        # never speed up over the target
+      if over > _OVERSPEED_MARGIN:
+        a = min(a, max(-over / _OVERSPEED_TC, _OVERSPEED_A_MIN))
+    return float(a)
+
+  def _state_solution(self) -> float:
     tol = self._lat_tol()
     if self.state not in ACTIVE_STATES:
       return self.a_ego
