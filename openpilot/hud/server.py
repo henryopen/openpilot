@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from openpilot.cereal import custom, messaging
 from openpilot.common.params import Params
 from openpilot.common.time_helpers import system_time_valid
+from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
 from openpilot.selfdrive.modeld.constants import ModelConstants
@@ -446,6 +447,17 @@ def _produce():
           edges.update_from_model(sm["modelV2"], float(sm["carState"].vEgo))
         data["modelDataV2SP"] = {"leftLaneChangeEdgeBlock": edges.left_edge_detected,
                                  "rightLaneChangeEdgeBlock": edges.right_edge_detected}
+        # For the rear LED: what the car is about to do sideways. The lane change is the
+        # model's own state; the turn is desire_helper's condition for handing the model a
+        # turn desire, worked out from the same constants so the two cannot drift apart.
+        _meta = sm["modelV2"].meta
+        _cs = sm["carState"]
+        _one = _cs.leftBlinker != _cs.rightBlinker
+        _turning = (bool(sm["carControl"].latActive) and _one
+                    and LANE_TURN_SPEED_MIN <= float(_cs.vEgo) < LANE_TURN_SPEED_MAX)
+        data["intent"] = {"laneChangeState": str(_meta.laneChangeState),
+                          "laneChangeDirection": str(_meta.laneChangeDirection),
+                          "turn": ("left" if _cs.leftBlinker else "right") if _turning else ""}
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         # what cruise is really working to, which is not the driver's MAX whenever something
