@@ -249,6 +249,7 @@
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
+    <span class="chip" id="cNN">前饋 —</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1438,8 +1439,17 @@ async function nnffRefresh(act){
     nb.disabled=!j.have_model;
     nb.textContent='轉向前饋：'+(j.on?'神經網路':'線性');
     nb.classList.toggle('cur', !!j.on);
-  }catch(e){ nb.textContent='轉向前饋 —'; }
+    if(cnn){ cnn.textContent='前饋 '+(j.on?'神經':'線性'); cnn.className='chip'+(j.on?' on':' wait'); }
+  }catch(e){ nb.textContent='轉向前饋 —'; if(cnn){ cnn.textContent='前饋 —'; cnn.className='chip'; } }
 }
+// 行駛畫面也要看得到現在是哪一種（09-23：按鈕只在待機畫面，行駛中不知道有沒有啟用）。
+// 只顯示不切換 —— 點了進待機畫面，要切換在那裡按，免得行駛中誤觸
+const cnn=document.getElementById('cNN');
+if(cnn) cnn.addEventListener('click', ()=>{
+  manualStandby=true;
+  showStandbyScreen('轉向前饋在下面切換；按「返回 HUD」回來','ok');
+  refreshApRow();
+});
 if(nb) nb.addEventListener('click', async ()=>{
   nb.disabled=true; nb.textContent='切換中…';
   await nnffRefresh(true);
