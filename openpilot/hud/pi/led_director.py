@@ -7,10 +7,12 @@ Screen.pages 是這個畫面要輪替的幾頁字（每頁 PAGE_SECS 秒），le
 情境照使用者 2026-09-24 的「OP 車後 LED 顯示情境表」：
   先分「前車在不在跟車距離內」（跟 HUD「淨空」同一把尺：planner 的 followDistance × 1.2），
   有前車講前車（穩定跟車／前車減速／跟上前車／前車急煞／前車停止／前車起步），
-  沒前車講自己（省油加速／速限巡航／前方速限／前方停車／停止中／調低 MAX 減速／前方有狀況），
+  沒前車講自己（省油加速／遵守速限中／前方速限／前方停車／停止中／調低 MAX 減速／前方有狀況），
   彎道、變換車道、路口轉彎不分有沒有前車。
   字：重要的大字、補充的小字；一頁兩秒，後車才讀得完兩行中文。
   跟車距離附近有緩衝區（使用者表上的 DEADZONE）：進入／離開分開做遲滯，不會在門檻上來回跳。
+  ⛔ 不顯示任何車速（自己的、目標的、前車的）：9/24 使用者「免得別人說我們超速」—— MAX 跟著
+  速限走、實務上會設到速限 +10，屏上寫出數字就是給人檢舉的證據。只講「在做什麼」。
 
 畫面衝突的處理（2026-09-23 定的，沿用）：
   1. 會被下一個畫面馬上蓋掉的，拉長：停等在停住那一刻就決定種類；前車急煞至少 ALERT_HOLD 秒；
@@ -62,12 +64,8 @@ PULLING_AWAY = 1.0                   # m/s：前車比我們快這麼多、我�
 
 AT_MAX = 3              # km/h：儀表速度離 MAX 這麼近就算「已達 MAX」
 OVER_MAX = 2            # km/h：高於 MAX 這麼多、又在減速 = 調低 MAX 在減速
-AT_LIMIT = 2            # km/h：MAX 跟（速限＋偏移）差這麼多以內 = 照速限巡航
 LIMIT_AHEAD_MAX = 500.0  # m：前方速限只在這距離內預告
 CURVE_SIDE_M = 0.3      # m：模型路線在 30-60 m 處偏這麼多才講左右
-
-# 儀表速度換算（9/10、22915 樣本）：後車看自己的儀表，講前車時速也用儀表的尺
-DASH_K, DASH_B = 1.0272, 4.00
 
 # 自然接續：前一個畫面講的事已經發生了，下一個直接接上
 FLOW = {("stop", "stopped"), ("lower_max", "stopped"), ("slow_ahead", "stopped"), ("decel", "stopped"),
@@ -138,7 +136,7 @@ def pages(s):
     return [Page("car_red", "前車停止", "請注意 減速中", RED)]
   if k == "stop":
     return [Page("octagon", "前方停車", "減速中", RED),
-            Page("octagon", f"還有 {max(0, round(p.get('dist', 0)))} M", f"目前時速 {p.get('kph', 0)}", RED)]
+            Page("octagon", f"還有 {max(0, round(p.get('dist', 0)))} M", "準備停車", RED)]
   if k in ("lane", "turn"):
     left = p.get("dir") == "left"
     side = "左" if left else "右"
@@ -154,8 +152,7 @@ def pages(s):
   if k == "lead_slow":
     return [Page("chev_down", "前車減速", "請注意", YELLOW)]
   if k == "lower_max":
-    return [Page("chev_down", "減速中", f"目標時速 {p.get('max', 0)}", YELLOW),
-            Page("chev_down", f"時速 {p.get('kph', 0)}", f"目標 {p.get('max', 0)} 減速中", YELLOW)]
+    return [Page("chev_down", "減速中", "調整車速", YELLOW)]
   if k == "slow_ahead":
     return [Page("chev_down", "前方有狀況", "減速觀察中", YELLOW)]
   if k == "decel":
@@ -165,25 +162,18 @@ def pages(s):
   if k == "lead_launch":
     return [Page("car", "前車起步", "即將跟上", GREEN)]
   if k == "catch_up":
-    return [Page("chev_up", "跟上前車", f"前車時速 {p.get('lead_kph', 0)}", GREEN)]
+    return [Page("chev_up", "跟上前車", "保持車距", GREEN)]
   if k == "stopped_follow":
     d = p.get("dRel")
     return [Page("car_gray", "前車停止", f"保持距離 {round(d)} M" if d else "保持安全距離", WHITE)]
   if k == "stopped":
     return [Page("octagon", "停止中", f"請稍候 {p.get('secs', 0)} 秒", RED)]
   if k == "follow":
-    return [Page("car", f"跟車 {round(p.get('dRel', 0))}M", f"前車時速 {p.get('lead_kph', 0)}", WHITE)]
+    return [Page("car", f"跟車 {round(p.get('dRel', 0))}M", "維持安全距離", WHITE)]
   if k == "accel":
-    return [Page("chev_up", "省油加速", f"目標時速 {p.get('max', 0)}", GREEN),
-            Page("chev_up", f"時速 {p.get('kph', 0)}", f"目標時速 {p.get('max', 0)}", GREEN)] + _ahead_page(p)
+    return [Page("chev_up", "省油加速", "請稍候", GREEN)] + _ahead_page(p)
   if k == "cruise":
-    lim = p.get("limit")
-    if lim:
-      base = [Page("road", "速限巡航", f"時速 {p.get('kph', 0)}", WHITE),
-              Page("limit", "道路速限", f"可容許 {lim}", WHITE, arg=lim)]
-    else:
-      base = [Page("road", "巡航中", f"時速 {p.get('kph', 0)}", WHITE)]
-    return base + _ahead_page(p)
+    return [Page("road", "遵守速限中", "", WHITE)] + _ahead_page(p)
   raise KeyError(k)
 
 
@@ -193,11 +183,6 @@ def _g(d, *path, default=None):
       return default
     d = d[p]
   return d
-
-
-def dash_kph(v):
-  """真實車速（m/s）→ 儀表上會看到的 km/h。"""
-  return round(DASH_K * v / KPH + DASH_B) if v > 0.3 else 0
 
 
 class Director:
@@ -280,7 +265,6 @@ class Director:
     lm = d.get("liveMapDataSP", {})
     limit = float(lm.get("speedLimit", 0.0) or 0.0)
     limit_kph = round(limit / KPH) if lm.get("speedLimitValid") and limit > 0 else 0
-    offset = float(_g(d, "selfdriveStateSP", "speedLimit", "resolver", "speedLimitOffset", default=0.0) or 0.0)
     if limit_kph:
       if self.last_limit and abs(limit_kph - self.last_limit) >= 5:
         self.limit_changed_until = now + LIMIT_CHANGED_HOLD
@@ -290,9 +274,6 @@ class Director:
     a_lim, a_dist = float(lm.get("speedLimitAhead", 0.0) or 0.0), float(lm.get("speedLimitAheadDistance", 0.0) or 0.0)
     if lm.get("speedLimitAheadValid") and 0 < a_dist < LIMIT_AHEAD_MAX and abs(a_lim - limit) > 1.0:
       ahead = {"limit": round(a_lim / KPH), "dist": a_dist}
-    at_limit = bool(limit_kph and max_kph and abs(max_kph - round((limit + offset) / KPH)) <= AT_LIMIT)
-
-    lead_kph = dash_kph(v_lead)
 
     # ============ 依嚴重度從高到低
     if now < self.alert_until or (a <= HARD_BRAKE and reason.startswith(("lead", "weaklead")) and not stopped):
@@ -308,7 +289,7 @@ class Director:
       # 觸發 21 次、20 秒內真的停住 16 次（76%）、中位提早 5.3 秒。
       # ⛔ 不要用 control.stopDistance（規劃沒停時回整段行駛距離）；control.stop 行進中一次都沒亮過。
       if not self.in_zone and stop_ahead > 0 and v > 1.0:
-        return Screen("stop", {"dist": stop_ahead, "kph": kph})
+        return Screen("stop", {"dist": stop_ahead})
 
     intent = d.get("intent", {})
     if intent.get("laneChangeState") == "laneChangeStarting":
@@ -338,26 +319,26 @@ class Director:
         return Screen("lead_slow", {"dRel": d_rel, "why": why})
       self.far = r > FAR_IN or (self.far and r > FAR_OUT)
       if self.far and self.accel and v_rel > PULLING_AWAY:
-        return Screen("catch_up", {"lead_kph": lead_kph})
-      return Screen("follow", {"dRel": d_rel, "lead_kph": lead_kph})
+        return Screen("catch_up")
+      return Screen("follow", {"dRel": d_rel})
     self.far = False
     # 前車拉開到跟車距離外、我們在追
     if self.lead_shown and r < CATCH_UP_MAX and self.accel and v_rel >= 0:
-      return Screen("catch_up", {"lead_kph": lead_kph})
+      return Screen("catch_up")
 
     # ---- 沒前車（在跟車距離內）
     slowing = (self.decel or self.coast) and not brake
     if slowing and present and reason.startswith(("lead", "weaklead")):
       return Screen("slow_ahead")
     if slowing and max_kph and kph > max_kph + OVER_MAX:
-      return Screen("lower_max", {"kph": kph, "max": max_kph})
+      return Screen("lower_max")
     if self.decel and not brake:
       return Screen("decel")
     if now < self.limit_changed_until:
       return Screen("limit_changed", {"limit": self.limit_changed_to})
     if self.accel and max_kph and kph < max_kph - AT_MAX:
-      return Screen("accel", {"kph": kph, "max": max_kph, "ahead": ahead})
-    return Screen("cruise", {"kph": kph, "limit": limit_kph if at_limit else 0, "ahead": ahead})
+      return Screen("accel", {"ahead": ahead})
+    return Screen("cruise", {"ahead": ahead})
 
   @staticmethod
   def _curve_dir(d):
