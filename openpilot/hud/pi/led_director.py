@@ -360,14 +360,15 @@ class Director:
 
   @staticmethod
   def _curve_dir(d):
-    """模型路線在 30-60 m 處往哪邊偏（openpilot 座標 y 正 = 左）。"""
+    """模型路線在 30-60 m 處往哪邊偏。openpilot 座標 y 正 = 右（9/24 實測：9/23 整趟方向盤右打 >30 度的
+    1142 格裡 1110 格 y 為正、左打的 448 格裡 365 格為負）—— 一開始寫反，LED 左彎講成右彎。"""
     path = _g(d, "modelV2", "path", default=None)
     if not path or len(path) < 7:
       return ""
     y = sum(path[4:7]) / 3
     if abs(y) < CURVE_SIDE_M:
       return ""
-    return "left" if y > 0 else "right"
+    return "right" if y > 0 else "left"
 
   def _reset_drive(self):
     self.decel = self.coast = self.accel = False
