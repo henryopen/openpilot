@@ -109,6 +109,33 @@ NN_ACCEL_LIMIT = 3.1
 NN_BLEND_LO = 0.15
 NN_BLEND_HI = 0.50
 
+# The network under-asks at junction speeds. It was trained with |torque| >= 0.95 thrown out,
+# and a slow, tight turn is exactly where the rack needs that much, so the turns that needed
+# the most torque were never in the training set and the ones that remained taught it less.
+# Measured on 09-16/18/20/23/24, turning with no hand on the wheel and the lateral
+# acceleration steady, torque actually sent over what the network asked for:
+#
+#      km/h      5-10    10-15   15-20   20-25   25-30
+#      09-23     2.13    1.91    1.39    1.39    1.30
+#      09-24     2.66    1.39    1.40    1.19    0.89
+#      five-drive range  1.71-2.66  1.07-1.91  1.14-1.40  1.19-1.49  0.89-1.41
+#
+# The cap on P (P_MAX_CONTRIB) and an integrator frozen whenever a hand rests on the wheel
+# leave nothing else to make that up, so the car stops short of the curvature it asked for.
+# 1.4 is where 10-20 km/h sits across all five drives (after it: 0.82-1.00 at 15-20), faded
+# out by 25 km/h and above that nothing changes. It is conservative below 10 km/h, where the
+# gap is friction rather than gain (still 1.22-1.90 after).
+# It is faded in on the turn being asked for - the request alone, not the feedforward, which
+# has friction added and crosses NN_BLEND_LO on a straight. Keyed on the feedforward, the
+# first version changed 33.8% of low-speed frames with the wheel under 10 degrees (p99 41.5
+# counts), and those straights are where the wheel already hunts. Under 0.3 m/s^2 requested
+# nothing changes; junction turns ask for 0.5-1.1.
+NN_LOW_SPEED_GAIN_BP = [0.0, 20.0 / 3.6, 25.0 / 3.6]  # m/s
+NN_LOW_SPEED_GAIN_V = [1.4, 1.4, 1.0]
+NN_LOW_SPEED_REQ_BP = [0.3, 0.6]  # m/s^2 of requested lateral acceleration: gain faded 0 -> full
+# Presence of this file turns the low-speed gain off, re-read once a second like the others.
+NN_LOW_SPEED_OFF_FLAG = '/data/nnff_lowspeed_off'
+
 # Upstream freezes the integrator below 5 m/s. That guard is for cars whose rack will not
 # move at low speed; this one is a full-time lateral car with minSteerSpeed = 0, so all it
 # does here is switch the integrator off for the whole junction speed range. Measured over
@@ -167,6 +194,8 @@ class LatControlTorque(LatControl):
     cloudlog.info(f"lateral feedforward: {'neural' if self.nn else 'linear'}")
     self.straight_p = not os.path.isfile(STRAIGHT_P_OFF_FLAG)
     cloudlog.info(f"straight-road P scale: {'on' if self.straight_p else 'off'}")
+    self.nn_low_speed = not os.path.isfile(NN_LOW_SPEED_OFF_FLAG)
+    cloudlog.info(f"neural feedforward low-speed gain: {'on' if self.nn_low_speed else 'off'}")
 
   def update_torque_parameters(self, latAccelFactor, latAccelOffset, friction):
     self.torque_params.latAccelFactor = latAccelFactor
@@ -178,7 +207,7 @@ class LatControlTorque(LatControl):
     self.pid.set_limits(self.lateral_accel_from_torque(self.steer_max, self.torque_params),
                         self.lateral_accel_from_torque(-self.steer_max, self.torque_params))
 
-  def _nn_feedforward(self, lateral_accel, v_ego, lateral_jerk):
+  def _nn_feedforward(self, lateral_accel, v_ego, lateral_jerk, request):
     """Feedforward torque for a requested lateral acceleration, in this file's sign convention.
 
     Two things this has to get right, both of which were wrong when it first went on the car:
@@ -203,7 +232,11 @@ class LatControlTorque(LatControl):
             for n in self.nn_past_frames]
     inputs = [v_ego, float(np.clip(lateral_accel, -NN_ACCEL_LIMIT, NN_ACCEL_LIMIT)),
               float(np.clip(lateral_jerk, -MAX_LAT_JERK, MAX_LAT_JERK))] + past
-    return (1.0 - blend) * linear + blend * -self.nn.evaluate(inputs)
+    gain = 1.0
+    if self.nn_low_speed:
+      fade = float(np.interp(abs(request), NN_LOW_SPEED_REQ_BP, [0.0, 1.0]))
+      gain = 1.0 + (float(np.interp(v_ego, NN_LOW_SPEED_GAIN_BP, NN_LOW_SPEED_GAIN_V)) - 1.0) * fade
+    return (1.0 - blend) * linear + blend * gain * -self.nn.evaluate(inputs)
 
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
@@ -220,6 +253,10 @@ class LatControlTorque(LatControl):
       if sp != self.straight_p:
         cloudlog.info(f"straight-road P scale switched {'on' if sp else 'off'}")
       self.straight_p = sp
+      ls = not os.path.isfile(NN_LOW_SPEED_OFF_FLAG)
+      if ls != self.nn_low_speed:
+        cloudlog.info(f"neural feedforward low-speed gain switched {'on' if ls else 'off'}")
+      self.nn_low_speed = ls
     measured_curvature = -VM.calc_curvature(math.radians(CS.steeringAngleDeg - params.angleOffsetDeg), CS.vEgo, params.roll)
     measurement = measured_curvature * CS.vEgo ** 2
     future_desired_lateral_accel = desired_curvature * CS.vEgo ** 2
@@ -282,7 +319,7 @@ class LatControlTorque(LatControl):
         # drive this first went out on it reached 4150 m/s^2 against a training range of 3.13,
         # so 36% of frames were extrapolation. Feed the network the request, which is physical,
         # and leave the feedback on the linear conversion where any magnitude is meaningful.
-        ff_torque = self._nn_feedforward(ff, CS.vEgo, desired_lateral_jerk)
+        ff_torque = self._nn_feedforward(ff, CS.vEgo, desired_lateral_jerk, future_desired_lateral_accel)
         feedback_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=0.0,
                                             freeze_integrator=freeze_integrator, p_scale=p_scale)
         output_torque = ff_torque + self.torque_from_lateral_accel(feedback_lataccel, self.torque_params)
