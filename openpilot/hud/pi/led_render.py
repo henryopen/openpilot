@@ -45,6 +45,7 @@ GRAY = (110, 110, 110)
 DIM = (45, 45, 45)
 BLACK = (0, 0, 0)
 CYAN = (0, 200, 255)
+AMBER_TURN = (255, 150, 0)   # 方向燈的琥珀色
 
 
 def font(size):
@@ -119,13 +120,39 @@ def ic_car(d, ox, color, t, pulse=False):
   d.rectangle([ox + 44, 50, ox + 54, 58], fill=c)
 
 
+SS = 8   # 有圓弧的圖示先放大這麼多倍畫、再縮回 64 點，邊緣才平滑（屏是全彩，吃得下反鋸齒的中間色）
+
+
+def _smooth_tile(fn):
+  """fn(draw, s) 在 64*s 的畫布上畫（座標自己乘 s）→ 縮回 64x64。"""
+  big = Image.new("RGB", (ICON * SS, ICON * SS), BLACK)
+  fn(ImageDraw.Draw(big), SS)
+  return big.resize((ICON, ICON), Image.Resampling.LANCZOS)
+
+
+def turn_arrow_poly(x0=22.0, w=12.0, r=16.0, yc=34.0, head_x=42.0, tip_x=62.0, head_half=16.0, bottom=64.0, n=24):
+  """右轉箭頭的外框（64 單位座標）：桿往上 → 同寬的 90 度圓弧 → 往右 → 三角箭頭，一整個多邊形。
+
+  9/24 使用者：「這彎不好看，不夠平滑」—— 原本用粗線＋粗圓弧＋三角形拼，圓弧兩端變細、
+  接縫對不齊、箭頭跟桿子斷開。改成算好的外框一次填滿，桿、弧、箭頭同寬而且接在一起。"""
+  cx, cy = x0 + r, yc
+  ro, ri = r + w / 2, r - w / 2
+  yl = cy - r
+  pts = [(x0 - w / 2, bottom), (x0 - w / 2, cy)]
+  pts += [(cx + ro * math.cos(math.radians(180 + 90 * i / n)), cy + ro * math.sin(math.radians(180 + 90 * i / n))) for i in range(n + 1)]
+  pts += [(head_x, yl - w / 2), (head_x, yl - head_half), (tip_x, yl), (head_x, yl + head_half), (head_x, yl + w / 2)]
+  pts += [(cx + ri * math.cos(math.radians(270 - 90 * i / n)), cy + ri * math.sin(math.radians(270 - 90 * i / n))) for i in range(n + 1)]
+  pts.append((x0 + w / 2, bottom))
+  return pts
+
+
 def ic_curve(d, ox, t):
-  """黃色菱形彎道標誌。"""
-  d.polygon([(ox + 32, 1), (ox + 63, 32), (ox + 32, 63), (ox + 1, 32)], fill=YELLOW)
-  d.arc([ox + 20, 20, ox + 50, 58], start=180, end=270, fill=BLACK, width=6)
-  d.line([(ox + 23, 58), (ox + 23, 38)], fill=BLACK, width=6)
-  d.line([(ox + 35, 20), (ox + 40, 20)], fill=BLACK, width=6)
-  d.polygon([(ox + 38, 11), (ox + 48, 20), (ox + 38, 29)], fill=BLACK)
+  """黃色菱形彎道標誌（右彎；左彎由 ic_curve_side 鏡像）。"""
+  def f(g, s):
+    g.polygon([(32 * s, 1 * s), (63 * s, 32 * s), (32 * s, 63 * s), (1 * s, 32 * s)], fill=YELLOW)
+    pts = turn_arrow_poly(x0=27, w=7, r=9, yc=36, head_x=39, tip_x=50, head_half=8.5, bottom=50)  # 整支在菱形內
+    g.polygon([(x * s, y * s) for x, y in pts], fill=BLACK)
+  d._image.paste(_smooth_tile(f), (ox, 0))
 
 
 def ic_octagon(d, ox, t, text="停"):
@@ -135,18 +162,12 @@ def ic_octagon(d, ox, t, text="停"):
   fit_text(d, (ox + 8, 10, ox + 56, 54), text, WHITE, max_size=36)
 
 
-def ic_warn_turn(d, ox, t, left=True):
-  """台灣三角形警告標誌（紅框白底）＋黑色彎箭頭。動畫只做紅框呼吸，不做方向燈式的流水。
-
-  先畫右轉，左轉直接水平鏡像 —— 兩邊保證一模一樣（9/23 左轉曾經畫成直角、右轉看起來是彎的）。"""
-  k = 0.65 + 0.35 * (0.5 + 0.5 * math.sin(t * 3.5))
-  tile = Image.new("RGB", (ICON, ICON), BLACK)
-  g = ImageDraw.Draw(tile)
-  g.polygon([(32, 1), (63, 61), (1, 61)], fill=_mix(RED, k))
-  g.polygon([(32, 12), (54, 55), (10, 55)], fill=WHITE)
-  g.line([(24, 55), (24, 46)], fill=BLACK, width=6)            # 直的一段
-  g.arc([24, 37, 42, 55], start=180, end=270, fill=BLACK, width=6)  # 圓心 (33,46)：左端接直線、上端接箭頭
-  g.polygon([(43, 37), (33, 29), (33, 45)], fill=BLACK)        # 箭頭朝右
+def ic_turn_arrow(d, ox, t, left=True):
+  """準備左/右轉：琥珀色 90 度轉彎箭頭，跟方向燈一樣約 1.5 Hz 閃。先畫右轉，左轉鏡像，兩邊保證一樣。"""
+  k = 1.0 if (t * 1.5) % 1.0 < 0.6 else 0.3
+  def f(g, s):
+    g.polygon([(x * s, y * s) for x, y in turn_arrow_poly()], fill=_mix(AMBER_TURN, k))
+  tile = _smooth_tile(f)
   if left:
     tile = tile.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
   d._image.paste(tile, (ox, 0))
@@ -237,7 +258,7 @@ def draw_icon(d, name, t, arg=None):
   elif name in ("curve_l", "curve_r"):
     ic_curve_side(d, 0, t, left=name == "curve_l")
   elif name in ("turn_l", "turn_r"):
-    ic_warn_turn(d, 0, t, left=name == "turn_l")
+    ic_turn_arrow(d, 0, t, left=name == "turn_l")
   elif name in ("lane_l", "lane_r"):
     ic_lane_change(d, 0, t, right=name == "lane_r")
   elif name == "limit":

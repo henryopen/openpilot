@@ -98,6 +98,7 @@ class Page:
 
 
 WHITE, GREEN, YELLOW, RED, CYAN = (255, 255, 255), (0, 235, 60), (255, 190, 0), (255, 20, 20), (0, 200, 255)
+AMBER = (255, 150, 0)       # 方向燈色：準備左/右轉
 GRAY_TXT = (200, 200, 200)
 
 
@@ -143,7 +144,7 @@ def pages(s):
     side = "左" if left else "右"
     if k == "lane":
       return [Page("lane_l" if left else "lane_r", f"向{side}切換", "變換車道", CYAN)]
-    return [Page("turn_l" if left else "turn_r", f"準備{side}轉", "請注意", WHITE)]
+    return [Page("turn_l" if left else "turn_r", f"準備{side}轉", "請注意", AMBER)]
   if k == "curve":
     side = {"left": "左", "right": "右"}.get(p.get("dir", ""), "")
     icon = "curve_l" if p.get("dir") == "left" else "curve_r"
