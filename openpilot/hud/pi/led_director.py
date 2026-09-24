@@ -11,8 +11,8 @@ Screen.pages 是這個畫面要輪替的幾頁字（每頁 PAGE_SECS 秒），le
   彎道、變換車道、路口轉彎不分有沒有前車。
   字：重要的大字、補充的小字；一頁兩秒，後車才讀得完兩行中文。
   跟車距離附近有緩衝區（使用者表上的 DEADZONE）：進入／離開分開做遲滯，不會在門檻上來回跳。
-  ⛔ 不顯示任何車速（自己的、目標的、前車的）：9/24 使用者「免得別人說我們超速」—— MAX 跟著
-  速限走、實務上會設到速限 +10，屏上寫出數字就是給人檢舉的證據。只講「在做什麼」。
+  ⛔ 不顯示自己的時速、也不顯示目標時速：9/24 使用者「免得別人說我們超速」—— MAX 跟著速限走、
+  實務上會設到速限 +10。前車時速照顯示（使用者：那是前車的事，我們車速不一定等於前車）。
 
 畫面衝突的處理（2026-09-23 定的，沿用）：
   1. 會被下一個畫面馬上蓋掉的，拉長：停等在停住那一刻就決定種類；前車急煞至少 ALERT_HOLD 秒；
@@ -64,6 +64,9 @@ PULLING_AWAY = 1.0                   # m/s：前車比我們快這麼多、我�
 
 AT_MAX = 3              # km/h：儀表速度離 MAX 這麼近就算「已達 MAX」
 OVER_MAX = 2            # km/h：高於 MAX 這麼多、又在減速 = 調低 MAX 在減速
+
+# 儀表速度換算（9/10、22915 樣本）：後車看自己的儀表，講前車時速也用儀表的尺
+DASH_K, DASH_B = 1.0272, 4.00
 LIMIT_AHEAD_MAX = 500.0  # m：前方速限只在這距離內預告
 CURVE_SIDE_M = 0.3      # m：模型路線在 30-60 m 處偏這麼多才講左右
 
@@ -162,19 +165,24 @@ def pages(s):
   if k == "lead_launch":
     return [Page("car", "前車起步", "即將跟上", GREEN)]
   if k == "catch_up":
-    return [Page("chev_up", "跟上前車", "保持車距", GREEN)]
+    return [Page("chev_up", "跟上前車", f"前車時速 {p.get('lead_kph', 0)}", GREEN)]
   if k == "stopped_follow":
     d = p.get("dRel")
     return [Page("car_gray", "前車停止", f"保持距離 {round(d)} M" if d else "保持安全距離", WHITE)]
   if k == "stopped":
     return [Page("octagon", "停止中", f"請稍候 {p.get('secs', 0)} 秒", RED)]
   if k == "follow":
-    return [Page("car", f"跟車 {round(p.get('dRel', 0))}M", "維持安全距離", WHITE)]
+    return [Page("car", f"跟車 {round(p.get('dRel', 0))}M", f"前車時速 {p.get('lead_kph', 0)}", WHITE)]
   if k == "accel":
     return [Page("chev_up", "省油加速", "請稍候", GREEN)] + _ahead_page(p)
   if k == "cruise":
     return [Page("road", "遵守速限中", "", WHITE)] + _ahead_page(p)
   raise KeyError(k)
+
+
+def dash_kph(v):
+  """真實車速（m/s）→ 儀表上會看到的 km/h。"""
+  return round(DASH_K * v / KPH + DASH_B) if v > 0.3 else 0
 
 
 def _g(d, *path, default=None):
@@ -319,12 +327,12 @@ class Director:
         return Screen("lead_slow", {"dRel": d_rel, "why": why})
       self.far = r > FAR_IN or (self.far and r > FAR_OUT)
       if self.far and self.accel and v_rel > PULLING_AWAY:
-        return Screen("catch_up")
-      return Screen("follow", {"dRel": d_rel})
+        return Screen("catch_up", {"lead_kph": dash_kph(v_lead)})
+      return Screen("follow", {"dRel": d_rel, "lead_kph": dash_kph(v_lead)})
     self.far = False
     # 前車拉開到跟車距離外、我們在追
     if self.lead_shown and r < CATCH_UP_MAX and self.accel and v_rel >= 0:
-      return Screen("catch_up")
+      return Screen("catch_up", {"lead_kph": dash_kph(v_lead)})
 
     # ---- 沒前車（在跟車距離內）
     slowing = (self.decel or self.coast) and not brake
