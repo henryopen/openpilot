@@ -1,6 +1,7 @@
 """後窗 LED 畫面繪製（256x64）—— 全部自己畫，不靠控制卡字型。
 
-版面：左 64x64 圖示區（有動畫）＋ 右 192x64 一行大字；全屏警示（前車急煞）整面用字＋閃爍。
+版面：左 64x64 圖示區（有動畫）＋ 右 192x64 上大字下小字；全屏警示（前車急煞）整面紅底閃爍。
+要講什麼字由 led_director.pages() 決定，這裡只管怎麼畫。
 每個畫面都是 frame(t) -> Image，t 是秒數，動畫靠 t 算相位。
 Windows（開發機 .96）和 PiBar 共用這一份。
 """
@@ -134,14 +135,6 @@ def ic_octagon(d, ox, t, text="停"):
   fit_text(d, (ox + 8, 10, ox + 56, 54), text, WHITE, max_size=36)
 
 
-def ic_foot(d, ox, t):
-  """收油：單一個空心往下箭頭，慢慢呼吸。"""
-  k = 0.55 + 0.45 * (0.5 + 0.5 * math.sin(t * 4))
-  c = _mix(YELLOW, k)
-  d.line([(ox + 10, 18), (ox + 32, 42), (ox + 54, 18)], fill=c, width=9, joint="curve")
-  d.line([(ox + 18, 52), (ox + 46, 52)], fill=c, width=5)
-
-
 def ic_warn_turn(d, ox, t, left=True):
   """台灣三角形警告標誌（紅框白底）＋黑色彎箭頭。動畫只做紅框呼吸，不做方向燈式的流水。
 
@@ -208,74 +201,73 @@ def datetime_screen(now, t):
   return img
 
 
-# ---------------------------------------------------------------- 組版
+def two_line(d, x0, big, small, color, small_color=None):
+  """右邊文字區：上面一行大字（重要的）、下面一行小字（補充的）；小字空的就一行大字置中。"""
+  if not small:
+    fit_text(d, (x0, 0, W, H), big, color, max_size=58)
+    return
+  fit_text(d, (x0, 0, W, 40), big, color, max_size=40)
+  fit_text(d, (x0, 40, W, H), small, small_color or color, max_size=22, min_size=12)
 
-def compose(icon, text, color, t, bg=BLACK, text_max=58):
-  """icon(d, ox, t) 畫在左邊圖示區，右邊一行大字。"""
-  img = Image.new("RGB", (W, H), bg)
+
+def ic_curve_side(d, ox, t, left=False):
+  """彎道菱形標誌；左彎是右彎的鏡像，兩邊保證一模一樣。"""
+  tile = Image.new("RGB", (ICON, ICON), BLACK)
+  ic_curve(ImageDraw.Draw(tile), 0, t)
+  if left:
+    tile = tile.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+  d._image.paste(tile, (ox, 0))
+
+
+def draw_icon(d, name, t, arg=None):
+  if name == "road":
+    ic_road(d, 0, GREEN, t)
+  elif name == "chev_up":
+    ic_chevrons(d, 0, GREEN, t, up=True)
+  elif name == "chev_down":
+    ic_chevrons(d, 0, YELLOW, t, up=False)
+  elif name == "car":
+    ic_car(d, 0, WHITE, t, pulse=True)
+  elif name == "car_gray":
+    ic_car(d, 0, GRAY, t)
+  elif name == "car_red":
+    ic_car(d, 0, RED, t, pulse=True)
+  elif name == "octagon":
+    ic_octagon(d, 0, t)
+  elif name in ("curve_l", "curve_r"):
+    ic_curve_side(d, 0, t, left=name == "curve_l")
+  elif name in ("turn_l", "turn_r"):
+    ic_warn_turn(d, 0, t, left=name == "turn_l")
+  elif name in ("lane_l", "lane_r"):
+    ic_lane_change(d, 0, t, right=name == "lane_r")
+  elif name == "limit":
+    ic_limit(d, 0, t, arg or 0, blink=False)
+  else:
+    raise KeyError(name)
+
+
+# ---------------------------------------------------------------- led_director 的畫面 → 圖
+
+def draw_page(page, t, now_dt=None):
+  """led_director.Page + 秒數（動畫相位）→ 256x64 圖。"""
+  if page.icon == "clock":
+    import datetime
+    return datetime_screen(now_dt or datetime.datetime.now(), t)
+  if page.alert:                                   # 整面紅底閃爍，兩行字
+    on = (t * 3.0) % 1.0 < 0.55
+    img = Image.new("RGB", (W, H), RED if on else BLACK)
+    two_line(ImageDraw.Draw(img), 0, page.big, page.small, WHITE if on else RED)
+    return img
+  img = Image.new("RGB", (W, H), BLACK)
   d = ImageDraw.Draw(img)
-  if icon:
-    icon(d, 0, t)
-  fit_text(d, (ICON if icon else 0, 0, W, H), text, color, max_size=text_max)
+  x0 = 0
+  if page.icon != "none":
+    draw_icon(d, page.icon, t, page.arg)
+    x0 = ICON
+  two_line(d, x0, page.big, page.small, page.color, page.small_color)
   return img
-
-
-def full_alert(text, t, a=RED, b=BLACK, hz=3.0):
-  on = (t * hz) % 1.0 < 0.55
-  img = Image.new("RGB", (W, H), a if on else b)
-  d = ImageDraw.Draw(img)
-  fit_text(d, (0, 0, W, H), text, WHITE if on else a, max_size=62)
-  return img
-
-
-# ---------------------------------------------------------------- 狀態機的畫面 → 圖
-
-# control.reason → (圖示, 字)。stoplight 只代表 OP 要在前面停（路口、停止線都算）——
-# YOLO 沒上，OP 分不出是不是紅燈，所以 FORBIDDEN 在屏上寫「紅燈」、畫紅綠燈。
-_DECEL = {
-  "lead0": ("chev", "前車減速"), "lead1": ("chev", "前車減速"), "lead2": ("chev", "前車減速"),
-  "weaklead": ("chev", "前車減速"), "stoplight": ("octagon", "前方停車"), "curve": ("curve", "前方彎道"),
-}
 
 
 def draw(screen, t, now_dt=None):
-  """led_director.Screen + 這個畫面已顯示幾秒 → 256x64 圖。now_dt 是日期時間畫面用的 datetime。"""
-  k, p = screen.key, screen.params
-  if k == "clock":
-    import datetime
-    return datetime_screen(now_dt or datetime.datetime.now(), t)
-  if k == "cruise":
-    if p.get("lead"):
-      return compose(lambda d, o, t: ic_car(d, o, WHITE, t, pulse=True), f"跟車 {round(p['dRel'])}m", WHITE, t)
-    return compose(lambda d, o, t: ic_road(d, o, GREEN, t), f"巡航 {p.get('kph', 0)}", WHITE, t)
-  if k == "accel":
-    return compose(lambda d, o, t: ic_chevrons(d, o, GREEN, t, up=True), "加速中", GREEN, t)
-  if k == "coast":
-    return compose(ic_foot, "準備減速", YELLOW, t)
-  if k == "decel":
-    icon, text = _DECEL.get(p.get("reason", ""), ("chev", "減速中"))
-    if icon == "octagon":
-      return compose(ic_octagon, text, RED, t)
-    if icon == "curve":
-      return compose(ic_curve, text, YELLOW, t)
-    return compose(lambda d, o, t: ic_chevrons(d, o, YELLOW, t, up=False), text, YELLOW, t)
-  if k == "stop":
-    return compose(ic_octagon, f"停車 {max(0, round(p.get('dist', 0)))}m", RED, t)
-  if k == "hard_brake":
-    return full_alert("前車急煞", t)
-  if k == "stopped":
-    if p.get("kind") == "junction":
-      return compose(ic_octagon, f"停等 {p.get('secs', 0)}秒", RED, t)
-    return compose(lambda d, o, t: ic_car(d, o, GRAY, t), "停等中", WHITE, t)
-  if k == "launch":                                # OP 不判斷綠燈：只說車要走了，圖示是往前延伸的路
-    return compose(lambda d, o, t: ic_road(d, o, GREEN, t), "起步中", GREEN, t)
-  if k == "turn":
-    left = p.get("dir") == "left"
-    return compose(lambda d, o, t: ic_warn_turn(d, o, t, left=left), "準備左轉" if left else "準備右轉", WHITE, t)
-  if k == "lane":
-    right = p.get("dir") == "right"
-    return compose(lambda d, o, t: ic_lane_change(d, o, t, right=right), "向右切換" if right else "向左切換", CYAN, t)
-  if k == "limit_ahead":
-    text = "前方速限" if (t % 3.0) < 1.5 else f"{round(p.get('dist', 0))}m後"
-    return compose(lambda d, o, t: ic_limit(d, o, t, p.get("limit", 0), blink=True), text, WHITE, t)
-  raise KeyError(k)
+  """led_director.Screen + 這個畫面已顯示幾秒 → 256x64 圖（輪到哪一頁由 screen.page 決定）。"""
+  return draw_page(screen.page(t), t, now_dt)

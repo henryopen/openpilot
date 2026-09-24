@@ -33,6 +33,12 @@ STREAM_STALE = 3.0        # 秒沒收到串流就當作斷線，畫面回日期�
 CARD_RETRY = 5.0          # 控制卡推失敗後多久再試
 CARD_TIMEOUT = 1.5
 LOG = os.path.expanduser("~/hud/led.log")
+# HUD 上看得到後窗 LED 正在顯示什麼（駕駛在車裡看不到後窗）：每幾格把同一張圖寫到 RAM，
+# hud_agent 的 :8080 從 ~/hud 供應靜態檔，那裡放兩個 symlink 指過來，dash.html 同源就讀得到。
+# 寫 /dev/shm 不寫 SD 卡：一秒三次，寫卡會磨損。
+MIRROR_DIR = "/dev/shm"
+MIRROR_FPS = 3.0
+HUD_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_MAX = 2_000_000
 
 
@@ -46,6 +52,38 @@ def say(msg):
       f.write(line + "\n")
   except OSError:
     pass
+
+
+def mirror_setup():
+  for name in ("led_now.png", "led_now.json"):
+    link, target = os.path.join(HUD_DIR, name), os.path.join(MIRROR_DIR, name)
+    try:
+      if os.path.islink(link) and os.readlink(link) == target:
+        continue
+      if os.path.lexists(link):
+        os.remove(link)
+      os.symlink(target, link)
+    except OSError as e:
+      say(f"mirror link {name}: {e}")
+
+
+def mirror(img, key, text, card_ok):
+  """原子寫入（先寫暫存檔再 rename），HUD 不會讀到寫一半的圖。"""
+  try:
+    tmp = os.path.join(MIRROR_DIR, ".led_now.png")
+    img.save(tmp, "PNG")
+    os.replace(tmp, os.path.join(MIRROR_DIR, "led_now.png"))
+    tmp = os.path.join(MIRROR_DIR, ".led_now.json")
+    with open(tmp, "w", encoding="utf-8") as f:
+      json.dump({"key": key, "text": text, "card": card_ok}, f, ensure_ascii=False)
+    os.replace(tmp, os.path.join(MIRROR_DIR, "led_now.json"))
+  except OSError:
+    pass
+
+
+def _words(text):
+  """去掉數字，只比文字：距離、秒數一直在變，不要每格都記一行。"""
+  return "".join(c for c in text if not c.isdigit())
 
 
 class Stream(threading.Thread):
@@ -97,7 +135,9 @@ def main():
   director = Director()
   led = None if args.card == "none" else Led(args.card, timeout=CARD_TIMEOUT)
   card_ok, card_next = None, 0.0
-  last_key = None
+  last_key, last_text = None, ""
+  mirror_next = 0.0
+  mirror_setup()
   say(f"led_agent start card={args.card}")
 
   while True:
@@ -106,18 +146,27 @@ def main():
     d: dict = stream.latest if fresh else {"standby": True}
     screen, shown = director.update(d, tick)
 
+    page = screen.page(shown)
+    text = f"{page.big}／{page.small}" if page.small else page.big
     if screen.key != last_key:
       cs, ctl = d.get("carState", {}), d.get("control", {})
       params = json.dumps(screen.params, ensure_ascii=False, default=str)
       v, a = cs.get("vEgo", 0.0), ctl.get("aTarget", 0.0)
-      say(f"screen {screen.key:<11} {params} v={v:.1f} a={a:.2f} reason={ctl.get('reason', '')}")
-      last_key = screen.key
+      say(f"screen {screen.key:<14} {params} v={v:.1f} a={a:.2f} reason={ctl.get('reason', '')}")
+    if page.icon != "clock" and (screen.key != last_key or _words(text) != _words(last_text)):
+      say(f"  text {text}")                       # 屏上實際的字（換頁才記，數字變動不記）
+    last_key, last_text = screen.key, text
+
+    img = R.draw(screen, shown)
+    if tick >= mirror_next:                        # HUD 鏡像：跟推給控制卡的是同一張圖
+      mirror_next = tick + 1 / MIRROR_FPS
+      mirror(img, screen.key, text, card_ok)
 
     if led is not None and tick >= card_next:
       try:
         if card_ok is not True:                    # 斷線中：先快速探一下，別讓主迴圈卡 1.5 秒逾時
           socket.create_connection((args.card, 80), timeout=0.3).close()
-        led.show(R.draw(screen, shown))
+        led.show(img)
         if card_ok is not True:
           say(f"card up {args.card}")
         card_ok = True

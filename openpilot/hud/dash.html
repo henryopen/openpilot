@@ -202,6 +202,16 @@
   .apbtn.cur { color:#7ee2a0; border-color:#2e6b45; }
   .apbtn:disabled { opacity:.45 }
 
+  /* 後窗 LED 鏡像：led_agent 推給控制卡的同一張 256x64 圖，駕駛在車裡看不到後窗。
+     放上方正中間（時鐘與 STOP 之間是遠方路面，不擋前車標記）；1.25 倍、像素不模糊。
+     左上角小字：卡沒接上時標「未連線」—— 那時屏上其實沒有字，但這裡照樣顯示「會講什麼」 */
+  .ledm{top:8px;left:480px;width:320px;height:80px;image-rendering:pixelated;
+    border:1px solid #1d2a36;border-radius:3px;background:#000;display:none;z-index:4}
+  .ledm.on{display:block}
+  .ledtag{top:90px;left:480px;width:320px;text-align:center;font-size:12px;font-weight:700;
+    letter-spacing:1px;color:#5f7488;display:none;z-index:4}
+  .ledtag.on{display:block}
+  .ledtag.down{color:var(--amber)}
 </style>
 </head>
 <body>
@@ -232,6 +242,8 @@
   </div>
 
   <div class="ov clk" id="clk">--:--:--</div>
+  <img class="ov ledm" id="ledMir" alt="">
+  <div class="ov ledtag" id="ledTag">後窗 LED</div>
 
   <div class="ov cnr cnrR" id="paneR">
     <div class="cap">車速 km/h</div>
@@ -1558,6 +1570,27 @@ if(new URLSearchParams(location.search).has('play')){
     setInterval(tick, 50);   // 20Hz 餵幀；rAF 平滑器負責畫
   }).catch(e=>{ console.error('playback',e); window.__hudErr&&window.__hudErr('PLAYBACK '+(e&&e.message||e)); });
 }
+// ---- 後窗 LED 鏡像（Pi 本機 led_agent 寫的 /led_now.png，同源）。讀不到三次就收起來。
+(()=>{
+  const img=document.getElementById('ledMir'), tag=document.getElementById('ledTag');
+  let fails=0, busy=false;
+  function hide(){ img.classList.remove('on'); tag.classList.remove('on'); }
+  async function poll(){
+    if(busy) return; busy=true;
+    try{
+      const [pr, jr]=await Promise.all([fetch('/led_now.png',{cache:'no-store'}), fetch('/led_now.json',{cache:'no-store'})]);
+      if(!pr.ok) throw new Error('png '+pr.status);
+      const url=URL.createObjectURL(await pr.blob());
+      const old=img.src; img.src=url; if(old.startsWith('blob:')) URL.revokeObjectURL(old);
+      let card=null; try{ if(jr.ok) card=(await jr.json()).card; }catch(e){}
+      tag.textContent = card===true ? '後窗 LED' : '後窗 LED（控制卡未連線）';
+      tag.classList.toggle('down', card!==true);
+      img.classList.add('on'); tag.classList.add('on'); fails=0;
+    }catch(e){ if(++fails>=3) hide(); }
+    finally{ busy=false; }
+  }
+  poll(); setInterval(poll, 400);
+})();
 </script>
 </body>
 </html>
