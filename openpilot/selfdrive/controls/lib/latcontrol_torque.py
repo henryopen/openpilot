@@ -49,26 +49,15 @@ P_MAX_CONTRIB = 1.0
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
-# The assumption above holds at speed and falls apart below it: lateral acceleration is
-# curvature times speed squared, so at 15 km/h a junction turn asks for a couple of m/s^2
-# while the steering rack still has to be forced round against a stationary tyre. Measured
-# on this car, the same torque produces 0.08 of the lateral acceleration the model predicts
-# at 10-20 km/h and 2.8 of it above 70. The error is what shrinks with speed, so scale the
-# error back up rather than inventing a second feedforward.
-#
-# The curve first taken here on 09-06 was StarPilot's, [12, 10.5, 8, 5]. That was the wrong
-# half of a pair: StarPilot runs it against KI = 0.35, and this car runs comma's KI = 0.15,
-# so the low gain arrived without the integrator that pays for it. What openpilot itself
-# carried, and what FrogPilot and CarrotPilot still carry, is 20% higher below 20 m/s.
-# Replayed over this car's 09-15 drives (100.0% reproduction of the logged error and P):
-# error goes up 1.185x at 3-7 km/h decaying to 1.099x by 60, which lifts median torque there
-# from 54.3 to 63.6 counts - across the 60 counts this rack needs before the wheel moves at
-# all, so the share of frames that clear it goes 46.4% -> 52.3%. The cost is saturation
-# +1.35pt and frame-to-frame movement +14.5%, against +12.9pt and +84% for the factor-table
-# plus lower-KP attempt that was rejected on 09-15 for exactly those two numbers.
-LOW_SPEED_X = [0, 10, 20, 30]
-LOW_SPEED_Y = [15, 13, 10, 5]
-LOW_SPEED_MIN = 1.0  # keeps the divide below sane at a standstill
+# Low speed runs on comma's own gains: error = setpoint - measurement, integrator frozen
+# below 5 m/s. From 09-06 to 09-25 this file scaled the error up at low speed (StarPilot's
+# LOW_SPEED curve, then openpilot's older one 20% higher) and let the integrator run down to
+# 0.3 m/s, both so junction turns would get round. That made P 40-70% hotter under 40 km/h
+# and the wheel hunted on straight roads with no hand on it: on the same 35 stretches of road
+# (~100 m GPS cells) driven both before and after, 0.13 -> 2.58 back-and-forth swings a
+# minute, at 2.3 Hz and ~20 degrees of wheel, with the model's request flat. Junction turns
+# still needed the driver 92% of the time with it in, so the driver chose the straights
+# (09-25). Measurements: E:/Temp/drive0925 (split.py, cellcmp.py, timeline.py).
 
 # Presence of this file puts the lateral feedforward back on the linear conversion. Written
 # by the HUD's toggle, because the driver cannot SSH into the car from the driver's seat.
@@ -136,16 +125,6 @@ NN_LOW_SPEED_REQ_BP = [0.3, 0.6]  # m/s^2 of requested lateral acceleration: gai
 # Presence of this file turns the low-speed gain off, re-read once a second like the others.
 NN_LOW_SPEED_OFF_FLAG = '/data/nnff_lowspeed_off'
 
-# Upstream freezes the integrator below 5 m/s. That guard is for cars whose rack will not
-# move at low speed; this one is a full-time lateral car with minSteerSpeed = 0, so all it
-# does here is switch the integrator off for the whole junction speed range. Measured over
-# the 2026-09-06 drive (294k active frames): in a turn held steady at 10-20 km/h the
-# integrator sat at |I| p50 0.1032 with p90 0.1034 -- frozen, not small -- and the car
-# stayed 11% short of the requested curvature no matter how long the turn was held, while
-# above 45 km/h the same shortfall decayed to 4%. Take the threshold from the car, the way
-# StarPilot does, and keep a floor so it still resets at a standstill.
-MIN_LATERAL_CONTROL_SPEED = 0.3  # m/s
-
 # Planned jerk comes out of a difference between buffer entries, so it carries the high
 # frequency of the request straight through. It is worth clipping before the friction term
 # sees it, but it is NOT worth leading the setpoint with: replaying this car's own drives,
@@ -175,7 +154,6 @@ class LatControlTorque(LatControl):
     self.pid = PIDController([INTERP_SPEEDS, KP_INTERP], KI, rate=1/self.dt)
     self.update_limits()
     self.steering_angle_deadzone_deg = self.torque_params.steeringAngleDeadzoneDeg
-    self.integrator_reset_speed = max(CP.minSteerSpeed, MIN_LATERAL_CONTROL_SPEED)
     self.lat_accel_request_buffer_len = int(LAT_ACCEL_REQUEST_BUFFER_SECONDS / self.dt)
     self.lat_accel_request_buffer = deque([0.] * self.lat_accel_request_buffer_len , maxlen=self.lat_accel_request_buffer_len)
     self.lookahead_frames = int(JERK_LOOKAHEAD_SECONDS / self.dt)
@@ -275,12 +253,8 @@ class LatControlTorque(LatControl):
 
     setpoint = expected_lateral_accel
 
-    # correcting in lateral acceleration space understates how far off the car is at low
-    # speed, where the same miss is worth far less acceleration; scale it back to what the
-    # steering rack actually has to do
-    low_speed_factor = (np.interp(CS.vEgo, LOW_SPEED_X, LOW_SPEED_Y) / max(CS.vEgo, LOW_SPEED_MIN)) ** 2
     current_kp = np.interp(CS.vEgo, INTERP_SPEEDS, KP_INTERP)
-    error = (setpoint - measurement) * (1 + low_speed_factor / max(current_kp, 1e-3))
+    error = setpoint - measurement
 
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     ff = gravity_adjusted_future_lateral_accel
@@ -300,7 +274,7 @@ class LatControlTorque(LatControl):
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
 
-      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < self.integrator_reset_speed
+      freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
       p_scale = 1.0
       if self.straight_p:
         road_curvature = max(abs(desired_curvature), abs(measured_curvature))
