@@ -64,7 +64,9 @@
     font-size:26px;font-weight:800;text-shadow:none}
 
   /* 狀態 chips */
-  .chips{top:132px;left:20px;display:flex;flex-direction:column;gap:7px;align-items:flex-start}
+  /* 底部 .bar 從 324px 開始且疊在上層；排不下的 chip 換到右邊第二欄，不能往下被蓋住（09-25：直線／緩衝按不到） */
+  .chips{top:132px;left:20px;display:flex;flex-direction:column;flex-wrap:wrap;max-height:186px;gap:7px 10px;
+    align-content:flex-start;align-items:flex-start}
   /* .ov 整層不收點擊；前饋標籤要能在行駛中直接點，單獨打開，並加大可點範圍 */
   #cNN,#cSTR,#cDZ{pointer-events:auto;cursor:pointer;padding:9px 18px}
   .chip{padding:5px 13px;border-radius:5px;font-size:17px;font-weight:800;letter-spacing:.4px;
