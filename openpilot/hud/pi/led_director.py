@@ -71,7 +71,8 @@ LIMIT_AHEAD_MAX = 500.0  # m：前方速限只在這距離內預告
 CURVE_SIDE_M = 0.3      # m：模型路線在 30-60 m 處偏這麼多才講左右
 
 # 自然接續：前一個畫面講的事已經發生了，下一個直接接上
-FLOW = {("stop", "stopped"), ("lower_max", "stopped"), ("slow_ahead", "stopped"), ("decel", "stopped"),
+FLOW = {("stop", "stopped"), ("junction", "stopped"), ("junction", "stopped_follow"),
+        ("lower_max", "stopped"), ("slow_ahead", "stopped"), ("decel", "stopped"),
         ("hard_brake", "stopped_follow"), ("lead_stop", "stopped_follow"), ("lead_slow", "stopped_follow"),
         ("stopped_follow", "lead_launch"), ("stopped", "accel"), ("stopped_follow", "catch_up"), ("stopped_follow", "accel")}
 # 前車起步不在裡面：我們幾乎馬上跟著走，直接接續的話只閃 1 秒（9/24 重放 27 次裡 19 次不到 1.5 秒）
@@ -81,7 +82,7 @@ SEV = {"clock": -1,
        "accel": 1, "catch_up": 1, "stopped": 1, "stopped_follow": 1,
        "limit_changed": 2, "lead_launch": 2, "slow_ahead": 2,
        "decel": 3, "lower_max": 3, "curve": 3, "lead_slow": 3,
-       "lane": 4, "turn": 4,
+       "lane": 4, "turn": 4, "junction": 4,
        "stop": 5, "lead_stop": 5,
        "hard_brake": 6}
 
@@ -152,6 +153,8 @@ def pages(s):
     if p.get("hold"):
       return [Page(icon, "彎道中", "定速通過", YELLOW)]
     return [Page(icon, f"前方{side}彎" if side else "前方彎道", "減速中", YELLOW)]
+  if k == "junction":
+    return [Page("chev_down", "前方路口", "減速中", YELLOW)]
   if k == "lead_slow":
     return [Page("chev_down", "前車減速", "請注意", YELLOW)]
   if k == "lower_max":
@@ -296,6 +299,13 @@ class Director:
       # 前車幾乎停住（前後 2 秒 vLead 中位 < 0.5）時 1035 格「前車減速」，94% 是這條（前車資料 100% 雷達）。
       if lead and r < ZONE_IN and v_lead < 1.0:
         return Screen("lead_stop", {"dRel": d_rel})
+      # 路口減速：HUD 講「路口煞停」的同一個條件（plan reason = stoplight，路口交接／模型在決定減速），
+      # 而且真的在減速。9/23-9/25 重放 81 次、減速中那 1762 格 LED 講的是「減速中」54%、「遵守速限中」16%、
+      # 「省油加速」8%，從沒講到路口。打方向燈時留給下面的「準備左/右轉」（使用者 9/24 的表）。
+      intent0 = d.get("intent", {})
+      signalling = intent0.get("turn") in ("left", "right") or intent0.get("laneChangeState") == "laneChangeStarting"
+      if reason == "stoplight" and (self.decel or self.coast) and not brake and not signalling:
+        return Screen("junction")
       # 前方需停止（沒前車）：模型速度曲線停下來的位置。9/18-9/20 兩趟 37 段重放：
       # 觸發 21 次、20 秒內真的停住 16 次（76%）、中位提早 5.3 秒。
       # ⛔ 不要用 control.stopDistance（規劃沒停時回整段行駛距離）；control.stop 行進中一次都沒亮過。
