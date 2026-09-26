@@ -7,7 +7,7 @@ Screen.pages 是這個畫面要輪替的幾頁字（每頁 PAGE_SECS 秒），le
 情境照使用者 2026-09-24 的「OP 車後 LED 顯示情境表」：
   先分「前車在不在跟車距離內」（跟 HUD「淨空」同一把尺：planner 的 followDistance × 1.2），
   有前車講前車（穩定跟車／前車減速／跟上前車／前車急煞／前車停止／前車起步），
-  沒前車講自己（省油加速／遵守速限中／前方速限／前方停車／停止中／調低 MAX 減速／前方有狀況），
+  沒前車講自己（省油加速／平穩行駛／前方速限／前方停車／停止中／調低 MAX 減速／前方有狀況），
   彎道、變換車道、路口轉彎不分有沒有前車。
   字：重要的大字、補充的小字；一頁兩秒，後車才讀得完兩行中文。
   跟車距離附近有緩衝區（使用者表上的 DEADZONE）：進入／離開分開做遲滯，不會在門檻上來回跳。
@@ -179,7 +179,7 @@ def pages(s):
   if k == "accel":
     return [Page("chev_up", "省油加速", "請稍候", GREEN)] + _ahead_page(p)
   if k == "cruise":
-    return [Page("road", "遵守速限中", "", WHITE)] + _ahead_page(p)
+    return [Page("road", "平穩行駛", "請保持車距", WHITE)] + _ahead_page(p)
   raise KeyError(k)
 
 
