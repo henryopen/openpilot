@@ -147,10 +147,25 @@ def scan_once() -> str | None:
   return None
 
 
+CAR_CLOCK_FILE = Path("/dev/shm/car_clock.json")   # written by led_agent: car epoch <-> this PI's monotonic
+
+
+def log_stamp() -> str:
+  """The car's time. The PI's own clock cannot be trusted in the car - no route out on the
+  hotspot and no RTC battery, so it resumes from the last shutdown (15 h behind on 09-25).
+  Until led_agent has seen a valid car time since boot, the PI's time marked (pi)."""
+  try:
+    a = json.loads(CAR_CLOCK_FILE.read_text())
+    ep = float(a["epoch"]) + (time.monotonic() - float(a["mono"]))
+    return time.strftime('%Y-%m-%dT%H:%M:%S', time.gmtime(ep + 8 * 3600))
+  except (OSError, ValueError, KeyError, TypeError):
+    return time.strftime('%Y-%m-%dT%H:%M:%S') + "(pi)"
+
+
 def net_log(event: str) -> None:
   """One line per change of network or of whether the car is reachable. Only on change - the
   loop runs every 10-15 s and a drive would otherwise be thousands of identical lines."""
-  ts = time.strftime('%Y-%m-%dT%H:%M:%S')
+  ts = log_stamp()
   line = f"{ts} {event} ssid={read_ssid() or '-'} self={own_ip() or '-'} car={_found or '-'}"
   try:
     if NET_LOG.exists() and NET_LOG.stat().st_size > NET_LOG_MAX:

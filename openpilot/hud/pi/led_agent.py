@@ -43,20 +43,51 @@ LOG_MAX = 2_000_000
 
 
 TW = datetime.timezone(datetime.timedelta(hours=8))
+# PI 在車上連車機熱點、沒有網路，RTC 也沒電池，自己的時鐘停在上次關機的時間（09-25 那趟慢了 15 小時）。
+# 所以 PI 上顯示和記錄的時間一律從車機來：收到車機的可信時間（clock.ok）就記下「車機 epoch ↔ 本機
+# monotonic」對照點，之後用 monotonic 往下推 —— 串流斷一下也照樣準，PI 自己的時鐘跳動也不影響。
+# 對照點同時寫到 CAR_CLOCK_FILE 給 hud_agent 的 net.log 用（monotonic 在同一台機器各程序間共通）。
+CAR_CLOCK_FILE = os.path.join(MIRROR_DIR, "car_clock.json")
+_car_anchor = None   # (車機 epoch, 本機 monotonic)
+_anchor_written = 0.0
 
 
-def car_now(d, recv_mono):
-  """車機的時間（台灣時區）。PI 在車上連車機熱點、沒有網路，RTC 也沒電池，自己的時鐘會停在上次
-  關機的時間（09-25 那趟慢了 15 小時），所以時鐘畫面只信車機；車機還沒校時（ok=False）就回 None。"""
+def note_car_clock(d, recv_mono):
+  global _car_anchor, _anchor_written
   ck = d.get("clock") or {}
   ep = ck.get("epoch")
   if not ck.get("ok") or not isinstance(ep, (int, float)):
+    return
+  _car_anchor = (float(ep), recv_mono)
+  if recv_mono - _anchor_written > 10.0:
+    _anchor_written = recv_mono
+    try:
+      tmp = CAR_CLOCK_FILE + ".tmp"
+      with open(tmp, "w", encoding="utf-8") as f:
+        json.dump({"epoch": ep, "mono": recv_mono}, f)
+      os.replace(tmp, CAR_CLOCK_FILE)
+    except OSError:
+      pass
+
+
+def car_now():
+  """車機的時間（台灣時區）；開機後還沒拿到過車機的可信時間就回 None。"""
+  a = _car_anchor
+  if a is None:
     return None
-  return datetime.datetime.fromtimestamp(ep + (time.monotonic() - recv_mono), TW)
+  return datetime.datetime.fromtimestamp(a[0] + (time.monotonic() - a[1]), TW)
+
+
+def stamp():
+  """log 時間戳：車機時間；還沒拿到就用 PI 自己的時間並標 (pi)，看 log 的人知道那段不可信。"""
+  now = car_now()
+  if now is not None:
+    return now.strftime("%Y-%m-%dT%H:%M:%S")
+  return datetime.datetime.now().isoformat(timespec="seconds") + "(pi)"
 
 
 def say(msg):
-  line = "{} {}".format(datetime.datetime.now().isoformat(timespec="seconds"), msg)
+  line = f"{stamp()} {msg}"
   print(line, flush=True)
   try:
     if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_MAX:
@@ -133,6 +164,7 @@ class Stream(threading.Thread):
             if raw.startswith(b"data: "):
               self.latest = json.loads(raw[6:])
               self.latest_t = time.monotonic()
+              note_car_clock(self.latest, self.latest_t)
       except (TimeoutError, OSError, ValueError):
         time.sleep(1)
 
@@ -170,8 +202,7 @@ def main():
       say(f"  text {text}")                       # 屏上實際的字（換頁才記，數字變動不記）
     last_key, last_text = screen.key, text
 
-    now_dt = car_now(d, stream.latest_t) if fresh else None
-    img = R.draw(screen, shown, now_dt or R.NO_TIME)
+    img = R.draw(screen, shown, car_now() or R.NO_TIME)
     if tick >= mirror_next:                        # HUD 鏡像：跟推給控制卡的是同一張圖
       mirror_next = tick + 1 / MIRROR_FPS
       mirror(img, screen.key, text, card_ok)

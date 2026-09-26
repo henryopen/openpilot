@@ -1276,12 +1276,13 @@ function hideStandbyScreen(){
   const el=document.getElementById('standby'); if(el) el.style.display='none';
 }
 // 待機時鐘只用車機的時間（跟左上角同一個來源）。PI 在車上連車機熱點、沒有網路，RTC 也沒電池，
-// 自己的時鐘停在上次關機的時間 —— 09-25 那趟慢了 15 小時。車機還沒校時或 5 秒沒資料就顯示 --:--。
+// 自己的時鐘停在上次關機的時間 —— 09-25 那趟慢了 15 小時。收到車機的可信時間就記下對照點，
+// 之後用 performance.now()（monotonic）往下推，斷線也照樣準；頁面載入後還沒拿到過就顯示 --:--。
 let CAR_CLK = null;
 setInterval(()=>{                       // 時鐘 ＋ SSE 停送資料的看門狗
   const c=document.getElementById('clock');
   if(c){
-    if(CAR_CLK && performance.now()-CAR_CLK.at<5000){
+    if(CAR_CLK){
       const t=new Date((CAR_CLK.epoch + 8*3600)*1000 + (performance.now()-CAR_CLK.at));   // 台灣時間，用 UTC 欄位讀
       c.textContent=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
     } else c.textContent='--:--';
@@ -1405,7 +1406,7 @@ async function connect(){
         es=new EventSource(`http://${h}:8902/stream`);
         es.onmessage=ev=>{
           try{ const J=JSON.parse(ev.data), ck=J.clock||{};
-               CAR_CLK = (ck.ok && typeof ck.epoch==='number') ? {epoch:ck.epoch, at:performance.now()} : null;
+               if(ck.ok && typeof ck.epoch==='number') CAR_CLK={epoch:ck.epoch, at:performance.now()};
                const F=fromSSE(J);
                lastData=Date.now();
                if(F){ stopDemo(); if(!manualStandby) hideStandbyScreen(); setConn('live'); showFrame(F); }

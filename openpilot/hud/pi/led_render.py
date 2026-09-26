@@ -205,7 +205,7 @@ WEEK = "一二三四五六日"
 
 def datetime_screen(now, t):
   """OP 沒接手時：左邊小字日期、右邊大字時間，冒號每秒閃一次。
-  now 為 None＝車機還沒有可信時間（剛發動、GPS 未定位）：不畫日期，時間畫 --:--，不顯示錯的。"""
+  now 為 None＝開機後還沒拿到過車機的可信時間：不畫日期，時間畫 --:--，不顯示錯的。"""
   img = Image.new("RGB", (W, H), BLACK)
   d = ImageDraw.Draw(img)
   f = font(58)
