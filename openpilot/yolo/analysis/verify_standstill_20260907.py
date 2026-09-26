@@ -20,13 +20,16 @@ import argparse
 import glob
 import os
 
-from openpilot.selfdrive.controls.lib.longitudinal_planner import (STANDSTILL_CREEP_DIST,
-                                                                   STANDSTILL_CREEP_SPEED,
-                                                                   STANDSTILL_CREEP_VREL)
 from openpilot.selfdrive.controls.radard import (LEAD_HOLD_STANDSTILL_DIST,
                                                  LEAD_HOLD_STANDSTILL_JUMP,
                                                  LEAD_HOLD_STANDSTILL_SPEED, LeadHold)
 from openpilot.tools.lib.logreader import LogReader
+
+# The stateless creep gate this script verified, as it stood (vRel 0.5 from 09-20). The planner
+# replaced it with standstill_hold.StandstillHold on 2026-09-26, so the values live here now.
+STANDSTILL_CREEP_SPEED = 0.5  # m/s
+STANDSTILL_CREEP_DIST = 9.0  # m
+STANDSTILL_CREEP_VREL = 0.5  # m/s
 
 
 def main():

@@ -19,6 +19,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
+from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
 from openpilot.common.swaglog import cloudlog
@@ -161,34 +162,8 @@ FREE_LEAD_MARGIN = 1.2
 J_CRUISE_BP = [0., 10.0, 25., 40.]
 J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MIN = -1.2
-# Stopped behind a car that has not moved, do not creep the last metre in to STOP_DISTANCE.
-# This car stops a systematic 1.5-2 m short of the 6 m target - 40 stops on 2026-09-06 sat
-# at 3.6-4.9 m - so the MPC spends the wait asking for the gap it did not get. Frames
-# stopped inside 10 m creep 5.3% of the time, but split by where it stopped: 0.5% inside
-# 3 m, 2.3% from 3 to 5, 13.7% from 5 to 6, 38.3% from 6 to 7 and 60.4% beyond that, with
-# aTarget reaching +1.36. Requiring the radar's own vRel to say the lead is not leaving
-# keeps this off a real pull-away: of 3709 stopped frames where the lead was opening at
-# 0.3 m/s or more, this holds back none of them. The radar is required because vision's
-# range on a stopped car is what creates the false gap in the first place.
-#
-# 2026-09-20: 0.3 was letting most of it through. Over that drive's 11 stops, classified by
-# how far the car actually went after being released (under 10 m = it should not have gone),
-# the vRel in the half second before release was 0.17-0.41 on four of the five false starts
-# and 0.67-1.61 on all six real ones. Scanning the threshold:
-#
-#       vRel    blocks false    wrongly blocks real
-#       0.3        1 / 5              0 / 6
-#       0.5        4 / 5              0 / 6     <- the knee
-#       0.7        5 / 5              2 / 6
-#
-# 0.5 takes four of the five and still holds back none of the real pull-aways; 0.6 buys
-# nothing more. The fifth false start reads 0.75, inside the range real ones live in
-# (0.67, 0.74), so vRel alone cannot separate it and no second test is added for it here.
-# What it was costing: the gap got eaten 5.63 -> 4.86 -> 3.90 -> 2.58 m over the drive,
-# because each creep closed in a little and the next stop started from there.
-STANDSTILL_CREEP_SPEED = 0.5  # m/s
-STANDSTILL_CREEP_DIST = 9.0  # m
-STANDSTILL_CREEP_VREL = 0.5  # m/s
+# Stopped behind a car that has not moved: standstill_hold.StandstillHold. It replaced the
+# stateless STANDSTILL_CREEP_* gate (09-06, vRel 0.3 -> 0.5 on 09-20) on 2026-09-26 - see there.
 # Comfort jerk for tracking the set speed. A plain proportional law on the speed error
 # (gain 1.0) saturates at max_accel or A_CRUISE_MIN for any error over ~1.2 m/s, so it holds
 # full accel or full decel until the last 4 km/h and then drops off abruptly. Shaping the
@@ -360,6 +335,7 @@ class LongitudinalPlanner:
     self.weak_lead_frames = 0
     self.curve_speed = CurveSpeedControl()
     self.deadzone = LongDeadzone(dt)
+    self.standstill_hold = StandstillHold(dt)
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -550,13 +526,11 @@ class LongitudinalPlanner:
     self.plan_reason = reason
     self.output_should_stop = any(should_stop for _, _, should_stop in candidates)
 
-    # See STANDSTILL_CREEP_* above. Stateless on purpose: the lead opening up clears it on
-    # the same frame, so there is nothing to get stuck in.
-    lead = sm['radarState'].leadOne
-    if (v_ego < STANDSTILL_CREEP_SPEED and lead.present and lead.radar
-        and lead.dRel < STANDSTILL_CREEP_DIST and lead.vRel < STANDSTILL_CREEP_VREL
-        and not sm['carState'].gasPressed):
+    # Stopped behind a car that has not gone: stay stopped, and in the stopping state, until it
+    # has moved 1 m on its own - see standstill_hold.
+    if self.standstill_hold.update(not reset_state, v_ego, sm['radarState'].leadOne, sm['carState'].gasPressed):
       output_a_target = min(output_a_target, 0.0)
+      self.output_should_stop = True
 
     # A steady foot between small corrections - see long_deadzone. Only for what cruise or a
     # lead asked; a corner, a junction, the model's stop or a planned stop go straight through.
