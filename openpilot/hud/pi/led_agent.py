@@ -7,15 +7,15 @@ http://127.0.0.1:8080/host.json 的 c4 欄 —— 它已經處理好家用 WiFi�
 控制卡連不到時照樣跑：畫面照算、狀態照記（~/hud/led.log），只是不推。所以網卡還沒到、
 Pi 還連不到卡的時候，開車也能先把「屏會顯示什麼」記下來。
 
-  python3 led_agent.py                 # 正常跑
+  python3 led_agent.py                 # 正常跑（經 ESP32-C3 中繼推給控制卡）
   python3 led_agent.py --card none     # 只記錄、完全不碰控制卡
+  python3 led_agent.py --card 192.168.2.148   # 直接走網路（例如辦公室拉網路線到卡）
   python3 led_agent.py --host 192.168.2.149 --card 192.168.22.1
 """
 import argparse
 import datetime
 import json
 import os
-import socket
 import sys
 import threading
 import time
@@ -172,7 +172,7 @@ class Stream(threading.Thread):
 def main():
   ap = argparse.ArgumentParser()
   ap.add_argument("--host", help="車機位址（預設讀 hud_agent 的 host.json）")
-  ap.add_argument("--card", default="192.168.22.1", help="控制卡位址；none = 不推，只記錄")
+  ap.add_argument("--card", default="serial:auto", help="serial:auto = 經 USB 上的 ESP32-C3 中繼（預設）；IP = 直接走網路；none = 不推，只記錄")
   args = ap.parse_args()
 
   stream = Stream(args.host)
@@ -210,7 +210,7 @@ def main():
     if led is not None and tick >= card_next:
       try:
         if card_ok is not True:                    # 斷線中：先快速探一下，別讓主迴圈卡 1.5 秒逾時
-          socket.create_connection((args.card, 80), timeout=0.3).close()
+          led.probe()
         led.show(img)
         if card_ok is not True:
           say(f"card up {args.card}")
