@@ -1275,9 +1275,17 @@ function showStandbyScreen(msg, ok){
 function hideStandbyScreen(){
   const el=document.getElementById('standby'); if(el) el.style.display='none';
 }
+// 待機時鐘只用車機的時間（跟左上角同一個來源）。PI 在車上連車機熱點、沒有網路，RTC 也沒電池，
+// 自己的時鐘停在上次關機的時間 —— 09-25 那趟慢了 15 小時。車機還沒校時或 5 秒沒資料就顯示 --:--。
+let CAR_CLK = null;
 setInterval(()=>{                       // 時鐘 ＋ SSE 停送資料的看門狗
   const c=document.getElementById('clock');
-  if(c){ const t=new Date(); c.textContent=`${String(t.getHours()).padStart(2,'0')}:${String(t.getMinutes()).padStart(2,'0')}`; }
+  if(c){
+    if(CAR_CLK && performance.now()-CAR_CLK.at<5000){
+      const t=new Date((CAR_CLK.epoch + 8*3600)*1000 + (performance.now()-CAR_CLK.at));   // 台灣時間，用 UTC 欄位讀
+      c.textContent=`${String(t.getUTCHours()).padStart(2,'0')}:${String(t.getUTCMinutes()).padStart(2,'0')}`;
+    } else c.textContent='--:--';
+  }
   // 看門狗：車機待機時 /stream 還是照送 1 Hz（onroad 10 Hz），所以「完全沒有資料進來」
   // 不會是 openpilot 待機 —— 那個情況 onmessage 收得到、fromSSE 回 null，上面已經處理了。
   // 這裡只剩一種可能：連線死了而 EventSource 不知道。從家用 wifi 換到車機熱點就是這樣，
@@ -1396,7 +1404,9 @@ async function connect(){
         window.__esHost=h;
         es=new EventSource(`http://${h}:8902/stream`);
         es.onmessage=ev=>{
-          try{ const F=fromSSE(JSON.parse(ev.data));
+          try{ const J=JSON.parse(ev.data), ck=J.clock||{};
+               CAR_CLK = (ck.ok && typeof ck.epoch==='number') ? {epoch:ck.epoch, at:performance.now()} : null;
+               const F=fromSSE(J);
                lastData=Date.now();
                if(F){ stopDemo(); if(!manualStandby) hideStandbyScreen(); setConn('live'); showFrame(F); }
                else { setConn('standby'); showIdle(); showStandbyScreen('已連線，openpilot 待機','ok'); } }

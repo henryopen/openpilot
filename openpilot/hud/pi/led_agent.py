@@ -42,6 +42,19 @@ HUD_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_MAX = 2_000_000
 
 
+TW = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def car_now(d, recv_mono):
+  """車機的時間（台灣時區）。PI 在車上連車機熱點、沒有網路，RTC 也沒電池，自己的時鐘會停在上次
+  關機的時間（09-25 那趟慢了 15 小時），所以時鐘畫面只信車機；車機還沒校時（ok=False）就回 None。"""
+  ck = d.get("clock") or {}
+  ep = ck.get("epoch")
+  if not ck.get("ok") or not isinstance(ep, (int, float)):
+    return None
+  return datetime.datetime.fromtimestamp(ep + (time.monotonic() - recv_mono), TW)
+
+
 def say(msg):
   line = "{} {}".format(datetime.datetime.now().isoformat(timespec="seconds"), msg)
   print(line, flush=True)
@@ -157,7 +170,8 @@ def main():
       say(f"  text {text}")                       # 屏上實際的字（換頁才記，數字變動不記）
     last_key, last_text = screen.key, text
 
-    img = R.draw(screen, shown)
+    now_dt = car_now(d, stream.latest_t) if fresh else None
+    img = R.draw(screen, shown, now_dt or R.NO_TIME)
     if tick >= mirror_next:                        # HUD 鏡像：跟推給控制卡的是同一張圖
       mirror_next = tick + 1 / MIRROR_FPS
       mirror(img, screen.key, text, card_ok)

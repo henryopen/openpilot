@@ -131,9 +131,12 @@ def _clock():
   out, so its own clock is no better than this one and would not line up with the segments.
   ok is false until GPS or NTP has actually set the time - the RTC has no backup power, so
   until then this is systemd's build date, and writing that down would find the wrong drive.
+  epoch (UTC seconds) is for the PI's own clock displays - the rear LED and the standby clock -
+  which need the date too and must not fall back on the PI's clock for the same reason.
   """
-  return {"t": time.strftime("%H:%M:%S", time.gmtime(time.time_ns() / 1e9 + LOCAL_UTC_OFFSET_S)),
-          "ok": system_time_valid()}
+  now = time.time_ns() / 1e9
+  return {"t": time.strftime("%H:%M:%S", time.gmtime(now + LOCAL_UTC_OFFSET_S)),
+          "ok": system_time_valid(), "epoch": now}
 
 
 def _car_state(cs):

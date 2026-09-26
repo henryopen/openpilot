@@ -204,13 +204,17 @@ WEEK = "一二三四五六日"
 
 
 def datetime_screen(now, t):
-  """OP 沒接手時：左邊小字日期、右邊大字時間，冒號每秒閃一次。"""
+  """OP 沒接手時：左邊小字日期、右邊大字時間，冒號每秒閃一次。
+  now 為 None＝車機還沒有可信時間（剛發動、GPS 未定位）：不畫日期，時間畫 --:--，不顯示錯的。"""
   img = Image.new("RGB", (W, H), BLACK)
   d = ImageDraw.Draw(img)
+  f = font(58)
+  if now is None:
+    d.text((78 + (W - 78) / 2, H / 2), "--:--", font=f, fill=GRAY, anchor="mm")
+    return img
   fit_text(d, (0, 4, 78, 32), f"{now.month}/{now.day}", CYAN, max_size=26)
   fit_text(d, (0, 32, 78, 60), "週" + WEEK[now.weekday()], CYAN, max_size=24)
   hh, mm = f"{now.hour:02d}", f"{now.minute:02d}"
-  f = font(58)
   l, tp, r, b = d.textbbox((0, 0), hh + ":" + mm, font=f, anchor="lt")
   x = 78 + (W - 78 - (r - l)) / 2 - l
   y = (H - (b - tp)) / 2 - tp
@@ -269,10 +273,15 @@ def draw_icon(d, name, t, arg=None):
 
 # ---------------------------------------------------------------- led_director 的畫面 → 圖
 
+NO_TIME = object()   # led_agent 傳這個＝拿不到車機的可信時間；None（沒傳）＝示範工具，用本機時間
+
+
 def draw_page(page, t, now_dt=None):
   """led_director.Page + 秒數（動畫相位）→ 256x64 圖。"""
   if page.icon == "clock":
     import datetime
+    if now_dt is NO_TIME:
+      return datetime_screen(None, t)
     return datetime_screen(now_dt or datetime.datetime.now(), t)
   if page.alert:                                   # 整面紅底閃爍，兩行字
     on = (t * 3.0) % 1.0 < 0.55
