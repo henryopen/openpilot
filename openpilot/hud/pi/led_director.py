@@ -290,8 +290,11 @@ class Director:
       return Screen("hard_brake")
 
     if not stopped:
-      # 前車停了、我們還在走：前車在跟車距離內（跟車距離本身會隨接近速度拉長）且幾乎靜止
-      if lead and r < ZONE_IN and v_lead < 1.0 and v > 2.0:
+      # 前車停了、我們還在走：前車在跟車距離內（跟車距離本身會隨接近速度拉長）且幾乎靜止。
+      # 「還在走」就是外面這個 not stopped（有 STOPPED_V／MOVING_V 遲滯），不另設車速門檻 ——
+      # 原本多一條 v > 2.0，慢慢靠近停住的前車時一掉到 7.2 km/h 以下就變「前車減速」：9/23-9/25 重放
+      # 前車幾乎停住（前後 2 秒 vLead 中位 < 0.5）時 1035 格「前車減速」，94% 是這條（前車資料 100% 雷達）。
+      if lead and r < ZONE_IN and v_lead < 1.0:
         return Screen("lead_stop", {"dRel": d_rel})
       # 前方需停止（沒前車）：模型速度曲線停下來的位置。9/18-9/20 兩趟 37 段重放：
       # 觸發 21 次、20 秒內真的停住 16 次（76%）、中位提早 5.3 秒。
