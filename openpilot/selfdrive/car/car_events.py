@@ -153,7 +153,12 @@ class CarEvents:
     # the speed that was set before, exactly as the button does, so nothing new happens here
     # that pressing RESUME would not have done; it just does not need a hand off the wheel.
     # Standstill only: moving, the accelerator already means override, and that stays.
-    if CS.gasPressed and not CS_prev.gasPressed and CS.standstill and not CC.enabled:
+    # And only with MAIN on and in drive (driver, 2026-09-27): anywhere else openpilot can not
+    # engage anyway, so the tap only asked and was refused - 24 "Enable Adaptive Cruise to Engage"
+    # and 15 "Gear not D" no-entry chimes over 09-23..09-27, from pulling away in reverse or
+    # starting off with MAIN off. There the accelerator is just the accelerator.
+    if CS.gasPressed and not CS_prev.gasPressed and CS.standstill and not CC.enabled and \
+       CS.cruiseState.available and CS.gearShifter == GearShifter.drive:
       events.add(EventName.buttonEnable)
     if CS.vehicleSensorsInvalid:
       events.add(EventName.vehicleSensorsInvalid)
