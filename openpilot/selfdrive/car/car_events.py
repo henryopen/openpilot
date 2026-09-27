@@ -22,10 +22,12 @@ class CarEvents:
     self.no_steer_warning = False
     self.silent_steer_warning = True
     self.cancel_pressed_while_enabled = False
+    self.panda_allowed = False
 
-  def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl):
+  def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl, panda_allowed: bool = False):
     if self.CP.brand in ('body', 'mock'):
       return Events()
+    self.panda_allowed = panda_allowed
 
     events = self.create_common_events(CS, CS_prev, CC)
 
@@ -165,10 +167,17 @@ class CarEvents:
     # The middle button is a pause/resume button on this car. A press while engaged disengages,
     # a press while disengaged brings openpilot back. Remember the state at the moment the button
     # went down, otherwise releasing it would immediately re-engage what the press just cancelled.
+    # The panda reads the same button against its own controls_allowed, so the press counts as a
+    # pause if either side was on. The two can disagree: the brake ends openpilot below 0.5 m/s but
+    # the panda only at a full stop, so a car braked to a crawl and let go is off here and still on
+    # there. On 2026-09-26 15:01:52 the button in that state was a resume here and a pause in the
+    # panda, which then dropped every SCC12 openpilot sent; 0.54 s without one and the ESC set
+    # ACCEnable=3 and locked the ACC out until the engine was restarted. Once both are off, the
+    # next press brings both back.
     for b in CS.buttonEvents:
       if b.type == ButtonType.cancel and (allow_button_cancel or not self.CP.pcmCruise):
         if b.pressed:
-          self.cancel_pressed_while_enabled = CC.enabled
+          self.cancel_pressed_while_enabled = CC.enabled or self.panda_allowed
           if CC.enabled:
             events.add(EventName.buttonCancel)
         elif not self.cancel_pressed_while_enabled:

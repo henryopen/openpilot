@@ -56,6 +56,14 @@ BRAKE_HANDOVER_MIN_SPEED = 0.5  # m/s
 # intent nearer 1.5 s, and 1.5 s is also long enough that stop-and-go dabs do not chatter
 # engage/disengage, which would be worse than the button this is replacing.
 BRAKE_HANDOVER_HOLD_FRAMES = int(1.5 / DT_CTRL)
+# Engaged here while the panda does not allow controls: every SCC12 openpilot sends is dropped,
+# and the ESC gives up on the SCC after about half a second - ACCEnable=3, the ACC locked out
+# until the engine is restarted (2026-09-23 15:47:02 after 0.52 s, 09-26 15:01:53 after 0.54 s,
+# the only two times in 667 segments that the panda never confirmed an engagement). The 2 s
+# mismatch_counter below is far too late for that. Over the same drives the panda confirmed the
+# other 169 engagements a median 35 ms after this side, at most 105 ms (pandaStates is 10 Hz), so
+# 0.25 s without it ends the drive while the ESC is still listening.
+PANDA_UNCONFIRMED_FRAMES = int(0.25 / DT_CTRL)
 
 
 class SelfdriveD:
@@ -131,6 +139,7 @@ class SelfdriveD:
     self.enabled = False
     self.active = False
     self.mismatch_counter = 0
+    self.panda_unconfirmed_frames = 0
     self.cruise_mismatch_counter = 0
     self.last_steering_pressed_frame = 0
     self.distance_traveled = 0
@@ -245,7 +254,8 @@ class SelfdriveD:
 
     # Add car events, ignore if CAN isn't valid
     if CS.canValid:
-      car_events = self.car_events.update(CS, self.CS_prev, self.sm['carControl']).to_msg()
+      panda_allowed = any(ps.controlsAllowed for ps in self.sm['pandaStates'] if ps.safetyModel not in IGNORED_SAFETY_MODES)
+      car_events = self.car_events.update(CS, self.CS_prev, self.sm['carControl'], panda_allowed).to_msg()
       self.events.add_from_msg(car_events)
 
       if self.CP.notCar:
@@ -275,8 +285,15 @@ class SelfdriveD:
         self.events.add(EventName.gasPressedOverride)
 
       # Disable on rising edge of accelerator or brake. Also disable on brake when speed > 0
+      # With the brake handing over, the panda takes the authorisation away for as long as the
+      # brake is down at a standstill, so it can not be given here either: held, it is a no-entry
+      # every frame instead of just on the press. Without that a resume with the foot on the brake
+      # went to preEnabled, which is longActive, and on 2026-09-23 15:47:01 openpilot sent SCC12
+      # mode 1 with -0.01..-0.53 m/s^2 that the panda dropped, and 0.52 s later the ESC locked the
+      # ACC out (ACCEnable=3) for the rest of the drive. Release the brake, or press the accelerator.
       if (CS.gasPressed and not self.CS_prev.gasPressed and self.disengage_on_accelerator) or \
-        (CS.brakePressed and not brake_hands_over and (not self.CS_prev.brakePressed or not CS.standstill)) or \
+        (CS.brakePressed and not brake_hands_over and
+         (not self.CS_prev.brakePressed or not CS.standstill or self.CP.openpilotLongitudinalControl)) or \
         (CS.regenBraking and (not self.CS_prev.regenBraking or not CS.standstill)):
         self.events.add(EventName.pedalPressed)
 
@@ -360,7 +377,8 @@ class SelfdriveD:
         safety_mismatch = pandaState.safetyModel not in IGNORED_SAFETY_MODES
 
       # safety mismatch allows some time for pandad to set the safety mode and publish it back from panda
-      if (safety_mismatch and self.sm.frame*DT_CTRL > 10.) or pandaState.safetyRxChecksInvalid or self.mismatch_counter >= 200:
+      if (safety_mismatch and self.sm.frame*DT_CTRL > 10.) or pandaState.safetyRxChecksInvalid or self.mismatch_counter >= 200 or \
+         self.panda_unconfirmed_frames >= PANDA_UNCONFIRMED_FRAMES:
         self.events.add(EventName.controlsMismatch)
 
       if log.PandaState.FaultType.relayMalfunction in pandaState.faults:
@@ -529,9 +547,12 @@ class SelfdriveD:
       self.mismatch_counter = 0
 
     # All pandas not in silent mode must have controlsAllowed when openpilot is enabled
-    if self.enabled and any(not ps.controlsAllowed for ps in self.sm['pandaStates']
-           if ps.safetyModel not in IGNORED_SAFETY_MODES):
+    panda_off = self.enabled and any(not ps.controlsAllowed for ps in self.sm['pandaStates']
+                                     if ps.safetyModel not in IGNORED_SAFETY_MODES)
+    if panda_off:
       self.mismatch_counter += 1
+    # consecutive, unlike mismatch_counter: see PANDA_UNCONFIRMED_FRAMES
+    self.panda_unconfirmed_frames = self.panda_unconfirmed_frames + 1 if panda_off else 0
 
     return CS
 
