@@ -312,6 +312,37 @@ class LeadHold:
     return dict(self.lead)
 
 
+# The radar lead sits in the next lane while vision's sits in ours and is slower. This radar hands
+# radard one target only - the one the stock ACC has picked (CUSTIN_PRIMARY_ONLY) - and on
+# 2026-09-27 16:10:07.4 the stock ACC moved it to a car 1.52 m to our right while the car dead
+# ahead braked from 31 to 11 km/h. match_vision_to_track took it anyway: dist_sane has no lateral
+# test and vel_sane allows 10 m/s, so being 1.5 m nearer in range than vision's car was enough, and
+# the preferred-track look kept it as the gap grew. For 1.4 s the planner followed a car doing
+# 34 km/h at 17 m and asked for nothing; the driver braked at -4.6 and stopped 1.6 m short. Radar
+# and vision on the right car there read 0.00-0.16 m apart laterally; on the wrong one 1.58-1.76.
+# Over 09-16..09-27 the same pattern held for 0.3 s or more 48 times, several of them followed
+# within 2 s by -1.6 to -3.5 m/s^2 from the planner once it caught up.
+# Only ever swaps to the more cautious reading: vision confident, in our lane, and slower than the
+# radar car. A radar lead that is nearer or slower than vision's is never dropped here - that is
+# the car cutting in that the radar sees first.
+LANE_MISMATCH_VISION_PROB = 0.9
+LANE_MISMATCH_VISION_Y = 0.8     # m, vision's lead within our lane
+LANE_MISMATCH_RADAR_Y = 1.0      # m, radar's outside it
+LANE_MISMATCH_DY = 1.0           # m apart laterally
+LANE_MISMATCH_DV = 1.5           # m/s, radar's car that much faster than vision's
+LANE_MISMATCH_MAX_DIST = 70.     # m
+LANE_MISMATCH_FRAMES = int(0.3 / DT_MDL)   # one-frame disagreements are camera noise, see match_vision_to_track
+
+
+def lane_mismatch(lead: dict[str, Any], lead_msg: capnp._DynamicStructReader) -> bool:
+  if not (lead.get('present') and lead.get('radar')):
+    return False
+  vis_y = -lead_msg.y[0]
+  return bool(lead_msg.prob > LANE_MISMATCH_VISION_PROB and abs(vis_y) < LANE_MISMATCH_VISION_Y
+              and abs(lead['yRel']) > LANE_MISMATCH_RADAR_Y and abs(lead['yRel'] - vis_y) > LANE_MISMATCH_DY
+              and lead['vLead'] - lead_msg.v[0] > LANE_MISMATCH_DV and lead['dRel'] < LANE_MISMATCH_MAX_DIST)
+
+
 class RadarD:
   def __init__(self, delay: float = 0.0):
     self.tracks: dict[int, Track] = {}
@@ -319,6 +350,7 @@ class RadarD:
     self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, DT_MDL) for _ in range(2)]
     self.prev_lead_track_ids = [-1, -1]
     self.lead_hold = LeadHold()
+    self.lane_mismatch_frames = 0
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -379,6 +411,10 @@ class RadarD:
       lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
                           self.lead_prob_filters[0].x, low_speed_override=True,
                           preferred_track_id=self.prev_lead_track_ids[0])
+      # see LANE_MISMATCH_*: the radar has moved to the next lane and vision's lead is slower
+      self.lane_mismatch_frames = self.lane_mismatch_frames + 1 if lane_mismatch(lead_one, leads_v3[0]) else 0
+      if self.lane_mismatch_frames >= LANE_MISMATCH_FRAMES:
+        lead_one = get_RadarState_from_vision(leads_v3[0], self.v_ego, model_v_ego, self.lead_prob_filters[0].x)
       self.radar_state.leadOne = self.lead_hold.update(lead_one, leads_v3[0].prob, self.v_ego)
       self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
                                           self.lead_prob_filters[1].x, low_speed_override=False,
