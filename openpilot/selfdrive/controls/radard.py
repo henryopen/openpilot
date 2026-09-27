@@ -331,7 +331,7 @@ LANE_MISMATCH_RADAR_Y = 1.0      # m, radar's outside it
 LANE_MISMATCH_DY = 1.0           # m apart laterally
 LANE_MISMATCH_DV = 1.5           # m/s, radar's car that much faster than vision's
 LANE_MISMATCH_MAX_DIST = 70.     # m
-LANE_MISMATCH_FRAMES = int(0.3 / DT_MDL)   # one-frame disagreements are camera noise, see match_vision_to_track
+LANE_MISMATCH_FRAMES = int(round(0.3 / DT_MDL))   # one-frame disagreements are camera noise, see match_vision_to_track
 
 
 def lane_mismatch(lead: dict[str, Any], lead_msg: capnp._DynamicStructReader) -> bool:
