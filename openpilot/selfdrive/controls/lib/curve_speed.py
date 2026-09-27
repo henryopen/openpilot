@@ -7,6 +7,7 @@ if that is more than is comfortable, ease off before the corner rather than brak
 The map-based half of that feature is deliberately not ported: it needs offline map
 curvature and this car ran with it off.
 """
+import os
 from enum import IntEnum
 
 import numpy as np
@@ -72,6 +73,125 @@ _OVERSPEED_MARGIN = 2 * CV.KPH_TO_MS
 _OVERSPEED_TC = 2.0                    # s
 _OVERSPEED_A_MIN = -1.5                # m/s^2
 
+# ---- v2 (2026-09-27): take a corner the way people drive one, within what this car can steer.
+# The driver: small corners too slow, big ones not made. Over 127 corners on 09-24..09-27 he
+# pressed the accelerator in 26% of the 60-120 m ones, and in the ones he had to steer the
+# controller was at 85% of its own request - the wheel could not wind in fast enough.
+#
+# How people drive a corner (Reymond et al. 2001, and the naturalistic curve studies): the lateral
+# acceleration they accept falls with speed; they slow before the corner and stop slowing by the
+# apex; from the apex, as it opens, they pick the speed back up. What this car can do, measured on
+# the same drives: however fast the plan asks the lateral acceleration to rise, the car winds in at
+# about 0.8 m/s^3 at most (0.77-0.82 when asked for 1-2).
+#
+# What was here does the opposite on three counts. Its allowance rises with speed (tol 0.6 -> 1.0,
+# 1.2 at 0 km/h to 2.0 at 72). It reads the corner as the 97th percentile of the whole 10 s plan,
+# which lands on a spike - 1.30x the curvature actually driven in 60-120 m corners. And it only
+# ever looked at how sharp the corner is, never at how suddenly it arrives, which is what the
+# steering cannot keep up with. It also brakes in pieces: a median of 5 on/off braking stretches a
+# corner in a closed-loop replay, because the target jumps with every model frame.
+#
+# v2 reads the plan point by point: the curvature at each point ahead (3-point smoothed, K_CAL),
+# the speed allowed there by the comfort curve and by the steering, and the deceleration needed
+# to get down to it by then. It brakes once that is worth doing, at what it takes, and lets go as
+# soon as it is not; holds through the corner to the apex; from there accelerates inside the g-g
+# circle. Closed-loop replay of the 09-24..09-27 corners against the code above (46 road corners,
+# 73 junction turns): apex speed in 60-120 m corners 44.7 -> 46.9 km/h, 120-300 m 58.8 -> 57.0;
+# in the corners the driver took, lateral 1.96 -> 1.73 and the share asking the steering for more
+# than 0.8 m/s^3 71% -> 43%; junction turns 16.8 -> 17.0 km/h at 1.56 -> 1.38 m/s^2; braking
+# stretches per corner 5 -> 2. /data/curve_v2_off brings the code above back.
+_V2_T_IDX = np.array([10.0 * (i / 32) ** 2 for i in range(33)])   # ModelConstants.T_IDXS
+_V2_LAT_BP = [10., 20., 40., 60., 80., 100.]  # km/h
+# falling with speed from 40 up, as people take corners; under 20 held down instead, because a
+# tight turn is where the steering falls behind - the driver took the wheel on 95% of junction
+# turns and takes them himself at about 1.0
+_V2_LAT_V = [1.3, 1.5, 1.8, 1.7, 1.5, 1.3]   # m/s^2, felt (actual) lateral acceleration
+_V2_K_CAL = 1.15            # plan curvature read this way vs driven, set so the apex lands on the comfort curve
+_V2_J_MAX = 0.8             # m/s^3, how fast this car winds into a corner
+_V2_J_PLAN_TO_DEMAND = 1 / 0.68   # the plan's own lateral jerk vs what the controller asks on arrival (median)
+_V2_A_START = 1.0           # m/s^2 of needed deceleration before braking at all: late and firm, not long and light
+_V2_A_STOP = 0.3            # braking, let go once less than this is needed
+_V2_A_MAX = 1.6             # m/s^2, the most an ordinary driver uses for a corner
+_V2_D_MARGIN_T = 0.8        # s: be down to speed this far before the point
+_V2_A_TOTAL = 2.0           # m/s^2, longitudinal and lateral together on the way out
+_V2_SLOW_TURN_V = 25 * CV.KPH_TO_MS   # below this, hold through the whole turn, not just to the apex
+_V2_REQ_TAU_UP = 0.6        # s: the needed deceleration jumps up with the model frame - smooth that
+_V2_REQ_TAU_DOWN = 0.15     # s: but let go quickly once it has been done
+_V2_START_HOLD = 0.3        # s over _V2_A_START before braking
+_V2_MIN_BRAKE = 1.0         # s: once braking, no acceleration for at least this long
+_V2_OFF_FLAG = "/data/curve_v2_off"
+
+
+class CurveV2:
+  def __init__(self):
+    self.reset()
+
+  def reset(self) -> None:
+    self.braking = False
+    self.req_f = 0.
+    self.over_t = 0.
+    self.brake_t = 0.
+    self.v_target = 0.
+
+  def update(self, x, k, vp, v_ego: float, lat_now: float, k_now: float) -> float:
+    """x/k/vp: the plan's distance ahead, curvature and speed at each of its 33 points.
+    Returns a ceiling on the longitudinal acceleration, np.inf where the corner has nothing to say."""
+    kk = np.abs(k)
+    ks = np.concatenate([kk[:1], (kk[:-2] + kk[1:-1] + kk[2:]) / 3, kk[-1:]]) / _V2_K_CAL
+    kc = np.maximum(ks, 1e-4)
+    # speed the comfort curve allows at each point; the allowance depends on the speed, so iterate
+    vv = np.sqrt(np.interp(v_ego * CV.MS_TO_KPH, _V2_LAT_BP, _V2_LAT_V) / kc)
+    for _ in range(2):
+      vv = np.sqrt(np.interp(vv * CV.MS_TO_KPH, _V2_LAT_BP, _V2_LAT_V) / kc)
+    v_lat = np.where(ks > 1e-4, vv, 99.)
+    # speed the steering allows: the plan's lateral jerk where it is actually winding into a corner
+    # (lateral >= 0.4 and rising, from 0.5 s - the first points are 0.01-0.2 m/s^2 and their
+    # differences are noise), scaled to what will be asked on arrival, and that falls with v^3
+    alp = vp ** 2 * kk
+    dj = np.zeros(33)
+    dj[1:] = np.abs(np.diff(alp)) / np.maximum(np.diff(_V2_T_IDX), 0.05)
+    rising = np.zeros(33, dtype=bool)
+    rising[1:] = alp[1:] > alp[:-1]
+    dj[~((alp >= 0.4) & rising & (_V2_T_IDX >= 0.5))] = 0.
+    j_dem = dj * _V2_J_PLAN_TO_DEMAND
+    v_jerk = np.where(j_dem > 0.05, np.maximum(vp, 1.) * (_V2_J_MAX / np.maximum(j_dem, 1e-6)) ** (1 / 3), 99.)
+    v_allow = np.maximum(np.minimum(v_lat, v_jerk), V_FLOOR)
+    # the deceleration it takes to be down to that by each point
+    d = np.maximum(x - _V2_D_MARGIN_T * v_ego, 0.5 * x)
+    need = (v_ego ** 2 - v_allow ** 2) / (2 * np.maximum(d, 2.))
+    need[x < 2.] = 0.
+    a_raw = float(need.max())
+    tau = _V2_REQ_TAU_UP if a_raw > self.req_f else _V2_REQ_TAU_DOWN
+    self.req_f += (a_raw - self.req_f) * min(DT_MDL / tau, 1.)
+    a_req = max(self.req_f, 0.)
+    ahead_pts = x > 0.5
+    self.v_target = float(v_allow[ahead_pts].min()) if ahead_pts.any() else 99.
+    # still tightening: sharper within the next 2 s than where we are now
+    near = (_V2_T_IDX > 0.2) & (_V2_T_IDX <= 2.0)
+    tightening = ks[near].max() > abs(k_now) * 1.05 and ks[near].max() > 0.004
+
+    if self.braking:
+      self.brake_t += DT_MDL
+      self.braking = a_req > _V2_A_STOP or self.brake_t < _V2_MIN_BRAKE
+    else:
+      self.over_t = self.over_t + DT_MDL if a_req >= _V2_A_START else 0.
+      self.braking = self.over_t >= _V2_START_HOLD
+      self.brake_t = 0.
+
+    if self.braking:
+      a = -min(a_req, _V2_A_MAX)
+    elif a_req > 0.25:
+      a = 0.                     # a corner is coming that will need braking: stop gaining speed
+    elif lat_now > 0.6 and (tightening or v_ego < _V2_SLOW_TURN_V):
+      a = 0.                     # in the corner, apex still ahead: hold
+    elif lat_now > 0.3:
+      a = float(np.sqrt(max(_V2_A_TOTAL ** 2 - lat_now ** 2, 0.)))   # past the apex: out inside the g-g circle
+    else:
+      a = np.inf
+    if v_ego <= V_FLOOR and a < 0.:
+      a = 0.
+    return a
+
 
 class CurveState(IntEnum):
   disabled = 0
@@ -102,10 +222,36 @@ class CurveSpeedControl:
     self.max_pred_lat_acc = 0.
     self.v_target = 0.
     self.a_target = 0.
+    self.v2 = CurveV2()
+    self.use_v2 = not os.path.exists(_V2_OFF_FLAG)
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
       self.enabled = self.params.get_bool("SmartCruiseControlVision")
+      use_v2 = not os.path.exists(_V2_OFF_FLAG)
+      if use_v2 != self.use_v2:   # switched: start either one from scratch
+        self.v2.reset()
+        self.state = CurveState.disabled
+      self.use_v2 = use_v2
+
+  def _update_v2(self, sm) -> None:
+    """v2: same outputs as the state machine - is_active, v_target, a_target."""
+    self.is_active = False
+    if not (self.enabled and self.long_enabled) or self.long_override:
+      self.v2.reset()
+      return
+    m = sm['modelV2']
+    x = np.array(m.position.x)
+    vp = np.array(m.velocity.x)
+    w = np.array(m.orientationRate.z)
+    if len(x) != 33 or len(vp) != 33 or len(w) != 33:
+      return
+    k_now = float(sm['controlsState'].curvature)
+    a = self.v2.update(x, w / np.maximum(vp, 1.), vp, self.v_ego, self.v_ego ** 2 * abs(k_now), k_now)
+    if np.isfinite(a):
+      self.is_active = True
+      self.a_target = a
+      self.v_target = self.v2.v_target
 
   def _update_calculations(self, sm) -> None:
     if not self.long_enabled:
@@ -213,6 +359,10 @@ class CurveSpeedControl:
     self.a_ego = a_ego
 
     self._update_params()
+    if self.use_v2:
+      self._update_v2(sm)
+      self.frame += 1
+      return
     self._update_calculations(sm)
     self.is_active = self._update_state_machine()
     self.a_target = self._update_solution()
