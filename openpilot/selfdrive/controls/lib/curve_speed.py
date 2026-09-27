@@ -121,9 +121,37 @@ _V2_START_HOLD = 0.3        # s over _V2_A_START before braking
 _V2_MIN_BRAKE = 1.0         # s: once braking, no acceleration for at least this long
 _V2_OFF_FLAG = "/data/curve_v2_off"
 
+# ---- anticipation (2026-09-28): a sharp corner grows into the plan, so ease off before it is all there.
+# 09-27 16:07, 66 km/h into an 86 m corner: at the apex the controller was at 87% of its request and the
+# wheel at full torque for a second. The model had it 8 s out, but as a bend a fraction as sharp as it was.
+# Over the 46 road corners of 09-24..09-27, what the plan puts at the apex's position, as a share of the
+# curvature driven there, by seconds to the apex:
+#                 8 s    6 s    5 s    4 s    3 s
+#   R 60-120 m   0.35   0.62   0.76   0.84   0.96
+#   R 120-300 m  0.53   0.84   0.91   0.94   0.95
+# Not a bias in how far out the plan reads a bend (grouped by what it predicts at 60-160 m, what is driven
+# there is 1.0-1.25x at the median) but how late a sharp one appears in it. So from 3 s out the curvature is
+# taken as up to 1.8x what the plan shows, and all that may ask for is to stop gaining speed (needed
+# deceleration over _FAR_LIFT) or a light one, _FAR_A_MAX at most. Braking harder stays with the near
+# field above, which now goes to _V2_A_MAX_ANT once the corner is plainly there.
+# Closed-loop replay of the same 46 corners, v2 -> this: over the comfort curve at the apex 28% -> 13%;
+# asking the steering for more than 0.8 m/s^3 43% -> 35%; 16:07 apex lateral 1.93 -> 1.63 (comfort 1.79);
+# apex speed R 60-120 48.8 -> 45.4 km/h (the rules before v2: 46.1), R 120-300 57.0 -> 54.8; 73 signalled
+# junction turns 17.2 -> 16.7 km/h. Open loop over 158 min / 157 km of openpilot driving, the far field is
+# stricter than v2 for 68 s with a corner within 8 s and 25 s without one, mostly 0.1-0.3 of lift for a
+# second. /data/curve_far_off brings back v2 as it was on 09-27.
+_FAR_T_BP = [3., 4., 5., 6., 7., 8.]      # s, time of the plan point
+_FAR_GAIN = [1., 1.15, 1.25, 1.45, 1.6, 1.8]
+_FAR_LIFT = 0.1           # m/s^2 of needed deceleration: stop gaining speed
+_FAR_START = 0.3          # m/s^2: and past this, slow gently
+_FAR_A_MAX = 0.5          # m/s^2
+_V2_A_MAX_ANT = 2.0       # m/s^2, near-field braking with anticipation on (was _V2_A_MAX)
+_FAR_OFF_FLAG = "/data/curve_far_off"
+
 
 class CurveV2:
   def __init__(self):
+    self.anticipate = True
     self.reset()
 
   def reset(self) -> None:
@@ -179,7 +207,7 @@ class CurveV2:
       self.brake_t = 0.
 
     if self.braking:
-      a = -min(a_req, _V2_A_MAX)
+      a = -min(a_req, _V2_A_MAX_ANT if self.anticipate else _V2_A_MAX)
     elif a_req > 0.25:
       a = 0.                     # a corner is coming that will need braking: stop gaining speed
     elif lat_now > 0.6 and (tightening or v_ego < _V2_SLOW_TURN_V):
@@ -188,9 +216,30 @@ class CurveV2:
       a = float(np.sqrt(max(_V2_A_TOTAL ** 2 - lat_now ** 2, 0.)))   # past the apex: out inside the g-g circle
     else:
       a = np.inf
+    if self.anticipate:
+      a = min(a, self._far(x, ks, v_ego))
     if v_ego <= V_FLOOR and a < 0.:
       a = 0.
     return a
+
+  @staticmethod
+  def _far(x, ks, v_ego: float) -> float:
+    """From _FAR_T_BP[0] out: the corner taken as sharper than it looks, and only a lift or a light brake for it."""
+    far = (_V2_T_IDX >= _FAR_T_BP[0]) & (ks > 1e-4)
+    if not far.any():
+      return np.inf
+    kc = ks[far] * np.interp(_V2_T_IDX[far], _FAR_T_BP, _FAR_GAIN)
+    vv = np.sqrt(np.interp(v_ego * CV.MS_TO_KPH, _V2_LAT_BP, _V2_LAT_V) / kc)
+    for _ in range(2):
+      vv = np.sqrt(np.interp(vv * CV.MS_TO_KPH, _V2_LAT_BP, _V2_LAT_V) / kc)
+    vv = np.maximum(vv, V_FLOOR)
+    d = np.maximum(x[far] - _V2_D_MARGIN_T * v_ego, 0.5 * x[far])
+    need = float(((v_ego ** 2 - vv ** 2) / (2 * np.maximum(d, 2.))).max())
+    if need > _FAR_START:
+      return -min(need, _FAR_A_MAX)
+    if need > _FAR_LIFT:
+      return 0.
+    return np.inf
 
 
 class CurveState(IntEnum):
@@ -233,6 +282,7 @@ class CurveSpeedControl:
         self.v2.reset()
         self.state = CurveState.disabled
       self.use_v2 = use_v2
+      self.v2.anticipate = not os.path.exists(_FAR_OFF_FLAG)
 
   def _update_v2(self, sm) -> None:
     """v2: same outputs as the state machine - is_active, v_target, a_target."""
