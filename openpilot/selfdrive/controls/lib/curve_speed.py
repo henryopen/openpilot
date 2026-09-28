@@ -12,6 +12,7 @@ from enum import IntEnum
 
 import numpy as np
 
+from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
 from openpilot.common.realtime import DT_MDL
@@ -148,6 +149,16 @@ _FAR_A_MAX = 0.5          # m/s^2
 _V2_A_MAX_ANT = 2.0       # m/s^2, near-field braking with anticipation on (was _V2_A_MAX)
 _FAR_OFF_FLAG = "/data/curve_far_off"
 
+# ---- lane change (2026-09-28): a lane change is not a corner.
+# While one is under way the plan carries the sideways move as an S of yaw rate, and that reads as a
+# corner arriving fast - to v2 mostly through the steering-rate term. On the 09-28 drives 11 of 45 lane
+# changes, 44 of them on a straight road, had this brake at the full 1.6 m/s^2 for 0.3-1.9 s: 10:58:56
+# at 110 km/h lost 20 km/h moving right. So nothing here acts while the lane change is running or for
+# _LC_HOLD after it; replayed over the same day that leaves 0 of 45 with any braking (1 s already does,
+# 1 of 45 at 0 s) and every one of the 160535 frames away from a lane change unchanged.
+_LC_HOLD = 2.0   # s
+_LC_STATES = (log.LaneChangeState.laneChangeStarting, log.LaneChangeState.laneChangeFinishing)
+
 
 class CurveV2:
   def __init__(self):
@@ -273,6 +284,7 @@ class CurveSpeedControl:
     self.a_target = 0.
     self.v2 = CurveV2()
     self.use_v2 = not os.path.exists(_V2_OFF_FLAG)
+    self.lc_hold = 0.
 
   def _update_params(self) -> None:
     if self.frame % int(PARAMS_UPDATE_PERIOD / DT_MDL) == 0:
@@ -409,6 +421,17 @@ class CurveSpeedControl:
     self.a_ego = a_ego
 
     self._update_params()
+    if sm['modelV2'].meta.laneChangeState in _LC_STATES:
+      self.lc_hold = _LC_HOLD
+    else:
+      self.lc_hold = max(self.lc_hold - DT_MDL, 0.)
+    if self.lc_hold > 0.:
+      self.v2.reset()
+      if self.state in ACTIVE_STATES:
+        self.state = CurveState.enabled
+      self.is_active = False
+      self.frame += 1
+      return
     if self.use_v2:
       self._update_v2(sm)
       self.frame += 1
