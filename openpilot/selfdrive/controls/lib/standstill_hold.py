@@ -31,6 +31,26 @@ RELEASE_M = 1.0        # m the lead moves away on its own before we go (driver, 
 LOST_GRACE = 1.0       # s - the radar drops a lead 2.6-2.9 times a minute; do not let go on a blink
 DREL_TAU = 0.3         # s - smooth dRel before differencing; the radar's range on a stopped car jitters
 
+# Creeping up on it (2026-09-28). should_stop only comes at 0.3 m/s, and this car does not act on the
+# small decelerations the MPC asks for below walking pace: at 17:31:50 it rolled at 1.5-2.1 km/h with
+# -0.16 to -0.25 asked for and aEgo about 0, from 5.8 m to 1.15 m behind a car that had all but stopped,
+# until the driver braked. So closer than CRAWL_GAP to a lead that is not going, at under CRAWL_SPEED,
+# hold as if already stopped - should_stop takes the controller into its stopping state. Normal stops
+# end at a median 4.3 m (P10 3.1) on the radar, so this is short of where the MPC puts the car anyway.
+CRAWL_SPEED = 1.0      # m/s
+CRAWL_GAP = 3.5        # m
+
+# The pull away after a release. While held, the MPC keeps planning from zero and keeps wanting to
+# close in, so on release its plan went straight out: +0.47-0.72 in the first frames against 0.00 on
+# 09-25, before the hold. The car is about 0.9 s behind and overshoots 3-4x at walking pace - aEgo
+# 2.2 at 1 s on 09-28 against 1.2 on 09-25, reaching 4.8 km/h in a second at 17:31:48. So the accel is
+# ramped from LAUNCH_A0 at LAUNCH_JERK, which puts it where the 09-25 launches were (0.18 / 0.25 / 0.31
+# at 0.25 / 0.5 / 0.75 s), until LAUNCH_TIME or LAUNCH_SPEED.
+LAUNCH_A0 = 0.1        # m/s^2
+LAUNCH_JERK = 0.3      # m/s^3
+LAUNCH_TIME = 2.5      # s
+LAUNCH_SPEED = 3.0     # m/s
+
 
 class StandstillHold:
   def __init__(self, dt: float):
@@ -40,11 +60,22 @@ class StandstillHold:
     # under ARM_LEAD_STILL would otherwise re-arm it on the very next frame, from a new
     # reference, and the car would never get going.
     self.need_move = False
+    self.launch_t = None
     self.reset()
 
   def _release(self) -> None:
     self.reset()
     self.need_move = True
+    self.launch_t = 0.0
+
+  def launch_cap(self, v_ego: float) -> float:
+    """Ceiling on the accel while pulling away after a release; inf otherwise."""
+    if self.launch_t is None:
+      return float('inf')
+    if self.launch_t >= LAUNCH_TIME or v_ego >= LAUNCH_SPEED:
+      self.launch_t = None
+      return float('inf')
+    return LAUNCH_A0 + LAUNCH_JERK * self.launch_t
 
   def reset(self) -> None:
     self.active = False
@@ -62,14 +93,20 @@ class StandstillHold:
     if not enabled or gas_pressed:
       self.reset()
       self.need_move = False
+      self.launch_t = None
       return False
+
+    if self.launch_t is not None:
+      self.launch_t += self.dt
 
     if v_ego >= ARM_SPEED:
       self.need_move = False
 
     if not self.active:
-      if (not self.need_move and radar_lead and v_ego < ARM_SPEED and lead.dRel < ARM_MAX_GAP
-          and lead.vLead < ARM_LEAD_STILL):
+      stopped = not self.need_move and v_ego < ARM_SPEED and lead.dRel < ARM_MAX_GAP
+      crawling_in = v_ego < CRAWL_SPEED and lead.dRel < CRAWL_GAP
+      if radar_lead and lead.vLead < ARM_LEAD_STILL and (stopped or crawling_in):
+        self.launch_t = None
         self.active = True
         self.d_filter.x = float(lead.dRel)
         self.ref_d = float(lead.dRel)

@@ -531,6 +531,8 @@ class LongitudinalPlanner:
     if self.standstill_hold.update(not reset_state, v_ego, sm['radarState'].leadOne, sm['carState'].gasPressed):
       output_a_target = min(output_a_target, 0.0)
       self.output_should_stop = True
+    else:
+      output_a_target = min(output_a_target, self.standstill_hold.launch_cap(v_ego))
 
     # A steady foot between small corrections - see long_deadzone. Only for what cruise or a
     # lead asked; a corner, a junction, the model's stop or a planned stop go straight through.
