@@ -38,13 +38,6 @@ PORT = 8902
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
             "longitudinalPlan", "longitudinalPlanSP", "controlsState", "gpsLocationExternal"]
 
-# The neural lateral feedforward toggle. Kept as a file rather than a param key so that
-# flipping it needs no rebuild; latcontrol_torque re-reads it once a second.
-NNFF_OFF_FLAG = "/data/nnff_off"
-STRAIGHT_P_OFF_FLAG = "/data/straight_p_off"   # latcontrol_torque's straight-road P scale
-LONG_DEADZONE_OFF_FLAG = "/data/long_deadzone_off"   # long_deadzone's hold band
-NNFF_MODEL = "/data/openpilot/openpilot/selfdrive/controls/lib/nnff_models/HYUNDAI_CUSTIN_1ST_GEN.json"
-
 # what the planner says set the accel; the page shows these instead of the raw plan source
 # Keyed on the enum's raw value: a constant stringifies to its number while a value read
 # off a message gives its name, and relying on which one arrives here is asking for it.
@@ -533,36 +526,6 @@ class Handler(BaseHTTPRequestHandler):
         return
     elif self.path.startswith("/health"):
       self._json({"ok": True})
-    elif self.path.startswith("/nnff"):
-      # the neural lateral feedforward toggle. latcontrol_torque re-reads the flag file once
-      # a second, so this takes effect on the next second without restarting anything.
-      if "toggle" in self.path:
-        try:
-          if os.path.isfile(NNFF_OFF_FLAG):
-            os.remove(NNFF_OFF_FLAG)
-          else:
-            with open(NNFF_OFF_FLAG, "w") as f:
-              f.write("off\n")
-        except OSError as e:
-          self._json({"ok": False, "error": str(e)})
-          return
-      self._json({"ok": True, "on": not os.path.isfile(NNFF_OFF_FLAG),
-                  "have_model": os.path.isfile(NNFF_MODEL)})
-    elif self.path.startswith(("/straight", "/deadzone")):
-      # driver A/B switches, same file-flag arrangement as /nnff: the flag's presence turns the
-      # feature off, and the process re-reads it once a second
-      flag = STRAIGHT_P_OFF_FLAG if self.path.startswith("/straight") else LONG_DEADZONE_OFF_FLAG
-      if "toggle" in self.path:
-        try:
-          if os.path.isfile(flag):
-            os.remove(flag)
-          else:
-            with open(flag, "w") as f:
-              f.write("off\n")
-        except OSError as e:
-          self._json({"ok": False, "error": str(e)})
-          return
-      self._json({"ok": True, "on": not os.path.isfile(flag)})
     else:
       self.send_response(404)
       self.send_header("Content-Length", "0")

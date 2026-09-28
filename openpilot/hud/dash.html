@@ -67,8 +67,6 @@
   /* 底部 .bar 從 324px 開始且疊在上層；排不下的 chip 換到右邊第二欄，不能往下被蓋住（09-25：直線／緩衝按不到） */
   .chips{top:132px;left:20px;display:flex;flex-direction:column;flex-wrap:wrap;max-height:186px;gap:7px 10px;
     align-content:flex-start;align-items:flex-start}
-  /* .ov 整層不收點擊；前饋標籤要能在行駛中直接點，單獨打開，並加大可點範圍 */
-  #cNN,#cSTR,#cDZ{pointer-events:auto;cursor:pointer;padding:9px 18px}
   .chip{padding:5px 13px;border-radius:5px;font-size:17px;font-weight:800;letter-spacing:.4px;
     background:rgba(6,11,16,.82);border:1px solid var(--line);color:var(--dim2);text-shadow:none}
   .chip.on{color:var(--green);border-color:rgba(47,212,90,.5);background:rgba(47,212,90,.12)}
@@ -194,10 +192,6 @@
   #netInfo { padding:10px 16px; margin:-10px -4px; }  /* 放大點擊範圍，手指按得到 */
   #backHud { font-size:20px; font-weight:700; color:#8fd4a8; background:#122019;
     border:1px solid #2e6b45; border-radius:12px; padding:13px 30px; letter-spacing:1px; }
-  #nnffBtn { font-size:20px; font-weight:700; color:#cfe3f5; background:#16222e;
-    border:1px solid #2c465c; border-radius:12px; padding:13px 30px; letter-spacing:1px; }
-  #nnffBtn.cur { color:#7ee2a0; border-color:#2e6b45; background:#122019; }
-  #nnffBtn:disabled { opacity:.45 }
   #apRow { display:flex; gap:12px; }
   .apbtn { font-size:18px; font-weight:700; color:#9fb4c8; background:#101922;
     border:1px solid #24384a; border-radius:10px; padding:13px 20px; }
@@ -224,7 +218,6 @@
   <div id="netRow">
     <button id="backHud">返回 HUD</button>
     <button id="reconnBtn">重新連線 WiFi</button>
-    <button id="nnffBtn">轉向前饋 —</button>
     <div id="apRow"></div>
   </div>
 </div>
@@ -265,9 +258,6 @@
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
-    <span class="chip" id="cNN">前饋 —</span>
-    <span class="chip" id="cSTR">直線 —</span>
-    <span class="chip" id="cDZ">緩衝 —</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1453,67 +1443,6 @@ if(rb) rb.addEventListener('click', async ()=>{
   }catch(e){ rb.textContent='失敗：'+(e&&e.message||e); }
   setTimeout(()=>{ rb.textContent=old; rb.disabled=false; }, 5000);
 });
-
-/* 轉向前饋開關：神經網路（本車 13.8 小時 log 訓的）↔ 原本的線性換算。
-   車機的 latcontrol_torque 每秒重讀一次旗標檔，所以按下去下一秒就生效，不用重開。 */
-const nb=document.getElementById('nnffBtn');
-async function nnffRefresh(act){
-  if(!nb) return;
-  const h=window.__esHost; if(!h){ nb.textContent='轉向前饋 —'; nb.disabled=true; return; }
-  try{
-    const c=new AbortController(); const t=setTimeout(()=>c.abort(),4000);
-    const r=await fetch(`http://${h}:8902/nnff${act?'/toggle':''}`,{cache:'no-store',signal:c.signal});
-    clearTimeout(t);
-    const j=await r.json();
-    nb.disabled=!j.have_model;
-    nb.textContent='轉向前饋：'+(j.on?'神經網路':'線性');
-    nb.classList.toggle('cur', !!j.on);
-    if(cnn){ cnn.textContent='前饋 '+(j.on?'神經':'線性'); cnn.className='chip'+(j.on?' on':' wait'); }
-  }catch(e){ nb.textContent='轉向前饋 —'; if(cnn){ cnn.textContent='前饋 —'; cnn.className='chip'; } }
-}
-// 行駛畫面也要看得到、也要能直接切（09-23 駕駛要求：按鈕只在待機畫面，行駛中既看不到也切不了）。
-// 點一下就切；切完鎖 2 秒，連點不會來回跳
-const cnn=document.getElementById('cNN');
-let cnnBusy=false;
-if(cnn) cnn.addEventListener('click', async ()=>{
-  if(cnnBusy) return;
-  cnnBusy=true; cnn.textContent='切換中…';
-  await nnffRefresh(true);
-  setTimeout(()=>{ cnnBusy=false; }, 2000);
-});
-if(nb) nb.addEventListener('click', async ()=>{
-  nb.disabled=true; nb.textContent='切換中…';
-  await nnffRefresh(true);
-  nb.disabled=false;
-});
-nnffRefresh(false); setInterval(()=>nnffRefresh(false), 10000);
-
-/* 駕駛在同一段路直接比較用的開關（09-23）。車機那邊是旗標檔，存在＝關閉，每秒重讀一次。
-     直線：latcontrol_torque 低速接近直線時 P 只用一半（柔）／原本增益（原）
-     緩衝：long_deadzone 小幅加減速要求時不加不減（開）／照原本跟著加減（關） */
-function flagChip(id, path, name, onTxt, offTxt){
-  const el=document.getElementById(id); if(!el) return;
-  let busy=false;
-  async function refresh(act){
-    const h=window.__esHost; if(!h){ el.textContent=name+' —'; el.className='chip'; return; }
-    try{
-      const c=new AbortController(); const t=setTimeout(()=>c.abort(),4000);
-      const r=await fetch(`http://${h}:8902/${path}${act?'/toggle':''}`,{cache:'no-store',signal:c.signal});
-      clearTimeout(t);
-      const j=await r.json();
-      el.textContent=name+' '+(j.on?onTxt:offTxt); el.className='chip'+(j.on?' on':' wait');
-    }catch(e){ el.textContent=name+' —'; el.className='chip'; }
-  }
-  el.addEventListener('click', async ()=>{
-    if(busy) return;
-    busy=true; el.textContent='切換中…';
-    await refresh(true);
-    setTimeout(()=>{ busy=false; }, 2000);
-  });
-  refresh(false); setInterval(()=>refresh(false), 10000);
-}
-flagChip('cSTR', 'straight', '直線', '柔', '原');
-flagChip('cDZ', 'deadzone', '緩衝', '開', '關');
 
 // HUD ↔ 待機互切：左上角 netInfo 點了進待機（選 AP 用）；「返回 HUD」跳回去
 const ni=document.getElementById('netInfo');
