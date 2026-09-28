@@ -109,6 +109,7 @@ class JunctionHandoff:
     self.model_detected = False
     self.hold_until = 0.0
     self.stop_x = None
+    self.stop_v = 0.0
     self.a_floor = 0.0
 
   def reset(self):
@@ -118,6 +119,7 @@ class JunctionHandoff:
     self.model_detected = False
     self.hold_until = 0.0
     self.stop_x = None
+    self.stop_v = 0.0
     self.a_floor = 0.0
 
   def _turning(self, car_state, v_ego):
@@ -158,7 +160,9 @@ class JunctionHandoff:
     limit = STOP_SPEED_OFF if self.model_detected else STOP_SPEED_ON
     for i in range(n):
       if vs[i] < limit:
+        self.stop_v = float(vs[i])
         return float(xs[i])
+    self.stop_v = float(vs[n - 1])
     return float(xs[n - 1])
 
   def update(self, model, car_state, v_ego, lead):
@@ -188,8 +192,16 @@ class JunctionHandoff:
     # Ask for what stopping in the distance the model says it has would take. Rate limited
     # in both directions: arming is a step in the trigger but must not be one at the wheels,
     # and letting go has to be as smooth as taking hold.
+    # stop_x is where the plan gets down to STOP_SPEED (2.0, then 3.5 m/s), not where it comes
+    # to rest, so what it takes is getting down to the plan's speed there - not to zero. Asking for
+    # zero was harmless at speed (36 km/h and 30 m: 1.67 against 1.46) but not near the end: on
+    # 2026-09-28 17:57:39 at 14.9 km/h the plan was under 3.5 m/s 5 m out and at rest at 14.2 m,
+    # the model asked for -0.34, and the floor took -1.6 and -1.7. Braking that much harder than
+    # the plan makes the next plan end nearer, stop_for_lights only ever pulls its point in, and
+    # the car stopped about 10 m short; the driver's gas reset it and the second stop was right.
+    # Five of these on 09-16 and 09-28.
     want = 0.0
     if self.active and self.stop_x is not None and self.stop_x > MIN_STOP_DISTANCE and v_ego > 1.0:
-      want = -min(v_ego ** 2 / (2.0 * self.stop_x), MAX_FLOOR_DECEL)
+      want = -min(max(v_ego ** 2 - self.stop_v ** 2, 0.0) / (2.0 * self.stop_x), MAX_FLOOR_DECEL)
     step = FLOOR_JERK * DT_MDL
     self.a_floor = float(np.clip(want, self.a_floor - step, self.a_floor + step))
