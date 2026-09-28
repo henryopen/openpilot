@@ -112,10 +112,7 @@ class DesireHelper:
         self.desire = log.Desire.laneChangeLeft
       elif self.lane_change_direction == LaneChangeDirection.right:
         self.desire = log.Desire.laneChangeRight
-    elif lateral_active and one_blinker and LANE_TURN_SPEED_MIN <= v_ego < LANE_TURN_SPEED_MAX:
-      # A blind spot here is a car alongside in the junction, so hold the desire back the
-      # same way a lane change would be held back
-      if carstate.leftBlinker and not (carstate.leftBlindspot or left_edge_detected):
-        self.desire = log.Desire.turnLeft
-      elif carstate.rightBlinker and not (carstate.rightBlindspot or right_edge_detected):
-        self.desire = log.Desire.turnRight
+    # No turn desire (2026-09-28, the driver's call): which speed makes a blinker a turn rather than
+    # a lane change could not be pinned down, so the model is left to take junctions on its own, as
+    # in stock openpilot. LANE_TURN_SPEED_* stay: junction_handoff and the HUD still read a blinker
+    # in that band as a turn coming.
