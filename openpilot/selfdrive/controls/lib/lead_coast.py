@@ -12,7 +12,7 @@ So while following a radar lead above MIN_SPEED, if the lead holding its speed (
 cannot bring it inside T_MIN of us, the MPC's braking is held to COAST - about what lifting off gives
 on the flat (get_coast_accel) - and it decides again every frame. The moment that stops being true -
 we are already inside T_MIN, the lead's closing speed or braking would need NEED_ON or more to keep
-T_MIN, or it is not a radar lead - the MPC's accel goes straight through, and stays through for
+T_MIN, the MPC asks for more than A_PASS, or it is not a radar lead - the MPC's accel goes straight through, and stays through for
 HOLD_S before this may hold it again, so a lead closing in does not get a coast in the middle of it.
 
 Replayed against the real leads of the 331 stretches over those days where OP braked past -0.5 for a
@@ -31,6 +31,10 @@ D_MIN = 5.0                     # m, and never less than this
 NEED_ON = 0.3                   # m/s^2 needed to keep T_MIN: at or above, brake as planned
 LEAD_BRAKING = -0.5             # m/s^2, a radar lead decelerating harder than this is braking
 HOLD_S = 1.0                    # s the MPC keeps full say after it has needed it
+# ...and whatever the check says, a firm request is the MPC's. On the 09-28 drives (open loop) what
+# this held back asked for a median -0.50 and P10 -0.85, but up to -2.32 - something the check does not
+# model, a lead easing off under LEAD_BRAKING say. The complaint is about the light ones.
+A_PASS = -1.0                   # m/s^2
 
 
 def need_to_keep(d_rel: float, v_ego: float, v_lead: float, a_lead: float, d_min: float) -> float:
@@ -59,7 +63,7 @@ class LeadCoast:
       return a_target
     d_min = max(T_MIN * v_ego, D_MIN)
     need = need_to_keep(float(lead.dRel), v_ego, float(lead.vLead), float(lead.aLeadK), d_min)
-    if lead.dRel < d_min or need >= NEED_ON:
+    if lead.dRel < d_min or need >= NEED_ON or a_target < A_PASS:
       self.hold = HOLD_S
       return a_target
     if self.hold > 0.0:
