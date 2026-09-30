@@ -20,7 +20,6 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
-from openpilot.selfdrive.controls.lib.lead_coast import LeadCoast
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
 from openpilot.common.swaglog import cloudlog
@@ -337,7 +336,6 @@ class LongitudinalPlanner:
     self.curve_speed = CurveSpeedControl()
     self.deadzone = LongDeadzone(dt)
     self.standstill_hold = StandstillHold(dt)
-    self.lead_coast = LeadCoast(dt)
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -535,12 +533,6 @@ class LongitudinalPlanner:
       self.output_should_stop = True
     else:
       output_a_target = min(output_a_target, self.standstill_hold.launch_cap(v_ego))
-
-    # A car nearer than the MPC would like, which lifting off keeps at a safe distance: lift off
-    # rather than brake - see lead_coast. Only for leadOne, the one the check reads.
-    coast_eligible = (self.mpc.source == LongitudinalPlanSource.lead0 and not self.output_should_stop
-                      and not self.junction.active and not reset_state)
-    output_a_target = self.lead_coast.update(output_a_target, v_ego, sm['radarState'].leadOne, coast_eligible)
 
     # A steady foot between small corrections - see long_deadzone. Only for what cruise or a
     # lead asked; a corner, a junction, the model's stop or a planned stop go straight through.
