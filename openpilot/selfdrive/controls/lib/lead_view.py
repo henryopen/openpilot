@@ -33,6 +33,22 @@ from openpilot.common.realtime import DT_MDL
 
 RISE_TAU = 1.0   # s
 
+# Seeing the lead brake sooner (2026-09-30). The driver, after two FCWs on 09-29: why can it not brake
+# earlier. Over the 39 leads that braked past -2.5 on 09-26..09-29, counted from when the lead's own
+# speed started falling faster than 1 m/s^2, the radar's aLeadK got there a median 0.80 s later (up to
+# 2.9 s), openpilot's command 0.90 s, the car itself 1.21 s: the Kalman estimate is the wait, and the
+# planner brakes as soon as it has it. So the lead's raw speed is differenced over RAW_WIN, and once
+# that has been under RAW_THR for RAW_N frames running it stands in for aLeadK when it is the harsher
+# of the two. A jump in dRel over RAW_JUMP_M is a different car, and starts the difference again.
+# Same simulation as above: the 39 leads braking hard, closest approach 0.63 -> 2.76 m (08:15:54), 21 of
+# them further off by more than 0.5 m and none closer; stops 5.46 -> 5.54 m. Following, braking past
+# -1.5 goes 0.48 -> 0.69 a minute - of the 11 new ones, the lead in 10 slowed by more than 1 m/s^2
+# within 2 s and in the other by 5 km/h: sooner, not phantom. Accelerate-then-brake 0.40 -> 0.48.
+RAW_WIN = 0.3      # s
+RAW_THR = -1.0     # m/s^2
+RAW_N = 2          # frames
+RAW_JUMP_M = 2.0   # m
+
 
 class _Lead:
   def __init__(self, base, **over):
@@ -57,17 +73,37 @@ class _Radar:
 class LeadView:
   def __init__(self):
     self.v_lead = {}
+    self.hist = {}
+    self.cnt = {}
+    self.last_d = {}
+
+  def _raw_decel(self, key, lead):
+    d = float(lead.dRel)
+    if key in self.last_d and abs(d - self.last_d[key]) > RAW_JUMP_M:
+      self.hist[key] = []
+      self.cnt[key] = 0
+    self.last_d[key] = d
+    h = self.hist.setdefault(key, [])
+    h.append(float(lead.vLead))
+    k = int(round(RAW_WIN / DT_MDL))
+    if len(h) > k + 1:
+      h.pop(0)
+    slope = (h[-1] - h[-1 - k]) / RAW_WIN if len(h) > k else 0.
+    self.cnt[key] = self.cnt.get(key, 0) + 1 if slope < RAW_THR else 0
+    return slope if self.cnt[key] >= RAW_N else 0.
 
   def _lead(self, key, lead):
     if not lead.present:
-      self.v_lead.pop(key, None)
+      for s in (self.v_lead, self.hist, self.cnt, self.last_d):
+        s.pop(key, None)
       return lead
     v = float(lead.vLead)
     f = self.v_lead.get(key, v)
     f = v if v < f else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
     self.v_lead[key] = f
     v_ego = v - float(lead.vRel)
-    return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=min(float(lead.aLeadK), 0.))
+    a_lead = min(float(lead.aLeadK), 0., self._raw_decel(key, lead))
+    return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead)
 
   def update(self, radar_state):
     return _Radar(radar_state, self._lead("one", radar_state.leadOne), self._lead("two", radar_state.leadTwo))
