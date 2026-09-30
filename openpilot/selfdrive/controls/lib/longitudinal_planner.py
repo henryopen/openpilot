@@ -262,15 +262,13 @@ def lead_is_far(lead, v_ego, t_follow):
   target_gap = get_safe_obstacle_distance(v_ego, t_follow) - get_stopped_equivalence_factor(min(lead.vLead, v_ego))
   return lead.dRel > FREE_LEAD_MARGIN * target_gap
 
-# Ease off when the set speed itself is low. Pulling the full 1.2 m/s2 away from a stop
-# feels abrupt when the target is 40 km/h, in a way the same acceleration toward 100 km/h
-# does not - the car is asking for most of its authority to cover a small gap. Ported from
-# FrogPilot's get_max_accel_low_speeds; its CITY_SPEED_LIMIT is 15 m/s.
-_LOW_SET_SPEED_BP = [0., 7.5, 15.]
-
-
-def scale_for_set_speed(max_accel, v_cruise):
-  return float(np.interp(v_cruise, _LOW_SET_SPEED_BP, [max_accel / 4, max_accel / 2, max_accel]))
+# No easing off for a low set speed any more (FrogPilot's get_max_accel_low_speeds, here from 08-29 to
+# 09-30: x0.5 at a 27 km/h set speed, full only from 54). It came before the curves above were taken
+# from the driver's own foot on 09-17/18, so in town it took them down twice. On 2026-09-30, set to 35
+# on the dash, it was what held the ceiling 78% of the time with nothing in front, and the driver: with
+# no car ahead it is still slow to pick up. Against his own acceleration with nothing ahead (09-24..30,
+# median / P75): 5-15 km/h 0.59/0.91, 15-25 0.66/0.95, 25-35 0.69/0.97, 35-50 0.45/0.84; that day's
+# ceiling was 0.47 / 0.50 / 0.51 / 0.49 with it and is 0.71 / 0.74 / 0.66 / 0.59 without.
 
 def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
@@ -284,10 +282,6 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
   source = AccelLimit.e2e if e2e else (AccelLimit.free if lead_free else AccelLimit.lead)
 
   if not e2e:
-    scaled = scale_for_set_speed(max_accel, v_cruise)
-    if scaled < max_accel - 1e-4:
-      source = AccelLimit.setSpeed
-    max_accel = scaled
     a_total_max = np.interp(v_ego, _A_TOTAL_MAX_BP, _A_TOTAL_MAX_V)
     a_y = v_ego ** 2 * angle_steers * CV.DEG_TO_RAD / (CP.steerRatio * CP.wheelbase)
     a_x_allowed = math.sqrt(max(a_total_max ** 2 - a_y ** 2, 0.))
