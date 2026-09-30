@@ -20,6 +20,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
+from openpilot.selfdrive.controls.lib.lead_view import LeadView
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
 from openpilot.common.swaglog import cloudlog
@@ -336,6 +337,7 @@ class LongitudinalPlanner:
     self.curve_speed = CurveSpeedControl()
     self.deadzone = LongDeadzone(dt)
     self.standstill_hold = StandstillHold(dt)
+    self.lead_view = LeadView()
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -355,6 +357,8 @@ class LongitudinalPlanner:
     self.j_desired_trajectory = np.zeros(CONTROL_N)
 
   def update(self, sm):
+    # the lead believed slowing at once and pulling away slowly - see lead_view
+    radar = self.lead_view.update(sm['radarState'])
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
     else:
@@ -371,7 +375,7 @@ class LongitudinalPlanner:
     if sm['selfdriveState'].experimentalMode:
       self.junction.reset()
     else:
-      self.junction.update(sm['modelV2'], sm['carState'], v_ego, sm['radarState'].leadOne)
+      self.junction.update(sm['modelV2'], sm['carState'], v_ego, radar.leadOne)
 
     # And give the empty junction its stop point. Experimental mode already stops for one,
     # and there is nothing to stop for until we are driving.
@@ -379,7 +383,7 @@ class LongitudinalPlanner:
       self.stop_for_lights.reset()
     else:
       self.stop_for_lights.update(sm['modelV2'], v_ego, v_cruise, sm['carState'].gasPressed,
-                                  sm['radarState'].leadOne)
+                                  radar.leadOne)
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off
 
@@ -412,7 +416,7 @@ class LongitudinalPlanner:
     stop_x = self.stop_for_lights.obstacle_x(MPC_STOP_DISTANCE) if self.stop_for_lights.is_active else None
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
-    self.mpc.update(sm['radarState'], personality=sm['selfdriveState'].personality,
+    self.mpc.update(radar, personality=sm['selfdriveState'].personality,
                     stop_x=stop_x, a_min=STOP_MAX_DECEL if stop_x is not None else ACCEL_MIN)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
@@ -435,11 +439,11 @@ class LongitudinalPlanner:
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
     t_follow = get_T_FOLLOW(sm['selfdriveState'].personality)
-    lead_free = lead_is_far(sm['radarState'].leadOne, v_ego, t_follow)
+    lead_free = lead_is_far(radar.leadOne, v_ego, t_follow)
     # the same gap in the MPC's own terms, for anything that wants to show where it is
     # trying to sit. Kept here rather than worked out again downstream, which is how the
     # HUD ended up drawing it nine metres short at a 20 km/h closing speed
-    lead_one = sm['radarState'].leadOne
+    lead_one = radar.leadOne
     self.follow_distance = (get_safe_obstacle_distance(v_ego, t_follow)
                             - get_stopped_equivalence_factor(float(lead_one.vLead))) if lead_one.present else 0.
     self.a_cruise, self.a_cruise_max, self.a_cruise_max_source = get_cruise_accel(
@@ -474,7 +478,7 @@ class LongitudinalPlanner:
     # holds cruise back for 43 s an hour and a real lead turns up within six seconds 82% of
     # the time, so 8 s an hour of not accelerating at nothing.
     weak_lead_now = False
-    if not sm['radarState'].leadOne.present and v_ego > WEAK_LEAD_MIN_SPEED:
+    if not radar.leadOne.present and v_ego > WEAK_LEAD_MIN_SPEED:
       leads = sm['modelV2'].leadsV3
       if len(leads):
         lead_x = leads[0].x[0] - RADAR_TO_CAMERA
@@ -528,7 +532,7 @@ class LongitudinalPlanner:
 
     # Stopped behind a car that has not gone: stay stopped, and in the stopping state, until it
     # has moved 1 m on its own - see standstill_hold.
-    if self.standstill_hold.update(not reset_state, v_ego, sm['radarState'].leadOne, sm['carState'].gasPressed):
+    if self.standstill_hold.update(not reset_state, v_ego, radar.leadOne, sm['carState'].gasPressed):
       output_a_target = min(output_a_target, 0.0)
       self.output_should_stop = True
     else:
