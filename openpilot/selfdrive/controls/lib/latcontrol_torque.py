@@ -9,6 +9,7 @@ from openpilot.common.constants import ACCELERATION_DUE_TO_GRAVITY
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.selfdrive.controls.lib.latcontrol import LatControl
 from openpilot.selfdrive.controls.lib.nn_feedforward import load_model
+from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.common.swaglog import cloudlog
 from openpilot.common.pid import PIDController
 
@@ -133,6 +134,27 @@ NN_LOW_SPEED_OFF_FLAG = '/data/nnff_lowspeed_off'
 # lead, but with a small-signal deadzone alongside it that there is nothing here to size.
 MAX_LAT_JERK = 2.5  # m/s^3
 
+# The second feedforward model (2026-10-01), <fingerprint>_v2.json, 11 inputs - retrained the way twilsonco
+# trains NNFF. The driver: the steering comes in a piece at a time, nothing like a person turning the wheel,
+# and it has never been right. On 09-30, turning in at 15 km/h and up, the wheel stopped about once per
+# turn-in (0.3-0.6 when he turns it himself); in the 0.3 s before each stop the error fell by 0.10, P by
+# 0.63 and the friction term by 0.14 - a quarter of the time flipping to push against the turn - while
+# the request kept rising. Friction here is keyed on the error, so it lets go exactly when the wheel
+# is moving and has to be re-broken. The first model could not carry a turn on its own either: trained
+# with every frame at the torque limit thrown out, it under-asked in slow turns, hence the 1.4 below.
+# v2 is trained on 1096 segments of 09-16..09-30 with those frames kept (a loss that only minds asking
+# too little), balanced over speed x lateral accel, mirrored, held monotonic in lateral accel, and
+# given what twilsonco's model has and ours did not: road roll, and where the plan goes 0.3-1.5 s on.
+# Its friction is its own - smooth in the requested direction - so get_friction is left out of its
+# part, and so is the 1.4. Held-out 09-29/30, fed exactly what it gets here (the setpoint, its history,
+# the plan), feedforward against the torque actually sent, RMSE: 10-15 km/h 0.092 -> 0.083, 25-35
+# 0.074 -> 0.064, 50-80 0.060 -> 0.039, 80-130 0.063 -> 0.029; frame-to-frame p99 on straights
+# 0.018 -> 0.025. The blend is unchanged, so near-straight driving is the linear conversion as before.
+# /data/nnff_v1 at start-up keeps the first model and its path.
+NN2_PAST_S = (0.3, 0.2, 0.1)
+NN2_FUTURE_S = (0.3, 0.6, 1.0, 1.5)
+NN2_JERK_HZ = 0.5      # the rate input is filtered this way in training; the raw rate made it jump 3x per frame
+
 # Coming out of a turn the integrator holds wind-up from the turn itself, and letting it keep
 # integrating through the unwind makes the wheel come back late. Freezing it on the setpoint
 # falling was tried on 2026-09-06 and taken back out on 09-07: the rate is a difference
@@ -169,7 +191,11 @@ class LatControlTorque(LatControl):
     self.nn_recheck_frames = int(round(1.0 / self.dt))
     self.nn_recheck = self.nn_recheck_frames
     self.nn_past_frames = [int(round(t / self.dt)) for t in (0.3, 0.2, 0.1)]
-    cloudlog.info(f"lateral feedforward: {'neural' if self.nn else 'linear'}")
+    self.nn_v2 = self.nn_model is not None and self.nn_model.input_size == 11
+    self.nn2_jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * NN2_JERK_HZ), self.dt)
+    self.nn2_prev_setpoint = 0.0
+    self.plan = None   # modelV2, handed over by controlsd each frame
+    cloudlog.info(f"lateral feedforward: {('neural v2' if self.nn_v2 else 'neural') if self.nn else 'linear'}")
     self.straight_p = not os.path.isfile(STRAIGHT_P_OFF_FLAG)
     cloudlog.info(f"straight-road P scale: {'on' if self.straight_p else 'off'}")
     self.nn_low_speed = not os.path.isfile(NN_LOW_SPEED_OFF_FLAG)
@@ -216,6 +242,32 @@ class LatControlTorque(LatControl):
       gain = 1.0 + (float(np.interp(v_ego, NN_LOW_SPEED_GAIN_BP, NN_LOW_SPEED_GAIN_V)) - 1.0) * fade
     return (1.0 - blend) * linear + blend * gain * -self.nn.evaluate(inputs)
 
+  def _plan_future(self, fallback):
+    """The plan's lateral acceleration NN2_FUTURE_S ahead, or fallback where there is no plan."""
+    m = self.plan
+    try:
+      w, vx = m.orientationRate.z, m.velocity.x
+      n = len(ModelConstants.T_IDXS)
+      if len(w) != n or len(vx) != n:
+        return [fallback] * len(NN2_FUTURE_S)
+      la = [float(w[i]) * float(vx[i]) for i in range(n)]   # capnp readers do not slice
+      return [float(np.interp(t, ModelConstants.T_IDXS, la)) for t in NN2_FUTURE_S]
+    except AttributeError:
+      return [fallback] * len(NN2_FUTURE_S)
+
+  def _nn2_feedforward(self, lateral_accel, v_ego, setpoint, jerk, delay_frames, roll):
+    """v2: see NN2_* above. lateral_accel is what the linear part and the blend have always used."""
+    linear = self.torque_from_lateral_accel(lateral_accel, self.torque_params)
+    blend = float(np.clip((abs(lateral_accel) - NN_BLEND_LO) / (NN_BLEND_HI - NN_BLEND_LO), 0.0, 1.0))
+    if blend == 0.0:
+      return linear
+    buf = self.lat_accel_request_buffer
+    clip = lambda x: float(np.clip(x, -NN_ACCEL_LIMIT, NN_ACCEL_LIMIT))  # noqa: E731
+    past = [clip(buf[max(len(buf) - delay_frames - int(round(t / self.dt)), 0)]) for t in NN2_PAST_S]
+    future = [clip(x) for x in self._plan_future(setpoint)]
+    inputs = [v_ego, clip(setpoint), float(np.clip(jerk, -MAX_LAT_JERK, MAX_LAT_JERK)), roll * ACCELERATION_DUE_TO_GRAVITY] + past + future
+    return (1.0 - blend) * linear + blend * -self.nn.evaluate(inputs)
+
   def update(self, active, CS, VM, params, steer_limited_by_safety, desired_curvature, curvature_limited, lat_delay):
     pid_log = log.ControlsState.LateralTorqueState.new_message()
     pid_log.version = VERSION
@@ -252,6 +304,8 @@ class LatControlTorque(LatControl):
     desired_lateral_jerk = float(np.clip(self.jerk_filter.update(raw_lateral_jerk), -MAX_LAT_JERK, MAX_LAT_JERK))
 
     setpoint = expected_lateral_accel
+    nn2_jerk = self.nn2_jerk_filter.update((setpoint - self.nn2_prev_setpoint) / self.dt)
+    self.nn2_prev_setpoint = setpoint
 
     current_kp = np.interp(CS.vEgo, INTERP_SPEEDS, KP_INTERP)
     error = setpoint - measurement
@@ -293,7 +347,10 @@ class LatControlTorque(LatControl):
         # drive this first went out on it reached 4150 m/s^2 against a training range of 3.13,
         # so 36% of frames were extrapolation. Feed the network the request, which is physical,
         # and leave the feedback on the linear conversion where any magnitude is meaningful.
-        ff_torque = self._nn_feedforward(ff, CS.vEgo, desired_lateral_jerk, future_desired_lateral_accel)
+        if self.nn_v2:
+          ff_torque = self._nn2_feedforward(ff, CS.vEgo, setpoint, nn2_jerk, delay_frames, params.roll)
+        else:
+          ff_torque = self._nn_feedforward(ff, CS.vEgo, desired_lateral_jerk, future_desired_lateral_accel)
         feedback_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=0.0,
                                             freeze_integrator=freeze_integrator, p_scale=p_scale)
         output_torque = ff_torque + self.torque_from_lateral_accel(feedback_lataccel, self.torque_params)

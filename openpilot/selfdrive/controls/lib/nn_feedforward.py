@@ -62,8 +62,16 @@ class NNFeedforward:
     return float(np.clip(x[0, 0], -OUTPUT_LIMIT, OUTPUT_LIMIT))
 
 
+# 2026-10-01: a second model, <fingerprint>_v2.json, takes precedence - see latcontrol_torque for what it
+# reads. Presence of this file keeps the first one instead (read at start-up).
+NNFF_V1_FLAG = '/data/nnff_v1'
+
+
 def load_model(car_fingerprint):
   """Return the net for this car, or None if there is no model for it."""
+  v2 = os.path.join(MODEL_DIR, f'{car_fingerprint}_v2.json')
+  if os.path.isfile(v2) and not os.path.isfile(NNFF_V1_FLAG):
+    return NNFeedforward(v2)
   path = os.path.join(MODEL_DIR, f'{car_fingerprint}.json')
   if not os.path.isfile(path):
     return None

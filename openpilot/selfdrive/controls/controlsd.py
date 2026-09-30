@@ -157,6 +157,8 @@ class Controls:
     lat_delay = self.sm["lateralDelay"].lateralDelay + LAT_SMOOTH_SECONDS
 
     actuators.curvature = self.desired_curvature
+    # the torque controller's second feedforward model reads the plan 0.3-1.5 s ahead (latcontrol_torque NN2_*)
+    self.LaC.plan = model_v2
     steer, lateral_output, lac_log = self.LaC.update(CC.latActive, CS, self.VM, lp,
                                                      self.steer_limited_by_safety, self.desired_curvature,
                                                      curvature_limited, lat_delay)
