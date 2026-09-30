@@ -30,6 +30,7 @@ braking about 0.2 s sooner), that only while nothing is urgent (6 closer), and A
 raised (18 closer). RISE_TAU 2.0 does a little more (0.38) but follows further back and stops softer.
 """
 from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_safe_obstacle_distance, get_stopped_equivalence_factor
 
 RISE_TAU = 1.0   # s
 
@@ -48,6 +49,24 @@ RAW_WIN = 0.3      # s
 RAW_THR = -1.0     # m/s^2
 RAW_N = 2          # frames
 RAW_JUMP_M = 2.0   # m
+
+# ... but only when the gap already needs it (2026-09-30). The driver: braking sooner will bring the
+# stop-and-go back. Driving himself on 09-26..09-29, when the lead's raw speed dropped the same way (and
+# he was not already braking) he was on the brake within 3 s 8% of the time if the lead then lost under
+# 3 km/h and 37% if over 10 km/h - he lets most of them go; the above takes every one. So the raw decel
+# counts only when the gap is under RAW_GAP_FRAC of the MPC's own follow distance or the lead would be
+# reached in under RAW_TTC s; otherwise aLeadK is waited for, as before. Same closed loop, 235 windows:
+#                          without raw   raw, always   raw, gated
+#   accelerate-then-brake     0.40          0.48          0.41   a minute (under 30 km/h 0.69/0.78/0.69)
+#   braking past -1.0         1.19          1.34          1.25   a minute
+#   39 leads braking hard     0.63          2.76          2.76   m closest (08:15:54)
+#                                                               4 of 39 up to 0.67 m nearer than always,
+#                                                               all at 11-21 m; none nearer than without
+#   stops                     5.46          5.54          5.51   m
+# Tighter (0.8, 0.7 of the gap) takes braking past -1.5 from 0.67 to 0.62/0.55 a minute but 08:15:54 to
+# 2.59/2.30 m and up to 1.1 m off 6-7 of the 39; a TTC alone (4 s) changed nothing against without.
+RAW_GAP_FRAC = 0.9
+RAW_TTC = 3.0      # s
 
 
 class _Lead:
@@ -92,6 +111,15 @@ class LeadView:
     self.cnt[key] = self.cnt.get(key, 0) + 1 if slope < RAW_THR else 0
     return slope if self.cnt[key] >= RAW_N else 0.
 
+  @staticmethod
+  def _gap_needs_it(lead):
+    d = float(lead.dRel)
+    v_lead = float(lead.vLead)
+    v_ego = v_lead - float(lead.vRel)
+    want = get_safe_obstacle_distance(v_ego, get_T_FOLLOW()) - get_stopped_equivalence_factor(v_lead)
+    closing = v_ego - v_lead
+    return (want > 0. and d < RAW_GAP_FRAC * want) or (closing > 0.1 and d / closing < RAW_TTC)
+
   def _lead(self, key, lead):
     if not lead.present:
       for s in (self.v_lead, self.hist, self.cnt, self.last_d):
@@ -102,7 +130,10 @@ class LeadView:
     f = v if v < f else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
     self.v_lead[key] = f
     v_ego = v - float(lead.vRel)
-    a_lead = min(float(lead.aLeadK), 0., self._raw_decel(key, lead))
+    a_raw = self._raw_decel(key, lead)
+    if a_raw < 0. and not self._gap_needs_it(lead):
+      a_raw = 0.
+    a_lead = min(float(lead.aLeadK), 0., a_raw)
     return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead)
 
   def update(self, radar_state):
