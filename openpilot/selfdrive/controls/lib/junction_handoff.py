@@ -46,6 +46,16 @@ STOP_PLAN_TIME_ON = 8.0     # seconds of travel the plan has to fall short of
 STOP_PLAN_TIME_OFF = 9.0
 STOP_PLAN_LEN = 50.0        # ...or simply this short, which no cruising plan ever is
 
+# ...and the plan has to get slow somewhere, not only short. The length above is travel over ten
+# seconds, so a plan that merely eases off - for a bend ahead - falls under v * 8 as soon as it
+# averages 80% of our speed. On 2026-09-30 (town and a mountain road) the handoff braked for 94.6 s
+# with nothing in front, and at the start of each stretch the plan's lowest speed was 20-35 km/h;
+# the driver: bends slowed for as if they were junctions, with the path plainly long. Over
+# 09-24..09-30 (8.7 h under openpilot) the gate alone armed 220 times with no stop to follow (25 an
+# hour), with this 56 (6.4); all 9 stops with nothing in front still armed, at a median 35 m out
+# rather than 55 (P25 26 m either way). A plan ending at 30% of our speed did about the same (63).
+STOP_PLAN_MIN_V = 10 * CV.KPH_TO_MS
+
 # Where the stop is, once we believe there is one. Kept separate from the gate above: this
 # is what the floor divides by, and the far end of a 110 m plan would ask for nothing.
 STOP_SPEED_ON = 2.0         # m/s, 7.2 km/h
@@ -152,6 +162,8 @@ class JunctionHandoff:
     py = np.array([ys[i] for i in range(n)])
     plan_len = float(np.sum(np.hypot(np.diff(px), np.diff(py))))
     if v_ego <= 1.0 or not (plan_len < STOP_PLAN_LEN or plan_len < v_ego * reach):
+      return None
+    if min(float(vs[i]) for i in range(n)) >= STOP_PLAN_MIN_V:
       return None
 
     # the distance: where the plan actually slows, which is what the floor works from. Still
