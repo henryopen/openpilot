@@ -122,6 +122,22 @@ _V2_START_HOLD = 0.3        # s over _V2_A_START before braking
 _V2_MIN_BRAKE = 1.0         # s: once braking, no acceleration for at least this long
 _V2_OFF_FLAG = "/data/curve_v2_off"
 
+# ---- the steering-rate limit reads the plan from 1.0 s out, not 0.5 (2026-10-01). The driver on 09-30,
+# town and a mountain road: it keeps slowing in bends, down below what they need. On that drive 76% of
+# the curve braking came from this limit, at a point a median 0.6 s / 7 m ahead - found as the car was
+# already turning in, and braked for right there at the 1.6 cap, often to 10-25 km/h under what the
+# comfort curve allowed; bends were taken at a median 72% of the comfort curve.
+# Closed loop on the device (the whole planner; 28 bends with nothing in front, 09-26..09-30, openpilot
+# in control throughout; the simulation puts the current code at 78% against 81% in the logs), apex
+# lateral as a share of the comfort curve, median (P25-P75) / bends over it by more than 10% / braking
+# a bend:  0.5 s 78% (72-96) / 2 / 2.5 s;  1.0 s 93% (77-103) / 3 / 2.2 s;  1.5 s 98% / 6;  2.0 s 108%
+# (88-123) / 10 - a sharp bend only grows into the plan late (09-28), so not looking near at all misses
+# it. _V2_J_MAX 0.8 -> 1.0 with 0.5 s did 89% / 3 / 2.4 s. The one bend 1.0 s adds over 110% is taken at
+# the same speed as now (32.6 km/h); the difference is where the simulation puts the apex.
+# Counting the speed the cruise law's hand-back still takes off before letting go was tried alongside
+# and changed nothing measurable.
+_V2_JERK_T_MIN = 1.0        # s
+
 # ---- anticipation (2026-09-28): a sharp corner grows into the plan, so ease off before it is all there.
 # 09-27 16:07, 66 km/h into an 86 m corner: at the apex the controller was at 87% of its request and the
 # wheel at full torque for a second. The model had it 8 s out, but as a bend a fraction as sharp as it was.
@@ -184,14 +200,14 @@ class CurveV2:
       vv = np.sqrt(np.interp(vv * CV.MS_TO_KPH, _V2_LAT_BP, _V2_LAT_V) / kc)
     v_lat = np.where(ks > 1e-4, vv, 99.)
     # speed the steering allows: the plan's lateral jerk where it is actually winding into a corner
-    # (lateral >= 0.4 and rising, from 0.5 s - the first points are 0.01-0.2 m/s^2 and their
-    # differences are noise), scaled to what will be asked on arrival, and that falls with v^3
+    # (lateral >= 0.4 and rising, from _V2_JERK_T_MIN - see there), scaled to what will be asked on
+    # arrival, and that falls with v^3
     alp = vp ** 2 * kk
     dj = np.zeros(33)
     dj[1:] = np.abs(np.diff(alp)) / np.maximum(np.diff(_V2_T_IDX), 0.05)
     rising = np.zeros(33, dtype=bool)
     rising[1:] = alp[1:] > alp[:-1]
-    dj[~((alp >= 0.4) & rising & (_V2_T_IDX >= 0.5))] = 0.
+    dj[~((alp >= 0.4) & rising & (_V2_T_IDX >= _V2_JERK_T_MIN))] = 0.
     j_dem = dj * _V2_J_PLAN_TO_DEMAND
     v_jerk = np.where(j_dem > 0.05, np.maximum(vp, 1.) * (_V2_J_MAX / np.maximum(j_dem, 1e-6)) ** (1 / 3), 99.)
     v_allow = np.maximum(np.minimum(v_lat, v_jerk), V_FLOOR)
