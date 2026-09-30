@@ -30,6 +30,11 @@ ARM_LEAD_STILL = 0.5   # m/s - the lead has to be stopped too; a crawling lead i
 RELEASE_M = 1.0        # m the lead moves away on its own before we go (driver, 2026-09-26)
 LOST_GRACE = 1.0       # s - the radar drops a lead 2.6-2.9 times a minute; do not let go on a blink
 DREL_TAU = 0.3         # s - smooth dRel before differencing; the radar's range on a stopped car jitters
+# ...but smoothing does not survive a jump. 2026-09-29 07:26:31, held 3.9 m behind a car: one frame read
+# 43.7 m (some other return) and the next 3.96 again. Through DREL_TAU that one frame moved the filter
+# 6.6 m, over RELEASE_M, and the hold let go. A car does not cover JUMP_M in a frame (that is 40 m/s),
+# so a reading that far from the filter counts as the lead missing, and only LOST_GRACE of that lets go.
+JUMP_M = 2.0           # m
 
 # Creeping up on it (2026-09-28). should_stop only comes at 0.3 m/s, and this car does not act on the
 # small decelerations the MPC asks for below walking pace: at 17:31:50 it rolled at 1.5-2.1 km/h with
@@ -115,7 +120,7 @@ class StandstillHold:
         self.moved = 0.0
       return self.active
 
-    if radar_lead:
+    if radar_lead and abs(float(lead.dRel) - self.d_filter.x) <= JUMP_M:
       self.lost_t = 0.0
       d = self.d_filter.update(float(lead.dRel))
       self.moved = d + (self.odo - self.ref_odo) - self.ref_d
