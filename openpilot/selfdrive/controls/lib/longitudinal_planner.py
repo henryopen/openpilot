@@ -433,7 +433,8 @@ class LongitudinalPlanner:
     stop_x = self.stop_for_lights.obstacle_x(MPC_STOP_DISTANCE) if self.stop_for_lights.is_active else None
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
-    self.mpc.update(radar, personality=sm['selfdriveState'].personality,
+    # the MPC alone gets the lead with a band round its follow distance - see lead_view GAP_*
+    self.mpc.update(self.lead_view.for_mpc(radar), personality=sm['selfdriveState'].personality,
                     stop_x=stop_x, a_min=STOP_MAX_DECEL if stop_x is not None else ACCEL_MIN)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)

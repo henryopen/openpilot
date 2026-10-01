@@ -68,6 +68,32 @@ RAW_JUMP_M = 2.0   # m
 RAW_GAP_FRAC = 0.9
 RAW_TTC = 3.0      # s
 
+# A band around the gap the MPC keeps, for the MPC only (2026-10-02). The driver on 09-23: driving is not
+# only speeding up and slowing down, there can be stretches that do neither, like a deadzone - do not go up
+# and down with a lead that is going up and down. What went in then (long_deadzone) holds small requests
+# at the output; the MPC behind it still works to the exact follow distance and the lead's every change of
+# speed, so its requests leave that window (+0.35 / -0.45) and the car speeds up and brakes again - 1.22
+# times a minute over 10-01, nearly all behind a lead. So here the MPC is shown the lead with a band taken
+# out: a gap up to GAP_FAR_FRAC (at least GAP_FAR_MIN) longer than its follow distance reads as exactly the
+# follow distance, and beyond it only the excess counts, so nothing steps. The band is on the far side
+# only: what it gives up is acceleration, never braking. None of it when it matters: the lead braking
+# (aLeadK under GAP_A, the raw decel above included), closing to within GAP_TTC, or under GAP_MIN_V.
+# Everything else - the hold behind a stopped car, the junction, the braking urgency - reads the lead as is.
+# Closed loop over 10-01's 164 following windows (82 min), none / 0.4 / 0.6 / 0.8: accelerate-then-brake
+# 0.80 / 0.45 / 0.38 / 0.37 a minute; braking past -1.0 1.66 / 1.33 / 1.18 / 1.13; time neither speeding
+# up nor slowing (|a| < 0.15) 39 / 46 / 47 / 48%; +/- swings 4.0 / 3.1 / 3.0 / 2.8 a minute; following
+# gap median 2.63 / 2.91 / 3.03 / 3.11 s, its P5 1.76 -> 1.81 and the shortest 0.41 s throughout. The 39
+# hard-braking leads: none nearer by more than 0.15 m (08:15:54 2.68 -> 2.71 m); stops 5.68 -> 5.79 m.
+# A band on the lead's speed as well (shown at ours within 0.8-1.0 m/s) cut a little more but a lead
+# closing slowly was then seen too late: shortest gap 0.41 -> 0.00-0.07 s, 08:15:54 to 0.07-1.50 m; a near
+# side of 0.1 took the shortest gap to 0.16 s with 7 of the 39 nearer. Neither is here.
+GAP_BAND = True
+GAP_FAR_FRAC = 0.6
+GAP_FAR_MIN = 4.0      # m
+GAP_TTC = 5.0          # s
+GAP_A = -0.3           # m/s^2
+GAP_MIN_V = 5 / 3.6    # m/s
+
 
 class _Lead:
   def __init__(self, base, **over):
@@ -138,3 +164,25 @@ class LeadView:
 
   def update(self, radar_state):
     return _Radar(radar_state, self._lead("one", radar_state.leadOne), self._lead("two", radar_state.leadTwo))
+
+  @staticmethod
+  def _band(lead):
+    if not GAP_BAND or not lead.present:
+      return lead
+    d = float(lead.dRel)
+    v_lead = float(lead.vLead)
+    v_ego = v_lead - float(lead.vRel)
+    closing = v_ego - v_lead
+    if v_ego < GAP_MIN_V or float(lead.aLeadK) < GAP_A or (closing > 0.1 and d / closing < GAP_TTC):
+      return lead
+    want = get_safe_obstacle_distance(v_ego, get_T_FOLLOW()) - get_stopped_equivalence_factor(v_lead)
+    if want <= 0.:
+      return lead
+    hi = max(GAP_FAR_FRAC * want, GAP_FAR_MIN)
+    if d <= want:
+      return lead
+    return _Lead(lead, dRel=max(want, d - hi))
+
+  def for_mpc(self, radar):
+    """What the MPC is given: the view from update(), with the gap band (GAP_*) taken out."""
+    return _Radar(radar, self._band(radar.leadOne), self._band(radar.leadTwo))
