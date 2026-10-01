@@ -172,6 +172,26 @@ A_CRUISE_MIN = -1.2
 # directions. This only limits the cruise candidate; MPC braking for a lead is unaffected
 # because the candidates are resolved with min().
 J_CRUISE_COMFORT = 0.16
+
+# Braking builds up rather than arriving all at once (2026-10-01). The driver, after 10-01: it brakes hard
+# first and then lighter, and that is what is uncomfortable. Over 10-01, OP's braking for a lead reached
+# its deepest a median 0.90 s in with the first 0.5 s at 0.69 of it (48% of stretches over 0.7, "hard
+# first"); his own braking 1.05 s and 0.59 (33%). The MPC's weights do not move that: in closed loop over
+# 10-01's 164 following windows, X_EGO_OBSTACLE_COST 15/10, J_EGO_COST 10 and A_CHANGE_COST 400 all left
+# hard-first at 48-53%, and every one of them let 09-29 08:15:54 come closer (2.76 m -> 0.21-1.85 m).
+# So the deepening itself is limited to BRAKE_ONSET_J - unless it is urgent: a lead reached within
+# BRAKE_ONSET_TTC, or nearer than BRAKE_ONSET_GAP of the follow distance, a stop committed to, the
+# junction floor, an FCW, or under BRAKE_ONSET_MIN_V. The MPC starts each solve from this output, so
+# what is not taken early it asks for later: light first, firmer after, the way a person brakes.
+# Closed loop over 10-01's 164 following windows, 1.0 / 1.5 / 2.5: hard first 50% -> 43 / 44 / 45%, first
+# 0.5 s at 0.70 -> 0.64 / 0.65 / 0.67 of the deepest, braking past -1.0 1.77 -> 1.73 / 1.67 / 1.66 a
+# minute; the 39 leads braking hard: 08:15:54 stays at 2.76 m, 3 / 2 / 1 of them nearer by more than 0.5 m
+# (all 10 m or more away, at most 1.3 m nearer); stops 5.68 m unchanged. The corner braking has its own
+# build-up in curve_speed (_V2_ONSET_J), which this does not change.
+BRAKE_ONSET_J = 1.5          # m/s^3, 0 = off
+BRAKE_ONSET_TTC = 4.0        # s
+BRAKE_ONSET_GAP = 0.8        # of the follow distance
+BRAKE_ONSET_MIN_V = 10 * CV.KPH_TO_MS
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
 # that swing while leaving any steady-state offset under 1 km/h.
@@ -539,6 +559,16 @@ class LongitudinalPlanner:
     dz_eligible = (self.plan_reason in (PlanReason.cruise, PlanReason.lead)
                    and not self.output_should_stop and not self.junction.active and not reset_state)
     output_a_target = self.deadzone.update(output_a_target, v_ego, dz_eligible)
+
+    # let braking build up - see BRAKE_ONSET_*
+    if BRAKE_ONSET_J > 0. and not reset_state and output_a_target < min(a_prev, 0.0) and v_ego >= BRAKE_ONSET_MIN_V:
+      lead = radar.leadOne
+      closing = v_ego - float(lead.vLead) if lead.present else 0.
+      urgent = (stop_x is not None or self.junction.a_floor < 0. or self.fcw or
+                (lead.present and ((closing > 0.1 and float(lead.dRel) / closing < BRAKE_ONSET_TTC) or
+                                   (self.follow_distance > 0. and float(lead.dRel) < BRAKE_ONSET_GAP * self.follow_distance))))
+      if not urgent:
+        output_a_target = max(output_a_target, min(a_prev, 0.0) - BRAKE_ONSET_J * self.dt)
 
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 

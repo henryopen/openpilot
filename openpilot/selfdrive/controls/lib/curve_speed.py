@@ -138,6 +138,22 @@ _V2_OFF_FLAG = "/data/curve_v2_off"
 # and changed nothing measurable.
 _V2_JERK_T_MIN = 1.0        # s
 
+# ---- braking that builds up, the way a person brakes (2026-10-01). The driver, after 10-01: it brakes
+# hard first and then lighter, and that is what is uncomfortable; it still feels like two things are in
+# control. The command here went from nothing to the full need in one frame: over 10-01 a curve braking
+# stretch reached its deepest a median 0.10 s in, the first 0.5 s at 0.99 of it, against 1.05 s and 0.59
+# for the driver's own braking. So the braking may only deepen at _V2_ONSET_J, starts at _V2_A_START_RAMP
+# instead of _V2_A_START, and the need is worked out with the road the build-up costs taken off (v * T/2,
+# T = D/J). Letting go is unchanged - the cruise law hands it back at its own jerk.
+# Closed loop on the device, 34 bends with nothing in front (09-26..10-01), now -> this: hard first 85%
+# -> 6%, deepest at 0.05 -> 0.90 s, first 0.5 s at 0.99 -> 0.42 of the deepest; apex lateral at 89% ->
+# 86% of the comfort curve and bends over it by >10% 4 -> 2; braking per bend 2.3 -> 2.6 s; changes of
+# what is in control while braking 1.47 -> 1.06 a bend. Without counting the build-up's distance the ramp
+# arrived faster (09-30 17:12 +4.5..7.7 km/h, 6-9 bends over); J 1.0 builds up slower still (deepest at
+# 1.15 s) for the same apex; 2.0 is back to 12% hard-first.
+_V2_ONSET_J = 1.5           # m/s^3; 0 turns the ramp off
+_V2_A_START_RAMP = 0.6      # m/s^2 of needed deceleration before braking, with the ramp on
+
 # ---- anticipation (2026-09-28): a sharp corner grows into the plan, so ease off before it is all there.
 # 09-27 16:07, 66 km/h into an 86 m corner: at the apex the controller was at 87% of its request and the
 # wheel at full torque for a second. The model had it 8 s out, but as a bend a fraction as sharp as it was.
@@ -187,6 +203,7 @@ class CurveV2:
     self.over_t = 0.
     self.brake_t = 0.
     self.v_target = 0.
+    self.a_cmd = 0.
 
   def update(self, x, k, vp, v_ego: float, lat_now: float, k_now: float) -> float:
     """x/k/vp: the plan's distance ahead, curvature and speed at each of its 33 points.
@@ -214,6 +231,11 @@ class CurveV2:
     # the deceleration it takes to be down to that by each point
     d = np.maximum(x - _V2_D_MARGIN_T * v_ego, 0.5 * x)
     need = (v_ego ** 2 - v_allow ** 2) / (2 * np.maximum(d, 2.))
+    if _V2_ONSET_J > 0.:
+      # building up to a deceleration D at _V2_ONSET_J takes D / J seconds at half of it on average, which
+      # costs about v * D / 2J of the distance - so ask as if that much less road were left
+      t_ramp = np.clip(need, 0., _V2_A_MAX_ANT if self.anticipate else _V2_A_MAX) / _V2_ONSET_J
+      need = (v_ego ** 2 - v_allow ** 2) / (2 * np.maximum(d - v_ego * t_ramp / 2., 2.))
     need[x < 2.] = 0.
     a_raw = float(need.max())
     tau = _V2_REQ_TAU_UP if a_raw > self.req_f else _V2_REQ_TAU_DOWN
@@ -229,12 +251,17 @@ class CurveV2:
       self.brake_t += DT_MDL
       self.braking = a_req > _V2_A_STOP or self.brake_t < _V2_MIN_BRAKE
     else:
-      self.over_t = self.over_t + DT_MDL if a_req >= _V2_A_START else 0.
+      a_start = _V2_A_START_RAMP if _V2_ONSET_J > 0. else _V2_A_START
+      self.over_t = self.over_t + DT_MDL if a_req >= a_start else 0.
       self.braking = self.over_t >= _V2_START_HOLD
       self.brake_t = 0.
+      self.a_cmd = 0.
 
     if self.braking:
-      a = -min(a_req, _V2_A_MAX_ANT if self.anticipate else _V2_A_MAX)
+      target = min(a_req, _V2_A_MAX_ANT if self.anticipate else _V2_A_MAX)
+      # deepen at most at _V2_ONSET_J; easing off is not held back
+      self.a_cmd = min(target, self.a_cmd + _V2_ONSET_J * DT_MDL) if _V2_ONSET_J > 0. else target
+      a = -self.a_cmd
     elif a_req > 0.25:
       a = 0.                     # a corner is coming that will need braking: stop gaining speed
     elif lat_now > 0.6 and (tightening or v_ego < _V2_SLOW_TURN_V):
