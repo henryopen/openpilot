@@ -188,9 +188,12 @@ J_CRUISE_COMFORT = 0.16
 # minute; the 39 leads braking hard: 08:15:54 stays at 2.76 m, 3 / 2 / 1 of them nearer by more than 0.5 m
 # (all 10 m or more away, at most 1.3 m nearer); stops 5.68 m unchanged. The corner braking has its own
 # build-up in curve_speed (_V2_ONSET_J), which this does not change.
+# Urgency was then loosened from 4 s / 0.8 to 3 s / 0.7 (same windows): hard first 43% -> 41%, first 0.5 s
+# 0.64 -> 0.62; 08:15:54 2.76 -> 2.68 m and none of the 39 nearer by more than 0.5 m. 2.5 s / 0.6 went to
+# 39% but took 08:15:54 to 1.95 m and 4 of them nearer.
 BRAKE_ONSET_J = 1.5          # m/s^3, 0 = off
-BRAKE_ONSET_TTC = 4.0        # s
-BRAKE_ONSET_GAP = 0.8        # of the follow distance
+BRAKE_ONSET_TTC = 3.0        # s
+BRAKE_ONSET_GAP = 0.7        # of the follow distance
 BRAKE_ONSET_MIN_V = 10 * CV.KPH_TO_MS
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
