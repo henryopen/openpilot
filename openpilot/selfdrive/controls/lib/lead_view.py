@@ -66,6 +66,9 @@ RAW_JUMP_M = 2.0   # m
 # Tighter (0.8, 0.7 of the gap) takes braking past -1.5 from 0.67 to 0.62/0.55 a minute but 08:15:54 to
 # 2.59/2.30 m and up to 1.1 m off 6-7 of the 39; a TTC alone (4 s) changed nothing against without.
 RAW_GAP_FRAC = 0.9
+# RAW_RADAR_ONLY (test): the raw decel only from the radar's own speed, the window restarted when the
+# lead's source changes. False = as before.
+RAW_RADAR_ONLY = False
 RAW_TTC = 3.0      # s
 
 # A band around the gap the MPC keeps, for the MPC only (2026-10-02). The driver on 09-23: driving is not
@@ -121,10 +124,14 @@ class LeadView:
     self.hist = {}
     self.cnt = {}
     self.last_d = {}
+    self.last_src = {}
 
   def _raw_decel(self, key, lead):
     d = float(lead.dRel)
-    if key in self.last_d and abs(d - self.last_d[key]) > RAW_JUMP_M:
+    src = bool(lead.radar)
+    src_changed = RAW_RADAR_ONLY and key in self.last_src and src != self.last_src[key]
+    self.last_src[key] = src
+    if (key in self.last_d and abs(d - self.last_d[key]) > RAW_JUMP_M) or src_changed:
       self.hist[key] = []
       self.cnt[key] = 0
     self.last_d[key] = d
@@ -135,6 +142,8 @@ class LeadView:
       h.pop(0)
     slope = (h[-1] - h[-1 - k]) / RAW_WIN if len(h) > k else 0.
     self.cnt[key] = self.cnt.get(key, 0) + 1 if slope < RAW_THR else 0
+    if RAW_RADAR_ONLY and not src:
+      return 0.
     return slope if self.cnt[key] >= RAW_N else 0.
 
   @staticmethod
@@ -148,7 +157,7 @@ class LeadView:
 
   def _lead(self, key, lead):
     if not lead.present:
-      for s in (self.v_lead, self.hist, self.cnt, self.last_d):
+      for s in (self.v_lead, self.hist, self.cnt, self.last_d, self.last_src):
         s.pop(key, None)
       return lead
     v = float(lead.vLead)

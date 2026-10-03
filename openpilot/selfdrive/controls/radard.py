@@ -72,6 +72,14 @@ LEAD_HOLD_STANDSTILL_SPEED = 0.5  # m/s
 LEAD_HOLD_STANDSTILL_DIST = 10.0  # m
 LEAD_HOLD_STANDSTILL_JUMP = 1.0  # m
 
+# PREF_KEEP (test): remember the radar track leadOne last used for this long while it stays in the
+# radar's list, so one frame falling to vision does not throw the preference away. 0 = off.
+PREF_KEEP_TIME = 0.0   # s
+# PREF_MISS (test): when the remembered track fails even the looser preferred test, keep it anyway for
+# up to this many frames running, as long as it is still laterally where vision's lead is. 0 = off.
+PREF_MISS_FRAMES = 0
+PREF_MISS_DY = 3.0     # m
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -351,6 +359,9 @@ class RadarD:
     self.prev_lead_track_ids = [-1, -1]
     self.lead_hold = LeadHold()
     self.lane_mismatch_frames = 0
+    self.keep_id = -1
+    self.keep_age = 0.
+    self.keep_miss = 0
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -408,9 +419,19 @@ class RadarD:
         else:
           self.lead_prob_filters[i].update(lead_prob)
 
+      pref_one = self.prev_lead_track_ids[0]
+      kept = self.tracks.get(self.keep_id) if self.keep_age < PREF_KEEP_TIME else None
+      if pref_one == -1 and kept is not None:
+        pref_one = self.keep_id
       lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
                           self.lead_prob_filters[0].x, low_speed_override=True,
-                          preferred_track_id=self.prev_lead_track_ids[0])
+                          preferred_track_id=pref_one)
+      if lead_one.get('radar'):
+        self.keep_miss = 0
+      elif (lead_one['present'] and kept is not None and kept.cnt >= 3 and self.keep_miss < PREF_MISS_FRAMES
+            and abs(kept.yRel + leads_v3[0].y[0]) < PREF_MISS_DY):
+        self.keep_miss += 1
+        lead_one = kept.get_RadarState(self.lead_prob_filters[0].x)
       # see LANE_MISMATCH_*: the radar has moved to the next lane and vision's lead is slower
       self.lane_mismatch_frames = self.lane_mismatch_frames + 1 if lane_mismatch(lead_one, leads_v3[0]) else 0
       if self.lane_mismatch_frames >= LANE_MISMATCH_FRAMES:
@@ -421,6 +442,12 @@ class RadarD:
                                           preferred_track_id=self.prev_lead_track_ids[1])
       self.prev_lead_track_ids = [int(self.radar_state.leadOne.radarTrackId),
                                   int(self.radar_state.leadTwo.radarTrackId)]
+      if self.lane_mismatch_frames >= LANE_MISMATCH_FRAMES:
+        self.keep_id, self.keep_age = -1, 0.
+      elif self.prev_lead_track_ids[0] != -1:
+        self.keep_id, self.keep_age = self.prev_lead_track_ids[0], 0.
+      else:
+        self.keep_age += DT_MDL
 
   def publish(self, pm: messaging.PubMaster):
     assert self.radar_state is not None
