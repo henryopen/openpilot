@@ -195,6 +195,11 @@ BRAKE_ONSET_J = 1.5          # m/s^3, 0 = off
 BRAKE_ONSET_TTC = 3.0        # s
 BRAKE_ONSET_GAP = 0.7        # of the follow distance
 BRAKE_ONSET_MIN_V = 10 * CV.KPH_TO_MS
+
+# COAST (test): a lead slower than us that we would reach the follow distance of within COAST_TTC -
+# no throttle, at most hold the speed. 0 = off.
+COAST_TTC = 0.0              # s
+COAST_CLOSING = 0.3          # m/s
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
 # that swing while leaving any steady-state offset under 1 km/h.
@@ -555,6 +560,14 @@ class LongitudinalPlanner:
       self.output_should_stop = True
     else:
       output_a_target = min(output_a_target, self.standstill_hold.launch_cap(v_ego))
+
+    # no throttle towards a lead we are already closing on - see COAST_*
+    if COAST_TTC > 0. and not reset_state and output_a_target > 0. and self.plan_reason in (PlanReason.cruise, PlanReason.lead):
+      lead = radar.leadOne
+      if lead.present:
+        closing = v_ego - float(lead.vLead)
+        if closing > COAST_CLOSING and (float(lead.dRel) - self.follow_distance) / closing < COAST_TTC:
+          output_a_target = 0.
 
     # A steady foot between small corrections - see long_deadzone. Only for what cruise or a
     # lead asked; a corner, a junction, the model's stop or a planned stop go straight through.
