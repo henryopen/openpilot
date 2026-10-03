@@ -158,6 +158,12 @@ A_CRUISE_MAX_VALS_FREE = [0.72, 0.68, 0.78, 0.58, 0.62, 0.68, 0.64, 0.50]
 # opens 79% against 99%. Of the frames each lets through, 85% are cruise-led under the
 # ratio against 72% under 50 m, so less of it is spent raising a ceiling nothing is on.
 FREE_LEAD_MARGIN = 1.2
+# CHASE (test): a lead faster than us by CHASE_DV and no nearer than the follow distance - the ceiling
+# goes up to CHASE_VALS. CHASE_ON False = off.
+CHASE_ON = False
+CHASE_DV = 0.5               # m/s
+CHASE_BP = [0., 5., 10., 15., 20., 25., 40.]
+CHASE_VALS = [0.72, 0.78, 0.85, 0.80, 0.70, 0.64, 0.50]
 # Jerk keeps its own breakpoints. It shares the acceleration curve's in stock, and adding
 # points there would silently make the two arrays different lengths.
 J_CRUISE_BP = [0., 10.0, 25., 40.]
@@ -313,8 +319,10 @@ def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
-                     lead_free=False):
+                     lead_free=False, chase=False):
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego, lead_free)
+  if chase and not e2e:
+    max_accel = max(max_accel, float(np.interp(v_ego, CHASE_BP, CHASE_VALS)))
   # Which of the four things below ended up being the ceiling. The number on its own does
   # not say - the driver asked to see it because a car sitting on its ceiling looks the
   # same whichever one put it there, and the answer decides what to go and change.
@@ -483,7 +491,9 @@ class LongitudinalPlanner:
     self.a_cruise, self.a_cruise_max, self.a_cruise_max_source = get_cruise_accel(
       sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
       self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
-      accel_coast, self.allow_throttle, lead_free)
+      accel_coast, self.allow_throttle, lead_free,
+      chase=(CHASE_ON and lead_one.present and float(lead_one.vLead) > v_ego + CHASE_DV
+             and float(lead_one.dRel) >= self.follow_distance))
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)
