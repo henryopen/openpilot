@@ -190,21 +190,22 @@ class LeadView:
       return lead
     v = float(lead.vLead)
     f = self.v_lead.get(key, v)
-    f = v if (v < f or is_chase(lead)) else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
+    leaving = is_chase(lead)
+    f = v if (v < f or leaving) else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
     self.v_lead[key] = f
     v_ego = v - float(lead.vRel)
     a_raw = self._raw_decel(key, lead)
     if a_raw < 0. and not self._gap_needs_it(lead):
       a_raw = 0.
     a_lead = min(float(lead.aLeadK), 0., a_raw)
-    return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead)
+    return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead, leaving=leaving)
 
   def update(self, radar_state):
     return _Radar(radar_state, self._lead("one", radar_state.leadOne), self._lead("two", radar_state.leadTwo))
 
   @staticmethod
   def _band(lead):
-    if not GAP_BAND or not lead.present or is_chase(lead):
+    if not GAP_BAND or not lead.present or getattr(lead, "leaving", False):
       return lead
     d = float(lead.dRel)
     v_lead = float(lead.vLead)
