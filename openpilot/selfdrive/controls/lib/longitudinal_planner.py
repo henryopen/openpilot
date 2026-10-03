@@ -20,7 +20,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
-from openpilot.selfdrive.controls.lib.lead_view import LeadView
+from openpilot.selfdrive.controls.lib.lead_view import LeadView, is_chase
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
 from openpilot.common.swaglog import cloudlog
@@ -158,6 +158,20 @@ A_CRUISE_MAX_VALS_FREE = [0.72, 0.68, 0.78, 0.58, 0.62, 0.68, 0.64, 0.50]
 # opens 79% against 99%. Of the frames each lets through, 85% are cruise-led under the
 # ratio against 72% under 50 m, so less of it is spent raising a ceiling nothing is on.
 FREE_LEAD_MARGIN = 1.2
+# Going after a lead that is leaving (2026-10-04) - see lead_view CHASE_*. When it is, and we are no nearer
+# than the follow distance, the ceiling rises to CHASE_VALS: about the driver's own P75 when he accelerates
+# (09-23..10-02, 10-18 / 18-27 / 27-36 / 36-50 km/h: 0.71 / 0.74 / 0.86 / 0.77, P90 0.93-1.14), where
+# openpilot's P90 sat at 0.65-0.70 on the ceiling. Unchanged from 0 to 18 km/h, the launch curve.
+# Closed loop over 10-01 / 10-02 following (173 min): with the lead pulling away, our acceleration
+# +0.362 -> +0.422 and the time spent more than 3x the follow distance behind 8.6 -> 6.6 s a minute, mean
+# speed 43.87 -> 44.04 km/h, gap 2.99 -> 2.91 s; accelerate-then-brake 0.29 -> 0.37 a minute (0.40 before
+# COAST_TTC). The 39 leads braking hard: one nearer by 0.5 m, 18:41:25 10.3 -> 8.1 m at 5 km/h; stops
+# 5.79 -> 5.75 m. The ceiling alone (no lead_view change) gave +0.381 - the MPC then held it back.
+CHASE_ON = True
+CHASE_NEED_LEAVING = True
+CHASE_DV = 0.5               # m/s
+CHASE_BP = [0., 5., 10., 15., 20., 25., 40.]
+CHASE_VALS = [0.72, 0.78, 0.85, 0.80, 0.70, 0.64, 0.50]
 # Jerk keeps its own breakpoints. It shares the acceleration curve's in stock, and adding
 # points there would silently make the two arrays different lengths.
 J_CRUISE_BP = [0., 10.0, 25., 40.]
@@ -313,8 +327,10 @@ def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
-                     lead_free=False):
+                     lead_free=False, chase=False):
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego, lead_free)
+  if chase and not e2e:
+    max_accel = max(max_accel, float(np.interp(v_ego, CHASE_BP, CHASE_VALS)))
   # Which of the four things below ended up being the ceiling. The number on its own does
   # not say - the driver asked to see it because a car sitting on its ceiling looks the
   # same whichever one put it there, and the answer decides what to go and change.
@@ -483,7 +499,10 @@ class LongitudinalPlanner:
     self.a_cruise, self.a_cruise_max, self.a_cruise_max_source = get_cruise_accel(
       sm['selfdriveState'].experimentalMode, v_cruise, v_ego,
       self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
-      accel_coast, self.allow_throttle, lead_free)
+      accel_coast, self.allow_throttle, lead_free,
+      chase=(CHASE_ON and lead_one.present and float(lead_one.vLead) > v_ego + CHASE_DV
+             and float(lead_one.dRel) >= self.follow_distance
+             and (not CHASE_NEED_LEAVING or is_chase(sm['radarState'].leadOne))))
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)

@@ -108,6 +108,25 @@ RAW_TTC = 3.0      # s
 # closing slowly was then seen too late: shortest gap 0.41 -> 0.00-0.07 s, 08:15:54 to 0.07-1.50 m; a near
 # side of 0.1 took the shortest gap to 0.16 s with 7 of the 39 nearer. Neither is here.
 GAP_BAND = True
+# A lead that is leaving is followed (2026-10-04). The driver, after 10-02: the car ahead kept speeding up and
+# went a long way off while we dawdled, and the car behind sounded its horn - a person goes after a lead that
+# is fast and pulling away. The two things above that keep the MPC from chasing a lead's every change of pace,
+# RISE_TAU and the gap band, hold it back just as much here: over 09-23..10-02, with the lead pulling away
+# (faster than us, accelerating over 0.4), it did +0.64..+0.80 at 10-80 km/h and the car +0.26..+0.47.
+# So a lead faster than us by CHASE_DV and accelerating (aLeadK over CHASE_A) is taken as leaving: its speed
+# is believed at once and the band is off, and the planner lifts its ceiling (longitudinal_planner CHASE_*).
+# A lead easing a little faster or slower than us is still not chased. Results are with CHASE_* there; the
+# radar-only condition went in after them and can only make chasing rarer.
+CHASE_DV = 1.5         # m/s, 0 = off
+CHASE_A = 0.2          # m/s^2
+
+
+def is_chase(lead):
+  # radar only: vision's speed is too noisy to say a lead is leaving (see RAW_RADAR_ONLY above)
+  if CHASE_DV <= 0. or not lead.present or not lead.radar:
+    return False
+  v_ego = float(lead.vLead) - float(lead.vRel)
+  return float(lead.vLead) > v_ego + CHASE_DV and float(lead.aLeadK) > CHASE_A
 GAP_FAR_FRAC = 0.6
 GAP_FAR_MIN = 4.0      # m
 GAP_TTC = 5.0          # s
@@ -179,21 +198,22 @@ class LeadView:
       return lead
     v = float(lead.vLead)
     f = self.v_lead.get(key, v)
-    f = v if v < f else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
+    leaving = is_chase(lead)
+    f = v if (v < f or leaving) else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
     self.v_lead[key] = f
     v_ego = v - float(lead.vRel)
     a_raw = self._raw_decel(key, lead)
     if a_raw < 0. and not self._gap_needs_it(lead):
       a_raw = 0.
     a_lead = min(float(lead.aLeadK), 0., a_raw)
-    return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead)
+    return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead, leaving=leaving)
 
   def update(self, radar_state):
     return _Radar(radar_state, self._lead("one", radar_state.leadOne), self._lead("two", radar_state.leadTwo))
 
   @staticmethod
   def _band(lead):
-    if not GAP_BAND or not lead.present:
+    if not GAP_BAND or not lead.present or getattr(lead, "leaving", False):
       return lead
     d = float(lead.dRel)
     v_lead = float(lead.vLead)
