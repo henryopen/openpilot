@@ -33,6 +33,7 @@ from openpilot.common.realtime import DT_MDL
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import get_T_FOLLOW, get_safe_obstacle_distance, get_stopped_equivalence_factor
 
 RISE_TAU = 1.0   # s
+RISE_TAU_BRAKING = None   # test: tau while we are braking, None = RISE_TAU
 
 # Seeing the lead brake sooner (2026-09-30). The driver, after two FCWs on 09-29: why can it not brake
 # earlier. Over the 39 leads that braked past -2.5 on 09-26..09-29, counted from when the lead's own
@@ -172,14 +173,15 @@ class LeadView:
     closing = v_ego - v_lead
     return (want > 0. and d < RAW_GAP_FRAC * want) or (closing > 0.1 and d / closing < RAW_TTC)
 
-  def _lead(self, key, lead):
+  def _lead(self, key, lead, braking=False):
     if not lead.present:
       for s in (self.v_lead, self.hist, self.cnt, self.last_d, self.last_src):
         s.pop(key, None)
       return lead
     v = float(lead.vLead)
     f = self.v_lead.get(key, v)
-    f = v if v < f else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
+    tau = RISE_TAU_BRAKING if (braking and RISE_TAU_BRAKING is not None) else RISE_TAU
+    f = v if v < f else f + (v - f) * min(DT_MDL / max(tau, 1e-3), 1.)
     self.v_lead[key] = f
     v_ego = v - float(lead.vRel)
     a_raw = self._raw_decel(key, lead)
@@ -188,8 +190,8 @@ class LeadView:
     a_lead = min(float(lead.aLeadK), 0., a_raw)
     return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead)
 
-  def update(self, radar_state):
-    return _Radar(radar_state, self._lead("one", radar_state.leadOne), self._lead("two", radar_state.leadTwo))
+  def update(self, radar_state, braking=False):
+    return _Radar(radar_state, self._lead("one", radar_state.leadOne, braking), self._lead("two", radar_state.leadTwo, braking))
 
   @staticmethod
   def _band(lead):

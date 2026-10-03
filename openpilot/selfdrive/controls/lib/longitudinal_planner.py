@@ -195,6 +195,13 @@ BRAKE_ONSET_J = 1.5          # m/s^3, 0 = off
 BRAKE_ONSET_TTC = 3.0        # s
 BRAKE_ONSET_GAP = 0.7        # of the follow distance
 BRAKE_ONSET_MIN_V = 10 * CV.KPH_TO_MS
+
+# BRAKE_RELEASE (test): once the braking for a lead is easing and nothing about the lead needs it, ease
+# at least this fast. 0 = off.
+BRAKE_RELEASE_J = 0.0        # m/s^3
+BRAKE_RELEASE_TTC = 8.0      # s
+BRAKE_RELEASE_GAP = 0.85     # of the follow distance
+BRAKE_RELEASE_A_LEAD = -0.3  # m/s^2
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
 # that swing while leaving any steady-state offset under 1 km/h.
@@ -375,7 +382,7 @@ class LongitudinalPlanner:
 
   def update(self, sm):
     # the lead believed slowing at once and pulling away slowly - see lead_view
-    radar = self.lead_view.update(sm['radarState'])
+    radar = self.lead_view.update(sm['radarState'], braking=self.output_a_target < -0.3)
     if len(sm['carControl'].orientationNED) == 3:
       accel_coast = get_coast_accel(sm['carControl'].orientationNED[1])
     else:
@@ -573,6 +580,18 @@ class LongitudinalPlanner:
                                    (self.follow_distance > 0. and float(lead.dRel) < BRAKE_ONSET_GAP * self.follow_distance))))
       if not urgent:
         output_a_target = max(output_a_target, min(a_prev, 0.0) - BRAKE_ONSET_J * self.dt)
+
+    # ease off braking at least BRAKE_RELEASE_J - see BRAKE_RELEASE_*
+    if (BRAKE_RELEASE_J > 0. and not reset_state and a_prev < 0. and a_prev <= output_a_target < min(a_prev + BRAKE_RELEASE_J * self.dt, 0.)
+        and v_ego >= BRAKE_ONSET_MIN_V and self.plan_reason == PlanReason.lead and not self.output_should_stop
+        and stop_x is None and self.junction.a_floor >= 0. and not self.fcw):
+      lead = radar.leadOne
+      closing = v_ego - float(lead.vLead) if lead.present else 0.
+      calm = (lead.present and float(lead.aLeadK) > BRAKE_RELEASE_A_LEAD
+              and (closing < 0.1 or float(lead.dRel) / closing > BRAKE_RELEASE_TTC)
+              and self.follow_distance > 0. and float(lead.dRel) >= BRAKE_RELEASE_GAP * self.follow_distance)
+      if calm:
+        output_a_target = min(a_prev + BRAKE_RELEASE_J * self.dt, 0.)
 
     self.output_a_target = np.clip(output_a_target, ACCEL_MIN, ACCEL_MAX)
 
