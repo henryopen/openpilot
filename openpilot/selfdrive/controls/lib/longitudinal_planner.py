@@ -20,7 +20,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
-from openpilot.selfdrive.controls.lib.lead_view import LeadView
+from openpilot.selfdrive.controls.lib.lead_view import LeadView, is_chase
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
 from openpilot.common.swaglog import cloudlog
@@ -161,6 +161,7 @@ FREE_LEAD_MARGIN = 1.2
 # CHASE (test): a lead faster than us by CHASE_DV and no nearer than the follow distance - the ceiling
 # goes up to CHASE_VALS. CHASE_ON False = off.
 CHASE_ON = False
+CHASE_NEED_LEAVING = False   # test: only when lead_view says the lead is leaving
 CHASE_DV = 0.5               # m/s
 CHASE_BP = [0., 5., 10., 15., 20., 25., 40.]
 CHASE_VALS = [0.72, 0.78, 0.85, 0.80, 0.70, 0.64, 0.50]
@@ -493,7 +494,8 @@ class LongitudinalPlanner:
       self.a_cruise, steer_angle_without_offset, self.CP, self.dt,
       accel_coast, self.allow_throttle, lead_free,
       chase=(CHASE_ON and lead_one.present and float(lead_one.vLead) > v_ego + CHASE_DV
-             and float(lead_one.dRel) >= self.follow_distance))
+             and float(lead_one.dRel) >= self.follow_distance
+             and (not CHASE_NEED_LEAVING or is_chase(sm['radarState'].leadOne))))
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)

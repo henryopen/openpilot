@@ -108,6 +108,17 @@ RAW_TTC = 3.0      # s
 # closing slowly was then seen too late: shortest gap 0.41 -> 0.00-0.07 s, 08:15:54 to 0.07-1.50 m; a near
 # side of 0.1 took the shortest gap to 0.16 s with 7 of the 39 nearer. Neither is here.
 GAP_BAND = True
+# CHASE (test): a lead faster than us by CHASE_DV and accelerating (aLeadK over CHASE_A) is leaving - its
+# speed is believed at once and the band is off. CHASE_DV 0 = off.
+CHASE_DV = 0.0         # m/s
+CHASE_A = 0.2          # m/s^2
+
+
+def is_chase(lead):
+  if CHASE_DV <= 0. or not lead.present:
+    return False
+  v_ego = float(lead.vLead) - float(lead.vRel)
+  return float(lead.vLead) > v_ego + CHASE_DV and float(lead.aLeadK) > CHASE_A
 GAP_FAR_FRAC = 0.6
 GAP_FAR_MIN = 4.0      # m
 GAP_TTC = 5.0          # s
@@ -179,7 +190,7 @@ class LeadView:
       return lead
     v = float(lead.vLead)
     f = self.v_lead.get(key, v)
-    f = v if v < f else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
+    f = v if (v < f or is_chase(lead)) else f + (v - f) * min(DT_MDL / RISE_TAU, 1.)
     self.v_lead[key] = f
     v_ego = v - float(lead.vRel)
     a_raw = self._raw_decel(key, lead)
@@ -193,7 +204,7 @@ class LeadView:
 
   @staticmethod
   def _band(lead):
-    if not GAP_BAND or not lead.present:
+    if not GAP_BAND or not lead.present or is_chase(lead):
       return lead
     d = float(lead.dRel)
     v_lead = float(lead.vLead)
