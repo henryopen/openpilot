@@ -195,6 +195,22 @@ BRAKE_ONSET_J = 1.5          # m/s^3, 0 = off
 BRAKE_ONSET_TTC = 3.0        # s
 BRAKE_ONSET_GAP = 0.7        # of the follow distance
 BRAKE_ONSET_MIN_V = 10 * CV.KPH_TO_MS
+
+# No throttle towards a lead we are already closing on (2026-10-03). The driver: seeing the car ahead is not
+# fast, a person does not press the throttle; as it comes near they press the brake slowly down to the stop;
+# if it is fast and pulls away, they go after it - smooth, not throttle one moment and brake the next. Over
+# 10-01..10-02 (188 min following), accelerating then braking within 2 s came 1.57 times a minute by the
+# car's own acceleration against 1.04 when he drives, and in 42% of them the lead was already slower than
+# us when it sped up. So with a lead slower than us by COAST_CLOSING that we would reach the follow distance
+# of within COAST_TTC, the throttle is not used: at most the speed is held, and the MPC brakes as before
+# when it is needed. A faster lead pulling away is followed as before. Closed loop over 10-01 / 10-02
+# following (82 / 91 min), off / 8 / 15 / 30 s: accelerate-then-brake by the car 0.40 / 0.34 / 0.29 / 0.28
+# a minute, time neither speeding up nor slowing 47.5 -> 48.6% and 49.6 -> 51.8% at 15 s, mean speed
+# 43.88 -> 43.87 km/h, following gap 2.98 -> 2.99 s. The 39 leads braking hard: none nearer by 0.5 m,
+# 08:15:54 2.71 -> 2.51 m; stops unchanged (5.79 m); of 96 hard brakings on 10-01..02, 2 came 0.9-1.4 m
+# nearer, both 12 m or more away. 30 s added one 0.7 m nearer at 7 m for 0.01 a minute less.
+COAST_TTC = 15.0             # s, 0 = off
+COAST_CLOSING = 0.3          # m/s
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
 # that swing while leaving any steady-state offset under 1 km/h.
@@ -555,6 +571,14 @@ class LongitudinalPlanner:
       self.output_should_stop = True
     else:
       output_a_target = min(output_a_target, self.standstill_hold.launch_cap(v_ego))
+
+    # no throttle towards a lead we are already closing on - see COAST_*
+    if COAST_TTC > 0. and not reset_state and output_a_target > 0. and self.plan_reason in (PlanReason.cruise, PlanReason.lead):
+      lead = radar.leadOne
+      if lead.present:
+        closing = v_ego - float(lead.vLead)
+        if closing > COAST_CLOSING and (float(lead.dRel) - self.follow_distance) / closing < COAST_TTC:
+          output_a_target = 0.
 
     # A steady foot between small corrections - see long_deadzone. Only for what cruise or a
     # lead asked; a corner, a junction, the model's stop or a planned stop go straight through.
