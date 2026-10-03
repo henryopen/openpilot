@@ -66,6 +66,26 @@ RAW_JUMP_M = 2.0   # m
 # Tighter (0.8, 0.7 of the gap) takes braking past -1.5 from 0.67 to 0.62/0.55 a minute but 08:15:54 to
 # 2.59/2.30 m and up to 1.1 m off 6-7 of the 39; a TTC alone (4 s) changed nothing against without.
 RAW_GAP_FRAC = 0.9
+
+# ... and only from the radar's own speed (2026-10-03). After 10-02 the hard braking left over was the lead's
+# data jumping: of OP's 34 brakings past -2.0 for a lead that day, 7 had a lead whose speed leapt about while
+# it came from vision (not all of them phantom) - e.g. 09:11:13 at 87 km/h, the radar car at 53 m doing
+# 72 km/h read by vision as 45 m and 60-65, and the planner went to -3.4. Vision's speed is noisy frame to
+# frame, and the difference above turns that noise into a lead braking: over 10-01..10-02, with the window
+# kept to one source and no range jump, it fires 13.7% of the time on a vision lead against 4.0% on radar,
+# and below -3.0 5.30% against 0.42%. So it is taken from the radar alone, and restarted whenever the lead
+# changes source so a radar/vision step is never read as a deceleration; a vision lead keeps aLeadK, the
+# model's own estimate. Closed loop (follow_sim, radard re-run on each log), 10-01 82 min / 10-02 91 min
+# following: braking past -2.0 49 -> 32 / 41 -> 32, past -1.0 1.19 -> 1.11 / 1.47 -> 1.30 a minute,
+# accelerate-then-brake 0.39 -> 0.41 / 0.53 -> 0.48, following gap unchanged (3.02 / 2.96 s median). The
+# brakings past -2.0 those two days with the lead's speed jumping: still past -2.0 in 11 of 27 against 19.
+# Safety: the 39 leads braking hard on 09-26..09-29 and the 50 stops unchanged to the centimetre; of the 96
+# hard brakings on 10-01..10-02, 6 came nearer by 0.6-1.1 m, the nearest 7.7 m at 37 km/h.
+# Tried with it and not taken: remembering the radar track through vision frames (radard's preferred track
+# is forgotten the first frame the lead falls to vision) - radar/vision switches 13.8 -> 21.1 a minute and
+# no fewer hard brakings; and also keeping that track for 0.3 s against vision - switches down to 5.8 but
+# braking past -2.0 for 45 s against 22 over 10-01, the track and vision disagreeing for minutes at a time.
+RAW_RADAR_ONLY = True
 RAW_TTC = 3.0      # s
 
 # A band around the gap the MPC keeps, for the MPC only (2026-10-02). The driver on 09-23: driving is not
@@ -121,10 +141,14 @@ class LeadView:
     self.hist = {}
     self.cnt = {}
     self.last_d = {}
+    self.last_src = {}
 
   def _raw_decel(self, key, lead):
     d = float(lead.dRel)
-    if key in self.last_d and abs(d - self.last_d[key]) > RAW_JUMP_M:
+    src = bool(lead.radar)
+    src_changed = RAW_RADAR_ONLY and key in self.last_src and src != self.last_src[key]
+    self.last_src[key] = src
+    if (key in self.last_d and abs(d - self.last_d[key]) > RAW_JUMP_M) or src_changed:
       self.hist[key] = []
       self.cnt[key] = 0
     self.last_d[key] = d
@@ -135,6 +159,8 @@ class LeadView:
       h.pop(0)
     slope = (h[-1] - h[-1 - k]) / RAW_WIN if len(h) > k else 0.
     self.cnt[key] = self.cnt.get(key, 0) + 1 if slope < RAW_THR else 0
+    if RAW_RADAR_ONLY and not src:
+      return 0.
     return slope if self.cnt[key] >= RAW_N else 0.
 
   @staticmethod
@@ -148,7 +174,7 @@ class LeadView:
 
   def _lead(self, key, lead):
     if not lead.present:
-      for s in (self.v_lead, self.hist, self.cnt, self.last_d):
+      for s in (self.v_lead, self.hist, self.cnt, self.last_d, self.last_src):
         s.pop(key, None)
       return lead
     v = float(lead.vLead)
