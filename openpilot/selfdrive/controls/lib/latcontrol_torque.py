@@ -47,6 +47,28 @@ JERK_GAIN = 0.3
 # and 95% past 120, against 6-12% everywhere else, so straights and ordinary corners are
 # untouched and this is not the 09-15 lower-KP attempt in disguise.
 P_MAX_CONTRIB = 1.0
+
+# On a straight, P at twilsonco's strength (2026-10-04). Over 10-01..10-02 (197 min lateral) the driver took
+# the wheel 3.66 times a minute and 57% of those were on straight road; in 71-78% of them his hand was on the
+# wheel first (60+, under the takeover line) and the controller then pushed back against it - one-sided, about
+# 3.6x its usual straight-road torque, with P the larger part (0.37 against the feedforward's 0.17 at
+# 15-30 km/h). The wheel also hunted by itself on straights, P again (its 1 s variation 3.4x the
+# feedforward's). twilsonco keeps P in torque space with a low-speed curvature term; in our terms that is
+# 1 + LSF(v)^2 / v^2 with LSF [12, 4, 1, 0] at [0, 10, 20, 30] m/s - a third of KP_INTERP at 15-36 km/h.
+# Taken alone it costs corners, where the feedforward still leaves ~10% for P to carry, so it is used only
+# while the request is straight: KP_INTERP above STRAIGHT_KP_BLEND[1] of requested lateral accel, these below
+# STRAIGHT_KP_BLEND[0], linear between. Keyed on the request, not the measurement.
+# Closed loop (real LatControlTorque, the car's torque limits, a steering model fitted to 10-01/02 that
+# reproduces the logs' straight-road torque, P and hand push-back within 15% and corner tracking 0.91-1.01
+# against 0.93-1.01), 225 windows / 75 min, now -> this at 15-30 / 30-50 / 50-80 km/h: pushing back
+# against a resting hand 67.7 / 31.4 / 30.3 -> 33.3 / 22.4 / 24.8 counts, straight-road torque variation
+# 28.3 / 21.6 / 17.1 -> 16.8 / 16.7 / 15.2; corners 0.91 / 0.93 / 0.98 -> 0.90 / 0.93 / 0.98 of the request,
+# big corners 98% unchanged; straight-road 3 s drift (open loop, the plan not re-centring) 0.07 / 0.07 /
+# 0.09 -> 0.10 / 0.10 / 0.11 m. Also dropping the error-keyed friction on straights cut push-back further
+# (27.7 / 18.3 / 21.4) but drifted more (0.10 / 0.12 / 0.14 m); P everywhere at this strength cost corners
+# 0.86 / 0.88 of the request.
+KP_STRAIGHT_INTERP = [126.4, 52.8, 28.0, 11.2, 3.56, 1.64, 1.16, 1.03, 1.0]   # on INTERP_SPEEDS
+STRAIGHT_KP_BLEND = [0.15, 0.4]   # m/s^2 of requested lateral accel: straight -> corner
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -308,6 +330,10 @@ class LatControlTorque(LatControl):
     self.nn2_prev_setpoint = setpoint
 
     current_kp = np.interp(CS.vEgo, INTERP_SPEEDS, KP_INTERP)
+    # see KP_STRAIGHT_INTERP: P at twilsonco's strength while the request is straight
+    w_curve = float(np.interp(abs(setpoint), STRAIGHT_KP_BLEND, [0.0, 1.0]))
+    kp_straight = float(np.interp(CS.vEgo, INTERP_SPEEDS, KP_STRAIGHT_INTERP))
+    p_blend = (kp_straight + w_curve * (current_kp - kp_straight)) / max(current_kp, 1e-3)
     error = setpoint - measurement
 
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
@@ -329,7 +355,7 @@ class LatControlTorque(LatControl):
       pid_log.error = float(error)
 
       freeze_integrator = steer_limited_by_safety or CS.steeringPressed or CS.vEgo < 5
-      p_scale = 1.0
+      p_scale = p_blend
       if self.straight_p:
         road_curvature = max(abs(desired_curvature), abs(measured_curvature))
         straight = 1.0 - float(np.interp(road_curvature, STRAIGHT_CURV_BP, [0.0, 1.0]))
