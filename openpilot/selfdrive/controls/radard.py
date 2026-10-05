@@ -33,6 +33,9 @@ MAX_SAME_OBJECT_DIST_GAP = 50.0  # m
 # 0 of the 2386 of those where the radar alone said the lead was closing.
 MIN_SAME_OBJECT_HEADWAY = 0.6  # s
 MIN_HEADWAY_GATE_SPEED = 4.17  # m/s, 15 km/h
+# VISION_STD_GATE_K (test): the speed and distance tolerances of the match widen to K times vision's own
+# reported uncertainty (lead.vStd / lead.xStd) when that is the larger. 0 = off.
+VISION_STD_GATE_K = 0.0
 
 # radar tracks
 SPEED, ACCEL = 0, 1     # Kalman filter states enum
@@ -196,11 +199,13 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   # median and 10.4 m at p95, while those two events disagreed by 83 and 103 m. A 50 m
   # ceiling turns away 0.80% of matches, and what it turns away falls back to vision, which
   # in both of those was the one telling the truth.
-  same_object = abs(track.vRel + v_ego - lead.v[0]) < 1.5 and abs(track.yRel + lead.y[0]) < 2.0
+  v_tol = max(1.5, VISION_STD_GATE_K * lead.vStd[0])
+  d_tol = VISION_STD_GATE_K * lead.xStd[0]
+  same_object = abs(track.vRel + v_ego - lead.v[0]) < v_tol and abs(track.yRel + lead.y[0]) < 2.0
   same_object = same_object and abs(track.dRel - offset_vision_dist) < MAX_SAME_OBJECT_DIST_GAP
   same_object = same_object and (v_ego <= MIN_HEADWAY_GATE_SPEED
                                  or track.dRel > MIN_SAME_OBJECT_HEADWAY * v_ego)
-  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0]) or same_object
+  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0, d_tol]) or same_object
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
     return track
@@ -218,8 +223,8 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   # still dropped. cnt >= 3 keeps a track that has only just appeared from being preferred.
   preferred = tracks.get(preferred_track_id)
   if preferred is not None and preferred.cnt >= 3:
-    pref_same = abs(preferred.vRel + v_ego - lead.v[0]) < 2.5 and abs(preferred.yRel + lead.y[0]) < 3.0
-    pref_dist = abs(preferred.dRel - offset_vision_dist) < max([(offset_vision_dist)*.12, 4.0]) or pref_same
+    pref_same = abs(preferred.vRel + v_ego - lead.v[0]) < max(2.5, v_tol) and abs(preferred.yRel + lead.y[0]) < 3.0
+    pref_dist = abs(preferred.dRel - offset_vision_dist) < max([(offset_vision_dist)*.12, 4.0, d_tol]) or pref_same
     pref_vel = (abs(preferred.vRel + v_ego - lead.v[0]) < 13) or (v_ego + preferred.vRel > 3)
     if pref_dist and pref_vel:
       return preferred
