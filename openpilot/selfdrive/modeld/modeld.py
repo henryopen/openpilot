@@ -39,6 +39,18 @@ SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
 LAT_SMOOTH_SECONDS = 0.0
 LONG_SMOOTH_SECONDS = 0.3
 MIN_LAT_CONTROL_SPEED = 0.3
+
+# Look further along the plan at junction speeds (2026-10-05). The driver: a 90 degree corner shows in the
+# plan but the wheel does not turn. This model has no action head; the wheel is asked for the plan's mean
+# curvature over the next lat_action_t (~0.5 s), and at 13 km/h a junction needs 300+ degrees of wheel, so
+# the request arrives as the corner does. Over 09-23..10-05's junction turns with openpilot engaged, the
+# driver had the wheel at 150 a median 2.55 s before the car turned, the plan showed the corner 2.18 s
+# before and the request rose 1.33 s before - 0.85 s behind its own plan. Recomputed from the logged plan
+# (matches the logged request to 0.00001 at the median), using only frames before the driver's hands, the
+# request rises before them in 22% of those turns as is, 35% looking 1.0 s further, 45% at 1.5. Only the
+# request read off the plan changes; the model's own action_t input does not.
+LOW_SPEED_LOOKAHEAD_S = 1.0
+LOW_SPEED_LOOKAHEAD_BP = [12. / 3.6, 20. / 3.6]   # m/s: full below, none above
 BIG_MODEL_TIMEOUT = 60
 
 
@@ -50,11 +62,12 @@ def get_action_from_model(model_output: dict[str, np.ndarray], prev_action: log.
                                         plan[:,Plan.ACCELERATION][:,0],
                                         ModelConstants.T_IDXS,
                                         action_t=long_action_t)
+    lat_plan_t = lat_action_t + LOW_SPEED_LOOKAHEAD_S * float(np.interp(v_ego, LOW_SPEED_LOOKAHEAD_BP, [1.0, 0.0]))
     desired_curvature = get_curvature_from_plan(plan[:,Plan.T_FROM_CURRENT_EULER][:,2],
                                                 plan[:,Plan.ORIENTATION_RATE][:,2],
                                                 ModelConstants.T_IDXS,
                                                 v_ego,
-                                                lat_action_t)
+                                                lat_plan_t)
   else:
     desired_accel = model_output['action'][0,1]
     desired_curvature = model_output['action'][0,0] / (max(1.0, v_ego))**2
