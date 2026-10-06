@@ -69,6 +69,21 @@ P_MAX_CONTRIB = 1.0
 # 0.86 / 0.88 of the request.
 KP_STRAIGHT_INTERP = [126.4, 52.8, 28.0, 11.2, 3.56, 1.64, 1.16, 1.03, 1.0]   # on INTERP_SPEEDS
 STRAIGHT_KP_BLEND = [0.15, 0.4]   # m/s^2 of requested lateral accel: straight -> corner
+
+# Friction in corners, keyed on where the request is going (2026-10-06). The driver: can turning in and
+# unwinding not be smoother. With the neural feedforward carrying a corner there was no friction term at all
+# - the network's part leaves get_friction out, and the linear part that has it is blended away - so where
+# the wheel has to start or change direction against the rack's stiction it waits for P. Over 10-01..10-05,
+# turning in and unwinding on its own, openpilot's wheel stalled at least once in 44% / 50% of them against
+# 37% / 34% when the driver turns it. So in a corner (STRAIGHT_KP_BLEND's weight) friction is added in the
+# direction the request is moving - twilsonco's way, not the error's - at CURVE_JERK_FRICTION of the car's
+# coefficient. Closed loop (the steering model of KP_STRAIGHT_INTERP, 36 corners openpilot took alone):
+# stalls turning in 0.68 -> 0.52 a corner (at least one 36 -> 30%), unwinding 0.65 -> 0.56 (29 -> 25%);
+# over 225 ordinary windows corner error at 30-50 / 50-80 km/h 0.051 -> 0.042 / 0.034 -> 0.028, straights
+# and push-back against a resting hand unchanged, big corners 98 -> 97%. Full strength unwound better but
+# turned in no better and erred more past 80 km/h; ungated it shook the wheel on straights (30-50 km/h
+# 8.4 -> 15.5 swings a minute), the request's direction there being noise.
+CURVE_JERK_FRICTION = 0.5
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -380,6 +395,9 @@ class LatControlTorque(LatControl):
         feedback_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=0.0,
                                             freeze_integrator=freeze_integrator, p_scale=p_scale)
         output_torque = ff_torque + self.torque_from_lateral_accel(feedback_lataccel, self.torque_params)
+        # see CURVE_JERK_FRICTION
+        output_torque += CURVE_JERK_FRICTION * w_curve * get_friction(desired_lateral_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD,
+                                                                      self.torque_params) / max(self.torque_params.latAccelFactor, 0.1)
         output_torque = float(np.clip(output_torque, -self.steer_max, self.steer_max))
         output_lataccel = feedback_lataccel
 
