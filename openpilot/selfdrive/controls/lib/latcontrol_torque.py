@@ -84,6 +84,19 @@ STRAIGHT_KP_BLEND = [0.15, 0.4]   # m/s^2 of requested lateral accel: straight -
 # turned in no better and erred more past 80 km/h; ungated it shook the wheel on straights (30-50 km/h
 # 8.4 -> 15.5 swings a minute), the request's direction there being noise.
 CURVE_JERK_FRICTION = 0.5
+
+# In a corner, P and I see the request averaged over the frames either side of the one they track (2026-10-06).
+# The driver: a 30 degree turn goes in as 10, 10, 10, not in one movement. Over 10-01..10-05, turning in on its
+# own, openpilot's wheel went in 2.7 bursts of ~10 degrees (6.6-8.8 past 20 km/h) where the driver's own come
+# in 13-19; past 20 km/h the request moved in 0.6-1.1 bursts a second and the wheel in 1.6-1.9, the torque
+# pulling back 2.5-3 times a second. Band-passed 1.2-6 Hz, P's ripple follows the request's (0.73) as much as
+# the wheel's (0.77), the two the same size: the model's frame-to-frame noise goes through P into the rack. The
+# tracked frame is lat_delay back in the buffer, so the frames after it are already there and the average is
+# centred - no lag added, unlike the 09-24 low-pass on the feedforward, which changed nothing. Closed loop with
+# a steering model that sticks (static over kinetic friction, fitted to 10-01..10-05), 36 corners openpilot took
+# alone: torque ripple turning in 16.4 -> 12.6, bursts 0.84 -> 0.65 a second, torque reversals unwinding 2.28 ->
+# 1.58 a second, corner error unchanged or lower. Gated on STRAIGHT_KP_BLEND's weight, so straights are untouched.
+CURVE_SETPOINT_HALF_S = 0.25
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -231,6 +244,7 @@ class LatControlTorque(LatControl):
     self.nn_v2 = self.nn_model is not None and self.nn_model.input_size == 11
     self.nn2_jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * NN2_JERK_HZ), self.dt)
     self.nn2_prev_setpoint = 0.0
+    self.setpoint_half_frames = int(round(CURVE_SETPOINT_HALF_S / self.dt))
     self.plan = None   # modelV2, handed over by controlsd each frame
     cloudlog.info(f"lateral feedforward: {('neural v2' if self.nn_v2 else 'neural') if self.nn else 'linear'}")
     self.straight_p = not os.path.isfile(STRAIGHT_P_OFF_FLAG)
@@ -349,7 +363,14 @@ class LatControlTorque(LatControl):
     w_curve = float(np.interp(abs(setpoint), STRAIGHT_KP_BLEND, [0.0, 1.0]))
     kp_straight = float(np.interp(CS.vEgo, INTERP_SPEEDS, KP_STRAIGHT_INTERP))
     p_blend = (kp_straight + w_curve * (current_kp - kp_straight)) / max(current_kp, 1e-3)
-    error = setpoint - measurement
+    # see CURVE_SETPOINT_HALF_S
+    half = min(self.setpoint_half_frames, delay_frames - 1)
+    error_setpoint = setpoint
+    if half > 0:
+      buf = self.lat_accel_request_buffer
+      c = len(buf) - delay_frames
+      error_setpoint = float(np.mean([buf[i] for i in range(max(c - half, 0), c + half + 1)]))
+    error = (setpoint + w_curve * (error_setpoint - setpoint)) - measurement
 
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     ff = gravity_adjusted_future_lateral_accel
