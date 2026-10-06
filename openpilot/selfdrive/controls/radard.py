@@ -72,6 +72,27 @@ LEAD_HOLD_STANDSTILL_SPEED = 0.5  # m/s
 LEAD_HOLD_STANDSTILL_DIST = 10.0  # m
 LEAD_HOLD_STANDSTILL_JUMP = 1.0  # m
 
+# Keep the radar track vision has just confirmed (2026-10-06). At night vision's own reported uncertainty
+# grows - on 10-05, 08:13 -> 21:47, xStd 1.3 -> 5.1 m and vStd 1.8 -> 5.6 km/h - and the match above starts
+# turning the radar away: the lead came from radar 96 / 92 / 80 / 62% of the time over the four drives and
+# switched between radar and vision 5.8 / 19.9 / 40.7 / 61.9 times a minute. In those vision frames the
+# radar track was there 81-89% of the time, 0.4-0.9 m from vision's lead sideways, and for 75-87% of them it
+# was the very track matched as the lead within 3 s either side: the same car, vision's range and speed
+# 8-14 m and 10-18 km/h off it. Widening the match on vision's uncertainty instead let other objects in
+# (39 leads braking hard: closest 3.18 -> 1.43 m) and is not used. So the track that was the lead stays the
+# lead for RADAR_KEEP_S while it is the same track, within RADAR_KEEP_DY of vision's lead sideways, and
+# vision does not see something nearer than RADAR_KEEP_NEAR of its range. The driver: radar is there to
+# make vision more precise.
+# Closed loop (radard re-run on each log), 10-05 following, night / day: radar 93.0 -> 97.7% / 97.4 -> 98.1%,
+# switches 19.9 -> 6.6 / 3.9 -> 1.8 a minute, braking past -2.0 22 -> 19 / 24 -> 23, past -1.0 1.27 ->
+# 1.25 / unchanged, accelerate-then-brake 0.56 -> 0.62 / 0.25 -> 0.24. The 39 leads braking hard and 50
+# stops unchanged; of 47 hard brakings on 10-05, 4 nearer by 0.5-5.7 m, the nearest 17.4 m. 5 s brought
+# one to 5.5 m from 11.2 and is not used.
+RADAR_KEEP_S = 2.0
+RADAR_KEEP_DY = 1.0       # m
+RADAR_KEEP_NEAR = 0.7     # vision nearer than this share of the track's range -> believe vision
+RADAR_KEEP_REFRESH = False   # True keeps it as long as the rest holds; measured the same as 2 s
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -351,6 +372,8 @@ class RadarD:
     self.prev_lead_track_ids = [-1, -1]
     self.lead_hold = LeadHold()
     self.lane_mismatch_frames = 0
+    self.keep_id = -1
+    self.keep_age = 1e9
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -411,6 +434,17 @@ class RadarD:
       lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
                           self.lead_prob_filters[0].x, low_speed_override=True,
                           preferred_track_id=self.prev_lead_track_ids[0])
+      # see RADAR_KEEP_*
+      if lead_one.get('radar'):
+        self.keep_id, self.keep_age = int(lead_one['radarTrackId']), 0.
+      else:
+        self.keep_age += DT_MDL
+        trk = self.tracks.get(self.keep_id)
+        if (RADAR_KEEP_S > 0. and lead_one['present'] and trk is not None and trk.cnt >= 3 and self.keep_age < RADAR_KEEP_S
+            and abs(trk.yRel + leads_v3[0].y[0]) < RADAR_KEEP_DY and lead_one['dRel'] >= RADAR_KEEP_NEAR * trk.dRel):
+          lead_one = trk.get_RadarState(self.lead_prob_filters[0].x)
+          if RADAR_KEEP_REFRESH:
+            self.keep_age = 0.
       # see LANE_MISMATCH_*: the radar has moved to the next lane and vision's lead is slower
       self.lane_mismatch_frames = self.lane_mismatch_frames + 1 if lane_mismatch(lead_one, leads_v3[0]) else 0
       if self.lane_mismatch_frames >= LANE_MISMATCH_FRAMES:
