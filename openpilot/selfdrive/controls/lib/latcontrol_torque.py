@@ -96,6 +96,12 @@ CURVE_JERK_FRICTION = 0.5
 # a steering model that sticks (static over kinetic friction, fitted to 10-01..10-05), 36 corners openpilot took
 # alone: torque ripple turning in 16.4 -> 12.6, bursts 0.84 -> 0.65 a second, torque reversals unwinding 2.28 ->
 # 1.58 a second, corner error unchanged or lower. Gated on STRAIGHT_KP_BLEND's weight, so straights are untouched.
+# On the road (10-06, mountain road home) P's 1.2-6 Hz ripple fell 38.8 -> 17.9 counts turning in and 34.3 ->
+# 23.6 unwinding, but the feedforward's rose 9.2 / 6.1 -> 13.7 / 15.8: a winding road's request is twice as
+# rough (9.8-10.4 against 5.0-6.0), and the network and CURVE_JERK_FRICTION took it raw - the friction keyed on
+# a two-frame difference that, unwinding, hovers round zero and flips. So in a corner the network's setpoint and
+# history get the same average, and the friction its slope across the window. Closed loop over 55 corners of
+# that drive: torque reversals 2.58 -> 2.11 a second turning in, 1.99 -> 1.61 unwinding, corner error unchanged.
 CURVE_SETPOINT_HALF_S = 0.25
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
@@ -306,7 +312,7 @@ class LatControlTorque(LatControl):
     except AttributeError:
       return [fallback] * len(NN2_FUTURE_S)
 
-  def _nn2_feedforward(self, lateral_accel, v_ego, setpoint, jerk, delay_frames, roll):
+  def _nn2_feedforward(self, lateral_accel, v_ego, setpoint, jerk, delay_frames, roll, corner_weight=0.0):
     """v2: see NN2_* above. lateral_accel is what the linear part and the blend have always used."""
     linear = self.torque_from_lateral_accel(lateral_accel, self.torque_params)
     blend = float(np.clip((abs(lateral_accel) - NN_BLEND_LO) / (NN_BLEND_HI - NN_BLEND_LO), 0.0, 1.0))
@@ -314,7 +320,13 @@ class LatControlTorque(LatControl):
       return linear
     buf = self.lat_accel_request_buffer
     clip = lambda x: float(np.clip(x, -NN_ACCEL_LIMIT, NN_ACCEL_LIMIT))  # noqa: E731
-    past = [clip(buf[max(len(buf) - delay_frames - int(round(t / self.dt)), 0)]) for t in NN2_PAST_S]
+    half = int(min(self.setpoint_half_frames, delay_frames - 1))
+
+    def past_at(i):
+      # see CURVE_SETPOINT_HALF_S: in a corner the network's history is averaged the same way as its setpoint
+      lo, hi = max(i - half, 0), min(i + half, len(buf) - 1)
+      return buf[i] + corner_weight * (float(np.mean([buf[k] for k in range(lo, hi + 1)])) - buf[i])
+    past = [clip(past_at(max(len(buf) - delay_frames - int(round(t / self.dt)), 0))) for t in NN2_PAST_S]
     future = [clip(x) for x in self._plan_future(setpoint)]
     inputs = [v_ego, clip(setpoint), float(np.clip(jerk, -MAX_LAT_JERK, MAX_LAT_JERK)), roll * ACCELERATION_DUE_TO_GRAVITY] + past + future
     return (1.0 - blend) * linear + blend * -self.nn.evaluate(inputs)
@@ -366,10 +378,15 @@ class LatControlTorque(LatControl):
     # see CURVE_SETPOINT_HALF_S
     half = min(self.setpoint_half_frames, delay_frames - 1)
     error_setpoint = setpoint
+    corner_jerk = desired_lateral_jerk
     if half > 0:
       buf = self.lat_accel_request_buffer
       c = len(buf) - delay_frames
       error_setpoint = float(np.mean([buf[i] for i in range(max(c - half, 0), c + half + 1)]))
+      # the request's slope across the same window, for CURVE_JERK_FRICTION
+      corner_jerk = (float(np.mean([buf[i] for i in range(c + 1, c + half + 1)])) -
+                     float(np.mean([buf[i] for i in range(max(c - half, 0), c)]))) / ((half + 1) * self.dt)
+      corner_jerk = float(np.clip(corner_jerk, -MAX_LAT_JERK, MAX_LAT_JERK))
     error = (setpoint + w_curve * (error_setpoint - setpoint)) - measurement
 
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
@@ -410,14 +427,15 @@ class LatControlTorque(LatControl):
         # so 36% of frames were extrapolation. Feed the network the request, which is physical,
         # and leave the feedback on the linear conversion where any magnitude is meaningful.
         if self.nn_v2:
-          ff_torque = self._nn2_feedforward(ff, CS.vEgo, setpoint, nn2_jerk, delay_frames, params.roll)
+          ff_torque = self._nn2_feedforward(ff, CS.vEgo, setpoint + w_curve * (error_setpoint - setpoint), nn2_jerk, delay_frames,
+                                            params.roll, w_curve)
         else:
           ff_torque = self._nn_feedforward(ff, CS.vEgo, desired_lateral_jerk, future_desired_lateral_accel)
         feedback_lataccel = self.pid.update(pid_log.error, speed=CS.vEgo, feedforward=0.0,
                                             freeze_integrator=freeze_integrator, p_scale=p_scale)
         output_torque = ff_torque + self.torque_from_lateral_accel(feedback_lataccel, self.torque_params)
         # see CURVE_JERK_FRICTION
-        output_torque += CURVE_JERK_FRICTION * w_curve * get_friction(desired_lateral_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD,
+        output_torque += CURVE_JERK_FRICTION * w_curve * get_friction(corner_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD,
                                                                       self.torque_params) / max(self.torque_params.latAccelFactor, 0.1)
         output_torque = float(np.clip(output_torque, -self.steer_max, self.steer_max))
         output_lataccel = feedback_lataccel
