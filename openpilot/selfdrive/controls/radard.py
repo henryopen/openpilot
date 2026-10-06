@@ -72,6 +72,14 @@ LEAD_HOLD_STANDSTILL_SPEED = 0.5  # m/s
 LEAD_HOLD_STANDSTILL_DIST = 10.0  # m
 LEAD_HOLD_STANDSTILL_JUMP = 1.0  # m
 
+# RADAR_KEEP (test): a radar track just confirmed as the lead stays the lead when vision's distance/speed
+# drift off it, while it is the same track, sits within RADAR_KEEP_DY of vision's lead sideways, and vision
+# does not see something much nearer. RADAR_KEEP_S 0 = off; REFRESH keeps it as long as that holds.
+RADAR_KEEP_S = 0.0
+RADAR_KEEP_DY = 1.0       # m
+RADAR_KEEP_NEAR = 0.7     # vision nearer than this share of the track's range -> believe vision
+RADAR_KEEP_REFRESH = False
+
 
 class KalmanParams:
   def __init__(self, dt: float):
@@ -351,6 +359,8 @@ class RadarD:
     self.prev_lead_track_ids = [-1, -1]
     self.lead_hold = LeadHold()
     self.lane_mismatch_frames = 0
+    self.keep_id = -1
+    self.keep_age = 1e9
 
     self.v_ego = 0.0
     self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
@@ -411,6 +421,17 @@ class RadarD:
       lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
                           self.lead_prob_filters[0].x, low_speed_override=True,
                           preferred_track_id=self.prev_lead_track_ids[0])
+      # see RADAR_KEEP_*
+      if lead_one.get('radar'):
+        self.keep_id, self.keep_age = int(lead_one['radarTrackId']), 0.
+      else:
+        self.keep_age += DT_MDL
+        trk = self.tracks.get(self.keep_id)
+        if (RADAR_KEEP_S > 0. and lead_one['present'] and trk is not None and trk.cnt >= 3 and self.keep_age < RADAR_KEEP_S
+            and abs(trk.yRel + leads_v3[0].y[0]) < RADAR_KEEP_DY and lead_one['dRel'] >= RADAR_KEEP_NEAR * trk.dRel):
+          lead_one = trk.get_RadarState(self.lead_prob_filters[0].x)
+          if RADAR_KEEP_REFRESH:
+            self.keep_age = 0.
       # see LANE_MISMATCH_*: the radar has moved to the next lane and vision's lead is slower
       self.lane_mismatch_frames = self.lane_mismatch_frames + 1 if lane_mismatch(lead_one, leads_v3[0]) else 0
       if self.lane_mismatch_frames >= LANE_MISMATCH_FRAMES:
