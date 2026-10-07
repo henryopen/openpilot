@@ -103,6 +103,21 @@ CURVE_JERK_FRICTION = 0.5
 # history get the same average, and the friction its slope across the window. Closed loop over 55 corners of
 # that drive: torque reversals 2.58 -> 2.11 a second turning in, 1.99 -> 1.61 unwinding, corner error unchanged.
 CURVE_SETPOINT_HALF_S = 0.25
+
+# Unwinding, the torque sent is eased along a curve rather than corrected frame by frame (2026-10-07). The driver:
+# coming out of a bend the wheel returns by itself and the hand only holds it back from returning too fast - so
+# holding back should not come in pieces, it should follow a curve, the same as turning in. Over 10-01..10-06
+# openpilot's torque was against the return 51-77% of an unwind, and each change in that hold let the rack jump
+# or stop: 1.4-1.55 bursts a second against the driver's 0.5-0.6, whether the car was speeding up out of the bend
+# or not. So while the request is unwinding (its slope across CURVE_SETPOINT_HALF_S against its sign, full weight
+# by UNWIND_JERK_FULL m/s^3, times the corner weight) the output is blended toward a CURVE_UNWIND_HZ first-order
+# curve of itself. Closed loop over 55 corners of the 10-06 mountain road: unwinding bursts 0.79 -> 0.60 a second,
+# torque reversals 1.61 -> 0.85, ripple 12.3 -> 9.2 counts, turning in 2.11 -> 1.90 reversals; corner error
+# unchanged (0.091 / 0.073 -> 0.093 / 0.070); swinging past centre by over 5 degrees unchanged (15.8%); halfway
+# back 1.53 -> 1.64 s. 0.7 Hz unwound smoother still (0.51) but erred more at 30-50 km/h; halving P while
+# unwinding erred more (0.096 / 0.078) for less.
+CURVE_UNWIND_HZ = 1.0
+UNWIND_JERK_FULL = 0.3      # m/s^3
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -251,6 +266,7 @@ class LatControlTorque(LatControl):
     self.nn2_jerk_filter = FirstOrderFilter(0.0, 1 / (2 * np.pi * NN2_JERK_HZ), self.dt)
     self.nn2_prev_setpoint = 0.0
     self.setpoint_half_frames = int(round(CURVE_SETPOINT_HALF_S / self.dt))
+    self.unwind_torque = None   # see CURVE_UNWIND_HZ
     self.plan = None   # modelV2, handed over by controlsd each frame
     cloudlog.info(f"lateral feedforward: {('neural v2' if self.nn_v2 else 'neural') if self.nn else 'linear'}")
     self.straight_p = not os.path.isfile(STRAIGHT_P_OFF_FLAG)
@@ -388,6 +404,8 @@ class LatControlTorque(LatControl):
                      float(np.mean([buf[i] for i in range(max(c - half, 0), c)]))) / ((half + 1) * self.dt)
       corner_jerk = float(np.clip(corner_jerk, -MAX_LAT_JERK, MAX_LAT_JERK))
     error = (setpoint + w_curve * (error_setpoint - setpoint)) - measurement
+    # see CURVE_UNWIND_HZ: how much the request is unwinding
+    w_unwind = w_curve * float(np.clip(-corner_jerk * np.sign(setpoint) / UNWIND_JERK_FULL, 0., 1.))
 
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     ff = gravity_adjusted_future_lateral_accel
@@ -403,6 +421,7 @@ class LatControlTorque(LatControl):
     if not active:
       output_torque = 0.0
       pid_log.active = False
+      self.unwind_torque = None
     else:
       # do error correction in lateral acceleration space, convert at end to handle non-linear torque responses correctly
       pid_log.error = float(error)
@@ -438,6 +457,11 @@ class LatControlTorque(LatControl):
         output_torque += CURVE_JERK_FRICTION * w_curve * get_friction(corner_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD,
                                                                       self.torque_params) / max(self.torque_params.latAccelFactor, 0.1)
         output_torque = float(np.clip(output_torque, -self.steer_max, self.steer_max))
+        # see CURVE_UNWIND_HZ
+        if self.unwind_torque is None:
+          self.unwind_torque = output_torque
+        self.unwind_torque += (output_torque - self.unwind_torque) * min(self.dt * 2 * np.pi * CURVE_UNWIND_HZ, 1.0)
+        output_torque = output_torque + w_unwind * (self.unwind_torque - output_torque)
         output_lataccel = feedback_lataccel
 
       pid_log.active = True
