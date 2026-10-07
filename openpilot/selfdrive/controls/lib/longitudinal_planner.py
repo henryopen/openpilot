@@ -146,8 +146,22 @@ A_CRUISE_MAX_VALS = [0.72, 0.68,  0.78, 0.48, 0.40, 0.38, 0.34, 0.26]
 # below 18 km/h and still are - the lead being far does not change how the driver pulls away
 # from rest, and 1084 frames of that drive had a lead present while this curve was in charge
 # (median 26 m), so leaving them high would have kept the pull-away everywhere it was felt.
+#
+# 2026-10-07: the driver: with the road clear, the low-speed pick-up should be stronger. Over 10-01..10-06
+# (this curve unchanged since 09-18), nothing within 40 m, body acceleration median / p75 against his own foot:
+#
+#      km/h      openpilot (asked)        him
+#      0-10      0.69 / 1.11 (0.69)    0.48 / 0.75    <- already above him, the 09-18 complaint: leave it
+#     10-18      0.55 / 0.66 (0.74)    0.47 / 0.68
+#     18-27      0.51 / 0.63 (0.71)    0.58 / 0.88
+#     27-36      0.51 / 0.64 (0.62)    0.62 / 0.93
+#     36-45      0.50 / 0.63 (0.58)    0.61 / 0.98
+#
+# The ceiling is the limit there (the request sits on it 86-91% of the time), and from 18 km/h the body gives
+# only 70-85% of what is asked. So 18-72 km/h is lifted for about 0.68 at the body - between his median and
+# his p75 - and 0-10 km/h, where openpilot is already the quicker, does not move.
 #                          0    10km/h  18    36    54    72    90   144
-A_CRUISE_MAX_VALS_FREE = [0.72, 0.68, 0.78, 0.58, 0.62, 0.68, 0.64, 0.50]
+A_CRUISE_MAX_VALS_FREE = [0.72, 0.68, 0.95, 0.80, 0.75, 0.75, 0.64, 0.50]
 # How much more room than the MPC is asking for before the road counts as clear. A fixed
 # distance was considered and measured worse: the MPC's target gap is
 # v^2/(2*COMFORT_BRAKE) - v_lead^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so 50 m
