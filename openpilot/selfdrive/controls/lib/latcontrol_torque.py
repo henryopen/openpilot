@@ -116,8 +116,19 @@ CURVE_SETPOINT_HALF_S = 0.25
 # unchanged (0.091 / 0.073 -> 0.093 / 0.070); swinging past centre by over 5 degrees unchanged (15.8%); halfway
 # back 1.53 -> 1.64 s. 0.7 Hz unwound smoother still (0.51) but erred more at 30-50 km/h; halving P while
 # unwinding erred more (0.096 / 0.078) for less.
+# At junction speeds that weight read as nothing: lateral acceleration is v^2 x curvature, so 50 degrees of wheel
+# at 12 km/h is about 0.2 m/s^2, under STRAIGHT_KP_BLEND, and the unwind barely counted (the same trap the
+# low-speed feedforward fell into on 09-16). It is also read in curvature, STRAIGHT_CURV_BP for the corner and
+# UNWIND_CURV_RATE_FULL for the unwind, and the larger of the two used, so faster corners keep what they had.
+# The driver, unwinding by hand at 8-25 km/h with the MAIN off (72 times since 09-16), holds the wheel back 90% of
+# the time and pushes it 7%; openpilot, at the same speeds and angles, held 49% and pushed 40%, with twice the
+# torque ripple (27.4 against 14.4). Closed loop on 30 of those openpilot turns, with a steering model refitted
+# to both sets (it reproduces openpilot's 52/36% push/hold and 1.27 s to halfway against the logs, with the
+# controller they were driven with): torque reversals unwinding 1.14 -> 0.95 a second, ripple 10.2 -> 9.3,
+# corner error unchanged. Not pushing at all as well cut bursts 0.78 -> 0.66 but erred 6% more at 30-50 km/h.
 CURVE_UNWIND_HZ = 1.0
 UNWIND_JERK_FULL = 0.3      # m/s^3
+UNWIND_CURV_RATE_FULL = 0.004  # 1/m/s
 LAT_ACCEL_REQUEST_BUFFER_SECONDS = 1.0
 VERSION = 1
 
@@ -406,6 +417,9 @@ class LatControlTorque(LatControl):
     error = (setpoint + w_curve * (error_setpoint - setpoint)) - measurement
     # see CURVE_UNWIND_HZ: how much the request is unwinding
     w_unwind = w_curve * float(np.clip(-corner_jerk * np.sign(setpoint) / UNWIND_JERK_FULL, 0., 1.))
+    v_sq = max(CS.vEgo, 1.0) ** 2
+    w_curve_k = float(np.interp(abs(setpoint) / v_sq, STRAIGHT_CURV_BP, [0., 1.]))
+    w_unwind = max(w_unwind, w_curve_k * float(np.clip(-corner_jerk * np.sign(setpoint) / v_sq / UNWIND_CURV_RATE_FULL, 0., 1.)))
 
     gravity_adjusted_future_lateral_accel = future_desired_lateral_accel - roll_compensation
     ff = gravity_adjusted_future_lateral_accel
