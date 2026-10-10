@@ -94,7 +94,10 @@ class FuelTracker:
     burned_real = self.s['litres0'] - gauge_litres
     if burned_pred < 5.0 or burned_real < 5.0:
       return                      # too little burned for the ratio to mean anything
-    ratio = burned_real / burned_pred
+    # what km/L has to be scaled by: burning more than predicted means fewer km per litre. This was
+    # burned_real / burned_pred until 2026-10-11, which scales km/L the wrong way; no fill had been
+    # caught by then, so it never ran.
+    ratio = burned_pred / burned_real
     if not 0.7 < ratio < 1.4:
       return                      # implausible - a bad float reading, not a bias
     old = self.s.get('econ_corr', 1.0)
@@ -189,7 +192,8 @@ class FuelTracker:
     # every frame inside that kilometre - a few hundred writes each time.
     if odometer - self.s.get('saved_odo', -99) >= 1.0:
       self.s['saved_odo'] = odometer
-      self._remember_gauge(now, odometer)
+      if self._start_checked:   # or a start up to a kilometre past the last save overwrites the pre-fill reading
+        self._remember_gauge(now, odometer)
       self._save()
     return {'litres': remaining, 'percent': 100.0 * remaining / TANK_L,
             'source': 'adopted' if self.s.get('adopted') else 'fill',
