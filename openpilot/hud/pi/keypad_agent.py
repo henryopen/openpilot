@@ -80,8 +80,10 @@ def send(host, token, cmd):
       return r.status
   except urllib.error.HTTPError as e:
     return e.code
+  except urllib.error.URLError as e:
+    return f"URLError({e.reason})"
   except Exception as e:
-    return type(e).__name__
+    return f"{type(e).__name__}({e})"
 
 
 def run(dev, token):
@@ -107,10 +109,12 @@ def run(dev, token):
         continue
       if host is None:
         host = car_host()
+      t0 = time.monotonic()
       result = send(host, token, cmd) if host else "no car"
+      took = time.monotonic() - t0
       if result != 200:
         host = car_host()    # it may have moved (DHCP); look again for the next press
-      say(f"{cmd}: {result}")
+      say(f"{cmd}: {result} ({age * 1000:.0f} ms after the press, {took * 1000:.0f} ms to send)")
 
 
 def main():
