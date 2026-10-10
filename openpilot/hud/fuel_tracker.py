@@ -35,12 +35,26 @@ FILL_SETTLE_S = 20.0
 GAUGE_FULL_FRAC = 0.985        # 199/200 counts: at the top the float saturates
 ECONOMY_MIN, ECONOMY_MAX = 3.0, 30.0    # km/L outside this is the cluster saying "unknown"
 
+# A fill with the engine off (2026-10-10: filled to the brim, the display did not reset). The rise above
+# only exists inside one run of this process, and with the ignition off nothing is running at the pump,
+# so the next start just sees a full float with nothing to compare it against. Two ways back:
+#  - the float is pinned at the top while the arithmetic says the tank is clearly short of full. Fuel does
+#    not appear on its own, so that is a fill. After a real fill the float stays pinned for ~15 km
+#    (2026-09-16: 14.7 km), about 1.6 L of arithmetic, so FULL_RESET_SHORT_L is well clear of it.
+#  - for a fill that stops short of the top, the last settled float reading is kept in the state file and
+#    compared on the first settled reading of the next run, if the car has not moved in between. Parked on a
+#    slope the float can sit a few counts off, so this asks for more than FILL_RISE_L.
+FULL_RESET_SHORT_L = 5.0
+PARKED_FILL_RISE_L = 5.0
+PARKED_MAX_KM = 2.0
+
 
 class FuelTracker:
   def __init__(self, path: str = STATE_PATH):
     self.path = path
     self.s = self._load()
     self._gauge_hist: list[tuple[float, float]] = []
+    self._start_checked = False   # see PARKED_FILL_RISE_L
 
   # ---------- persistence ----------
 
@@ -88,6 +102,29 @@ class FuelTracker:
     self.s['econ_corr'] = (old * n + ratio) / (n + 1)
     self.s['econ_n'] = min(n + 1, 10)
 
+  def _fill(self, old_litres, gauge_litres: float, gauge_frac: float, odometer: float) -> None:
+    """A fill happened: old_litres is the float before it, or None when that is not known."""
+    if old_litres is not None:
+      self._learn(old_litres)
+    # at the top the float saturates, so take the tank; otherwise believe it
+    self.s['litres0'] = TANK_L if gauge_frac >= GAUGE_FULL_FRAC else gauge_litres
+    self.s['odo0'] = odometer
+    self.s['remaining'] = self.s['litres0']
+    self.s.pop('adopted', None)   # no longer a guess off the float
+    self._gauge_hist = []
+    self._remember_gauge(None, odometer, gauge_litres)
+    self._save()
+
+  def _remember_gauge(self, now, odometer: float, value: float | None = None) -> None:
+    """Keep the float's settled reading, for the next run to compare against (PARKED_FILL_RISE_L)."""
+    if value is None:
+      vals = sorted(v for t, v in self._gauge_hist if now - t <= 10.0)
+      if not vals:
+        return
+      value = vals[len(vals) // 2]
+    self.s['gauge_last'] = value
+    self.s['gauge_odo'] = odometer
+
   # ---------- main ----------
 
   def update(self, odometer: float, km_per_litre: float, gauge_frac: float,
@@ -107,13 +144,20 @@ class FuelTracker:
       if old is not None and gauge_litres - old >= FILL_RISE_L:
         settled = [v for t, v in self._gauge_hist if now - t <= 5.0]
         if settled and max(settled) - min(settled) < 0.6:      # steady again
-          self._learn(old)
-          # at the top the float saturates, so take the tank; otherwise believe it
-          self.s['litres0'] = TANK_L if gauge_frac >= GAUGE_FULL_FRAC else gauge_litres
-          self.s['odo0'] = odometer
-          self.s.pop('adopted', None)   # no longer a guess off the float
-          self._gauge_hist = []
-          self._save()
+          self._fill(old, gauge_litres, gauge_frac, odometer)
+
+    # --- a fill with the engine off: see FULL_RESET_SHORT_L ---
+    recent = [v for t, v in self._gauge_hist if now - t <= 5.0]
+    steady = (len(recent) > 5 and now - self._gauge_hist[0][0] >= 5.0 and max(recent) - min(recent) < 0.6)
+    if steady and 'odo0' in self.s:
+      if not self._start_checked:
+        self._start_checked = True
+        last, last_odo = self.s.get('gauge_last'), self.s.get('gauge_odo')
+        if (last is not None and last_odo is not None and abs(odometer - last_odo) < PARKED_MAX_KM
+            and gauge_litres - last >= PARKED_FILL_RISE_L):
+          self._fill(last, gauge_litres, gauge_frac, odometer)
+      if gauge_frac >= GAUGE_FULL_FRAC and self.s.get('remaining', self.s['litres0']) < TANK_L - FULL_RESET_SHORT_L:
+        self._fill(None, gauge_litres, gauge_frac, odometer)
 
     # --- no basis yet: adopt the float, so there is something to show ---
     if 'odo0' not in self.s:
@@ -145,6 +189,7 @@ class FuelTracker:
     # every frame inside that kilometre - a few hundred writes each time.
     if odometer - self.s.get('saved_odo', -99) >= 1.0:
       self.s['saved_odo'] = odometer
+      self._remember_gauge(now, odometer)
       self._save()
     return {'litres': remaining, 'percent': 100.0 * remaining / TANK_L,
             'source': 'adopted' if self.s.get('adopted') else 'fill',
