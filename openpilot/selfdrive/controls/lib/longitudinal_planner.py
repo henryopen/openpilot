@@ -194,14 +194,19 @@ J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MIN = -1.2
 # Stopped behind a car that has not moved: standstill_hold.StandstillHold. It replaced the
 # stateless STANDSTILL_CREEP_* gate (09-06, vRel 0.3 -> 0.5 on 09-20) on 2026-09-26 - see there.
-# The keypad's GO (2026-10-11): stopped at a light with nothing ahead, the driver says it is
-# green. Two things hold the car there - stop_for_lights' point, which the accelerator clears,
-# and the junction handoff, which keeps the model's stop in charge for as long as the model
-# plans one, and the model can not tell red from green. A tap of the accelerator ends the
-# first and drives through the second; GO has no foot on the pedal, so it ends the first and
-# keeps the second off for GO_DISTANCE, long enough to be across the junction. If the car has
-# not moved off after GO_WAIT, the press is spent. Not behind a stopped car: there the 1 m rule
-# stays (driver, 2026-10-04 and 2026-10-11). GO_DISTANCE and GO_WAIT are my choice, not measured.
+# The keypad's GO (2026-10-11): the driver says there is nothing to stop for. Stopped at a light
+# with nothing ahead, that it is green; moving, that the model is stopping for nothing - what the
+# CEM override on the distance button did on open251021. Two things stop the car with no lead:
+# stop_for_lights' point, which the accelerator clears, and the junction handoff, which keeps the
+# model's stop in charge for as long as the model plans one, and the model can not tell red from
+# green. A tap of the accelerator ends the first and drives through the second; GO has no foot on
+# the pedal, so it ends the first and keeps the second off for GO_DISTANCE, and from a standstill
+# pulls away on standstill_hold's ramp. Leads and the radar are untouched. If the car has not
+# moved off after GO_WAIT stopped, the press is spent; another press starts it over. Not behind
+# a stopped car: there the 1 m rule stays (driver, 2026-10-04 and 2026-10-11). Unlike open251021,
+# where the override held until the button was pressed again, this runs out by itself, so a
+# forgotten press can not carry through the next red light. GO_DISTANCE and GO_WAIT are my
+# choice, not measured.
 GO_DISTANCE = 50.            # m
 GO_WAIT = 3.0                # s
 # Comfort jerk for tracking the set speed. A plain proportional law on the speed error
@@ -450,10 +455,11 @@ class LongitudinalPlanner:
     # The keypad's GO - see GO_DISTANCE
     for _ in self.keypad.poll():
       cs = sm['carState']
-      if (sm['selfdriveState'].enabled and not sm['selfdriveState'].experimentalMode and v_ego < STOPPED_SPEED
+      if (sm['selfdriveState'].enabled and not sm['selfdriveState'].experimentalMode
           and not cs.brakePressed and not self.standstill_hold.active):
         self.go_left, self.go_wait = GO_DISTANCE, GO_WAIT
-        self.standstill_hold.launch()
+        if v_ego < STOPPED_SPEED:
+          self.standstill_hold.launch()
       else:
         cloudlog.event("keypad go refused", enabled=bool(sm['selfdriveState'].enabled), v_ego=float(v_ego),
                        brake=bool(cs.brakePressed), held_behind_lead=bool(self.standstill_hold.active))
