@@ -17,6 +17,7 @@ here from what master does have, and the page needs no changes:
   GET /health  -> {"ok": true}
 """
 import bisect
+import hmac
 import json
 import os
 import threading
@@ -33,8 +34,10 @@ from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.hud.radar_tracker import TargetTracker, relevant
 from openpilot.hud.fuel_tracker import FuelTracker
+from openpilot.selfdrive import keypad
 
 PORT = 8902
+KEYPAD_TOKEN = "/data/keypad_token"
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
             "longitudinalPlan", "longitudinalPlanSP", "controlsState", "gpsLocationExternal"]
 
@@ -530,6 +533,38 @@ class Handler(BaseHTTPRequestHandler):
       self.send_response(404)
       self.send_header("Content-Length", "0")
       self.end_headers()
+
+  def _status(self, code):
+    self.send_response(code)
+    self.send_header("Content-Length", "0")
+    self.end_headers()
+
+  def do_POST(self):
+    # The keypad on the PiBar - see selfdrive/keypad.py. Anyone on the hotspot can reach this
+    # port, so a command has to carry the token in KEYPAD_TOKEN; without that file it is off.
+    if self.path != "/keypad":
+      return self._status(404)
+    try:
+      length = int(self.headers.get("Content-Length", 0))
+    except ValueError:
+      return self._status(400)
+    if not 0 < length <= 512:
+      return self._status(400)
+    try:
+      body = json.loads(self.rfile.read(length))
+      cmd, token = str(body["cmd"]), str(body["token"])
+    except (ValueError, KeyError, TypeError):
+      return self._status(400)
+    try:
+      with open(KEYPAD_TOKEN) as f:
+        expected = f.read().strip()
+    except OSError:
+      return self._status(403)
+    if not expected or not hmac.compare_digest(token, expected):
+      return self._status(403)
+    if not keypad.post(cmd):
+      return self._status(400)
+    self._json({"ok": True})
 
 
 def main():

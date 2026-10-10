@@ -73,6 +73,10 @@ class StandstillHold:
     self.need_move = True
     self.launch_t = 0.0
 
+  def launch(self) -> None:
+    """Pull away on the same ramp as a release - the keypad's GO, at a light with nothing ahead."""
+    self._release()
+
   def launch_cap(self, v_ego: float) -> float:
     """Ceiling on the accel while pulling away after a release; inf otherwise."""
     if self.launch_t is None:

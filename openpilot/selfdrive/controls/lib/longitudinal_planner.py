@@ -21,8 +21,9 @@ from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
 from openpilot.selfdrive.controls.lib.lead_view import LeadView, is_chase
-from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL
+from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL, STOPPED as STOPPED_SPEED
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
+from openpilot.selfdrive.keypad import KeypadReader
 from openpilot.common.swaglog import cloudlog
 
 # Eco from 18 km/h up, ours below it. open251021's eco curve pulls harder than stock off
@@ -193,6 +194,16 @@ J_CRUISE_VALS = [1.6, 1.2, 0.8, 0.6]
 A_CRUISE_MIN = -1.2
 # Stopped behind a car that has not moved: standstill_hold.StandstillHold. It replaced the
 # stateless STANDSTILL_CREEP_* gate (09-06, vRel 0.3 -> 0.5 on 09-20) on 2026-09-26 - see there.
+# The keypad's GO (2026-10-11): stopped at a light with nothing ahead, the driver says it is
+# green. Two things hold the car there - stop_for_lights' point, which the accelerator clears,
+# and the junction handoff, which keeps the model's stop in charge for as long as the model
+# plans one, and the model can not tell red from green. A tap of the accelerator ends the
+# first and drives through the second; GO has no foot on the pedal, so it ends the first and
+# keeps the second off for GO_DISTANCE, long enough to be across the junction. If the car has
+# not moved off after GO_WAIT, the press is spent. Not behind a stopped car: there the 1 m rule
+# stays (driver, 2026-10-04 and 2026-10-11). GO_DISTANCE and GO_WAIT are my choice, not measured.
+GO_DISTANCE = 50.            # m
+GO_WAIT = 3.0                # s
 # Comfort jerk for tracking the set speed. A plain proportional law on the speed error
 # (gain 1.0) saturates at max_accel or A_CRUISE_MIN for any error over ~1.2 m/s, so it holds
 # full accel or full decel until the last 4 km/h and then drops off abruptly. Shaping the
@@ -407,6 +418,9 @@ class LongitudinalPlanner:
     # writes no deceleration of its own. Measured over the 9/9 route, below.
     self.stop_for_lights = StopForLights()
     self.junction = JunctionHandoff()
+    self.keypad = KeypadReader(("go",))
+    self.go_left = 0.         # m still to cover with the junction handoff off, after a GO
+    self.go_wait = 0.
     self.a_cruise = init_a
     self.a_cruise_max = 0.
     self.a_cruise_max_source = AccelLimit.free
@@ -433,9 +447,29 @@ class LongitudinalPlanner:
     if sm['controlsState'].forceDecel:
       v_cruise = 0.0
 
+    # The keypad's GO - see GO_DISTANCE
+    for _ in self.keypad.poll():
+      cs = sm['carState']
+      if (sm['selfdriveState'].enabled and not sm['selfdriveState'].experimentalMode and v_ego < STOPPED_SPEED
+          and not cs.brakePressed and not self.standstill_hold.active):
+        self.go_left, self.go_wait = GO_DISTANCE, GO_WAIT
+        self.standstill_hold.launch()
+      else:
+        cloudlog.event("keypad go refused", enabled=bool(sm['selfdriveState'].enabled), v_ego=float(v_ego),
+                       brake=bool(cs.brakePressed), held_behind_lead=bool(self.standstill_hold.active))
+    going = self.go_left > 0. and sm['selfdriveState'].enabled
+    if going:
+      self.go_left -= v_ego * DT_MDL
+      if v_ego < STOPPED_SPEED:
+        self.go_wait -= DT_MDL
+        if self.go_wait <= 0.:
+          self.go_left = 0.
+    else:
+      self.go_left = 0.
+
     # Arm the model for the junction rather than braking for it here. In experimental mode
     # the model is already in the mix, so there is nothing to arm.
-    if sm['selfdriveState'].experimentalMode:
+    if sm['selfdriveState'].experimentalMode or going:
       self.junction.reset()
     else:
       self.junction.update(sm['modelV2'], sm['carState'], v_ego, radar.leadOne)
@@ -445,7 +479,7 @@ class LongitudinalPlanner:
     if sm['selfdriveState'].experimentalMode or not sm['selfdriveState'].enabled:
       self.stop_for_lights.reset()
     else:
-      self.stop_for_lights.update(sm['modelV2'], v_ego, v_cruise, sm['carState'].gasPressed,
+      self.stop_for_lights.update(sm['modelV2'], v_ego, v_cruise, sm['carState'].gasPressed or going,
                                   radar.leadOne)
 
     long_control_off = sm['controlsState'].longControlState == LongCtrlState.off

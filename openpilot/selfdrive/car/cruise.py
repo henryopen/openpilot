@@ -182,6 +182,21 @@ class VCruiseHelper:
         self.button_timers[b.type.raw] = 1 if b.pressed else 0
         self.button_change_states[b.type.raw] = {"standstill": CS.cruiseState.standstill, "enabled": enabled}
 
+  def keypad_step(self, CS, enabled, sign: int) -> None:
+    """The keypad's -10/+10: what a short press of the wheel's buttons does, without the
+    button. Not through buttonEvents - a press there while disengaged also asks to engage."""
+    if not enabled or self.CP.pcmCruise or not self.v_cruise_initialized:
+      return
+    button_type = ButtonType.accelCruise if sign > 0 else ButtonType.decelCruise
+    if self.v_cruise_kph % 10 != 0:
+      self.v_cruise_kph = CRUISE_NEAREST_FUNC[button_type](self.v_cruise_kph / 10) * 10
+    else:
+      self.v_cruise_kph += 10 * sign
+    if CS.gasPressed and sign < 0:
+      self.v_cruise_kph = max(self.v_cruise_kph, CS.vEgo * CV.MS_TO_KPH)
+    self.v_cruise_kph = np.clip(round(self.v_cruise_kph, 1), V_CRUISE_MIN, V_CRUISE_MAX)
+    self.v_cruise_cluster_kph = self.v_cruise_kph
+
   def initialize_v_cruise(self, CS, experimental_mode: bool) -> None:
     # initializing is handled by the PCM
     if self.CP.pcmCruise:

@@ -20,6 +20,7 @@ from opendbc.car.car_helpers import get_car, interfaces
 from opendbc.car.interfaces import CarInterfaceBase, RadarInterfaceBase
 from openpilot.selfdrive.pandad import can_capnp_to_list, can_list_to_can_capnp
 from openpilot.selfdrive.car.cruise import VCruiseHelper
+from openpilot.selfdrive.keypad import KeypadReader
 
 # keep in sync with ALT_EXP_ALWAYS_ON_LATERAL in opendbc/safety/declarations.h
 ALT_EXP_ALWAYS_ON_LATERAL = 32
@@ -165,6 +166,7 @@ class Car:
     self.params.put("CarParamsPersistent", cp_bytes)
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
+    self.keypad = KeypadReader(("main_on", "main_off", "speed_up", "speed_down"))
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
@@ -177,6 +179,14 @@ class Car:
 
     can_strs = messaging.drain_sock_raw(self.can_sock, wait_for_one=True)
     can_list = can_capnp_to_list(can_strs)
+
+    # The keypad's MAIN sets what the wheel's MAIN toggles, ahead of the update that reads it,
+    # so the car's veto over it (TCS13.ACCEnable) still applies. On and off are separate keys
+    # rather than a toggle, so a press that arrives twice cannot flip it back.
+    keypad_cmds = self.keypad.poll()
+    for cmd in keypad_cmds:
+      if cmd in ("main_on", "main_off") and hasattr(self.CI.CS, "main_cruise_enabled"):
+        self.CI.CS.main_cruise_enabled = cmd == "main_on"
 
     # Update carState from CAN
     CS = self.CI.update(can_list)
@@ -196,6 +206,9 @@ class Car:
       self.can_log_mono_time = messaging.log_from_bytes(can_strs[0]).logMonoTime
 
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric)
+    for cmd in keypad_cmds:
+      if cmd in ("speed_up", "speed_down"):
+        self.v_cruise_helper.keypad_step(CS, self.sm['carControl'].enabled, +1 if cmd == "speed_up" else -1)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Use CarState w/ buttons from the step selfdrived enables on
       self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode)

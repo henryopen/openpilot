@@ -5,6 +5,8 @@ from opendbc.car.car_helpers import interfaces
 from opendbc.car.interfaces import MAX_CTRL_SPEED
 from opendbc.car.toyota.values import ToyotaFlags
 
+from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.keypad import KeypadReader
 from openpilot.selfdrive.selfdrived.events import Events
 
 ButtonType = structs.CarState.ButtonEvent.Type
@@ -23,6 +25,7 @@ class CarEvents:
     self.silent_steer_warning = True
     self.cancel_pressed_while_enabled = False
     self.panda_allowed = False
+    self.keypad = KeypadReader(("engage", "disengage"))
 
   def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl, panda_allowed: bool = False):
     if self.CP.brand in ('body', 'mock'):
@@ -187,6 +190,22 @@ class CarEvents:
             events.add(EventName.buttonCancel)
         elif not self.cancel_pressed_while_enabled:
           events.add(EventName.buttonEnable)
+
+    # The keypad on the PiBar (selfdrive/keypad.py). Disengaging is openpilot's own business and
+    # always works; the panda keeps its authorisation, as it does when MAIN goes off. Engaging is
+    # only bringing openpilot back to where the panda already allows control - the panda can not
+    # see the keypad, so it can not be what authorises it, and engaging past the panda would just
+    # be a controlsMismatch. So after the brake at a stop or the wheel's middle button, it is RES
+    # or the accelerator again.
+    for cmd in self.keypad.poll():
+      if cmd == "disengage" and CC.enabled:
+        events.add(EventName.buttonCancel)
+      elif cmd == "engage" and not CC.enabled:
+        if self.panda_allowed and CS.cruiseState.available and CS.gearShifter == GearShifter.drive and not CS.brakePressed:
+          events.add(EventName.buttonEnable)
+        else:
+          cloudlog.event("keypad engage refused", panda_allowed=self.panda_allowed, main=bool(CS.cruiseState.available),
+                         gear=str(CS.gearShifter), brake=bool(CS.brakePressed))
 
     # Handle permanent and temporary steering faults
     self.steering_unpressed = 0 if CS.steeringPressed else self.steering_unpressed + 1
