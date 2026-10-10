@@ -4,7 +4,8 @@
   ssh comma@<car> 'source /usr/local/venv/bin/activate && cd /data/openpilot && \
     python openpilot/yolo/analysis/verify_keypad.py <route> [--segments 3,4,5]'
 
-1. GO in the planner. At every stop where stop_for_lights or the junction handoff is holding
+1. GO in the planner. On the way into every stop the planner makes with no lead, above walking
+   pace, a GO is injected: both stopping layers have to let go. At every stop where stop_for_lights or the junction handoff is holding
    the car with no lead, a GO is injected 2 s into the stop: both have to let go, and the accel
    has to come up on standstill_hold's launch ramp. At every stop behind a held lead it has to
    be refused (and then nothing changes). The whole replay must run without an exception, and with nothing injected the
@@ -34,6 +35,7 @@ from openpilot.tools.lib.logreader import LogReader
 NEEDED = ('carControl', 'carState', 'controlsState', 'vehicleParameters', 'radarState',
           'modelV2', 'selfdriveState')
 INJECT_AFTER = 2.0     # s into a stop
+MOVING = 3.0           # m/s - a GO on the way into a stop, above walking pace
 
 
 def take(pending):
@@ -59,6 +61,7 @@ def check_planner(paths, cp):
   first_error = None
   stopped_for = 0.
   injected = False
+  moving_injected = False
   watch = None
   results = []
   for rl in rlogs(paths):
@@ -75,12 +78,21 @@ def check_planner(paths, cp):
         injected = False
       held_light = planner.stop_for_lights.is_active or planner.junction.active
       held_lead = planner.standstill_hold.active
-      if not injected and stopped_for >= INJECT_AFTER and (held_light or held_lead) \
+      if not held_light:
+        moving_injected = False
+      if watch is None and not injected and stopped_for >= INJECT_AFTER and (held_light or held_lead) \
          and not sm['carState'].brakePressed:
         pending.append('go')
         injected = True
         watch = {'kind': 'lead' if held_lead else 'light', 't': 0., 'a': [], 'sfl': [], 'junction': [],
                  'accepted': None}
+      elif watch is None and not moving_injected and enabled and v > MOVING and held_light and not held_lead \
+           and not sm['carState'].brakePressed:
+        # moving, and the model or the light logic has started stopping us with nothing ahead
+        pending.append('go')
+        moving_injected = True
+        watch = {'kind': 'moving', 't': 0., 'a': [], 'sfl': [], 'junction': [], 'accepted': None,
+                 'v': v, 'a_before': float(planner.output_a_target)}
       try:
         planner.update(sm)
         frames += 1
@@ -123,6 +135,14 @@ def check_planner(paths, cp):
     good = not r['accepted']
     ok &= good
     print(f"  {'PASS' if good else 'FAIL'} refused {not r['accepted']}  max a_target {max(r['a']):.2f}")
+  moving = [r for r in results if r['kind'] == 'moving']
+  print(f'slowing for a stop with nothing ahead, GO injected while moving: {len(moving)}')
+  for r in moving:
+    released = not any(r['sfl']) and not any(r['junction'][:int(GO_WAIT / DT_MDL) - 2])
+    good = r['accepted'] and released
+    ok &= good
+    print(f"  {'PASS' if good else 'FAIL'} at {r['v'] * 3.6:4.1f} kph  accepted {r['accepted']}  released {released}  " +
+          f"a_target before {r['a_before']:.2f}  after 1 s {r['a'][int(1.0 / DT_MDL)]:.2f}")
   if not light:
     print('  (no light stop in these segments - pick others)')
     ok = False
