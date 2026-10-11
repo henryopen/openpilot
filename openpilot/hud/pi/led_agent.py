@@ -126,9 +126,10 @@ class ManualKeys:
       return
     if not isinstance(m, dict) or m.get("seq") == self.seq:
       return
-    first = self.seq is None
     self.seq = m.get("seq")
-    if not first and now - float(m.get("t", 0.0)) <= self.MAX_AGE:
+    # 舊的（led_agent 重啟前留下的）靠 MAX_AGE 擋；別用「啟動後第一筆不算」——檔案還沒出現過時，
+    # 那會把啟動後的第一次按鍵吃掉（10/11 端到端測試抓到）
+    if now - float(m.get("t", 0.0)) <= self.MAX_AGE:
       director.manual_press(m.get("key"), now)
       say(f"manual {m.get('key')} -> {director.manual or 'off'}")
 
