@@ -22,6 +22,8 @@ import glob
 import json
 import os
 import struct
+import select
+import subprocess
 import sys
 import time
 import urllib.error
@@ -36,6 +38,11 @@ CAR_PORT = 8902
 TOKEN_FILE = os.path.expanduser("~/.keypad_token")
 MAX_AGE = 0.5          # s
 SEND_TIMEOUT = 0.5     # s
+# 鍵盤狀態給 HUD：閒置約 20 分鐘鍵盤會睡（藍牙斷線、裝置消失，10/11 實測 01:42→02:01），
+# 駕駛要知道下一下按鍵只會叫醒它。寫在 RAM，~/hud 放一個 symlink 讓 HUD 同源讀得到。
+STATE_FILE = "/dev/shm/keypad_state.json"
+STATE_LINK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "keypad_state.json")
+BATTERY_EVERY = 60.0   # s
 
 EV_KEY = 1
 EVENT = struct.Struct("llHHi")   # struct input_event on aarch64: timeval, type, code, value
@@ -117,14 +124,53 @@ def led_manual(key):
   os.replace(tmp, MANUAL_FILE)
 
 
+def write_state(connected, battery=None):
+  try:
+    if not (os.path.islink(STATE_LINK) and os.readlink(STATE_LINK) == STATE_FILE):
+      if os.path.lexists(STATE_LINK):
+        os.remove(STATE_LINK)
+      os.symlink(STATE_FILE, STATE_LINK)
+    tmp = STATE_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+      json.dump({"connected": connected, "battery": battery}, f)
+    os.replace(tmp, STATE_FILE)
+  except OSError as e:
+    say(f"state: {e}")
+
+
+def battery(dev):
+  """藍牙回報的電量（%），讀不到就 None。MAC 從輸入裝置的 uniq 拿（藍牙 HID 填的就是 MAC）。"""
+  try:
+    with open(f"/sys/class/input/{os.path.basename(dev)}/device/uniq") as f:
+      mac = f.read().strip()
+    out = subprocess.run(["bluetoothctl", "info", mac], capture_output=True, text=True, timeout=5).stdout
+  except (OSError, subprocess.SubprocessError):
+    return None
+  for line in out.splitlines():
+    if "Battery Percentage" in line and "(" in line:
+      try:
+        return int(line.rsplit("(", 1)[1].rstrip(")").strip())
+      except ValueError:
+        return None
+  return None
+
+
 def run(dev, token):
   host = car_host()
   with open(dev, "rb", buffering=0) as f:
     fcntl.ioctl(f, EVIOCGRAB, 1)
     # stamp the events on the monotonic clock: the Pi has no RTC and its wall clock jumps
     fcntl.ioctl(f, EVIOCSCLOCKID, struct.pack("i", CLOCK_MONOTONIC))
-    say(f"keypad on {dev}, car {host or '-'}")
+    bat = battery(dev)
+    write_state(True, bat)
+    bat_next = time.monotonic() + BATTERY_EVERY
+    say(f"keypad on {dev}, car {host or '-'}, battery {bat}")
     while True:
+      if not select.select([f], [], [], max(0.0, bat_next - time.monotonic()))[0]:
+        bat = battery(dev)
+        write_state(True, bat)
+        bat_next = time.monotonic() + BATTERY_EVERY
+        continue
       data = f.read(EVENT.size)
       if len(data) < EVENT.size:
         raise OSError("short read")
@@ -166,6 +212,7 @@ def main():
     if dev is None:
       if not said_missing:
         say("keypad not connected")
+        write_state(False)
         said_missing = True
       time.sleep(1)
       continue

@@ -75,6 +75,10 @@
   .chip.lead{color:var(--green);border-color:rgba(47,212,90,.55);background:rgba(47,212,90,.13)}
   .chip.e2e{color:#fff;background:var(--amber);border-color:var(--amber)}
   .chip.wait{color:var(--amber);border-color:var(--amber)}
+  /* 藍牙鍵盤（keypad_agent）：連著＝淡青、睡著／斷線＝琥珀虛線（下一下按鍵只會叫醒它）、電量低＝琥珀 */
+  .chip.kbd{color:#7fb8c8;border-color:rgba(34,205,242,.3);font-size:15px}
+  .chip.kbd.sleep{color:var(--amber);border:1px dashed var(--amber)}
+  .chip.kbd.low{color:var(--amber);border-color:var(--amber)}
 
   /* 路口交接（junction_handoff 武裝）。
      2026-09-15 把 openpilot 的實驗模式圖示拿掉了。它原本擺在這裡是因為這個功能做的是
@@ -261,6 +265,7 @@
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
+    <span class="chip kbd" id="cKey" style="display:none">鍵盤</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1515,6 +1520,27 @@ if(new URLSearchParams(location.search).has('play')){
     setInterval(tick, 50);   // 20Hz 餵幀；rAF 平滑器負責畫
   }).catch(e=>{ console.error('playback',e); window.__hudErr&&window.__hudErr('PLAYBACK '+(e&&e.message||e)); });
 }
+// ---- 藍牙鍵盤狀態（Pi 本機 keypad_agent 寫的 /keypad_state.json，同源）。讀不到＝沒在跑，收起來。
+(()=>{
+  const el=document.getElementById('cKey');
+  async function poll(){
+    try{
+      const r=await fetch('/keypad_state.json',{cache:'no-store'});
+      if(!r.ok) throw new Error(r.status);
+      const s=await r.json();
+      const bat = typeof s.battery==='number' ? s.battery : null;
+      if(s.connected){
+        el.textContent = '鍵盤' + (bat!==null ? ` ${bat}%` : '');
+        el.classList.remove('sleep'); el.classList.toggle('low', bat!==null && bat<=20);
+      }else{
+        el.textContent = '鍵盤睡著・按 8 叫醒';
+        el.classList.add('sleep'); el.classList.remove('low');
+      }
+      el.style.display='';
+    }catch(e){ el.style.display='none'; }
+  }
+  poll(); setInterval(poll, 2000);
+})();
 // ---- 後窗 LED 鏡像（Pi 本機 led_agent 寫的 /led_now.png，同源）。讀不到三次就收起來。
 (()=>{
   const img=document.getElementById('ledMir'), tag=document.getElementById('ledTag');
