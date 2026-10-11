@@ -398,6 +398,10 @@ class Director:
     held = now - self.pending_since
     shown = now - self.cur_since
     min_show = min(MAX_SHOW, max(MIN_SHOW, PAGE_SECS * len(self.cur.pages)))
+    if self.cur.key == "limit_changed":
+      # 使用者定 5 秒（10/11 再提：只看得到 2 秒）。原本 5 秒從速限一變就開始算、上屏後又只受 MIN_SHOW 保護，
+      # 9/24-10/10 led.log 80 次裡 27 次 ≤2 秒就被跟車／加速畫面換掉。上屏後 5 秒內只讓更嚴重的畫面插隊。
+      min_show = LIMIT_CHANGED_HOLD
     if want.key in URGENT or (self.cur.key, want.key) in FLOW:
       self._switch(want, now)
     elif want.sev > self.cur.sev:
@@ -410,3 +414,5 @@ class Director:
   def _switch(self, s, now):
     self.cur, self.cur_since = s, now
     self.pending_key = None
+    if s.key == "limit_changed":
+      self.limit_changed_until = now + LIMIT_CHANGED_HOLD   # 從上屏那一刻起算，不是從速限變的那一刻
