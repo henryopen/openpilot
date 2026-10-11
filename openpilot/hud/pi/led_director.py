@@ -339,12 +339,15 @@ class Director:
         why = "decel" if not self.close else ("near" if r < CLOSE_OUT else "closing")
         return Screen("lead_slow", {"dRel": d_rel, "why": why})
       self.far = r > FAR_IN or (self.far and r > FAR_OUT)
+      # 跟車中速限變了也要講（使用者 10/11）：原本跟車畫面先回傳，速限變更在跟車時一次都輪不到
+      if now < self.limit_changed_until:
+        return Screen("limit_changed", {"limit": self.limit_changed_to})
       if self.far and self.accel and v_rel > PULLING_AWAY:
         return Screen("catch_up", {"lead_kph": dash_kph(v_lead)})
       return Screen("follow", {"dRel": d_rel, "lead_kph": dash_kph(v_lead)})
     self.far = False
     # 前車拉開到跟車距離外、我們在追
-    if self.lead_shown and r < CATCH_UP_MAX and self.accel and v_rel >= 0:
+    if self.lead_shown and r < CATCH_UP_MAX and self.accel and v_rel >= 0 and now >= self.limit_changed_until:
       return Screen("catch_up", {"lead_kph": dash_kph(v_lead)})
 
     # ---- 沒前車（在跟車距離內）
