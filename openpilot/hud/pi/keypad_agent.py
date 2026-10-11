@@ -43,6 +43,7 @@ SEND_TIMEOUT = 0.5     # s
 STATE_FILE = "/dev/shm/keypad_state.json"
 STATE_LINK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "keypad_state.json")
 BATTERY_EVERY = 60.0   # s
+BATTERY_RETRY = 5.0    # s
 
 EV_KEY = 1
 EVENT = struct.Struct("llHHi")   # struct input_event on aarch64: timeval, type, code, value
@@ -163,13 +164,14 @@ def run(dev, token):
     fcntl.ioctl(f, EVIOCSCLOCKID, struct.pack("i", CLOCK_MONOTONIC))
     bat = battery(dev)
     write_state(True, bat)
-    bat_next = time.monotonic() + BATTERY_EVERY
+    # 剛連上時藍牙還沒讀到電量（10/11 實測連上那一刻 None、一分鐘後 100），讀不到就 5 秒後再試
+    bat_next = time.monotonic() + (BATTERY_EVERY if bat is not None else BATTERY_RETRY)
     say(f"keypad on {dev}, car {host or '-'}, battery {bat}")
     while True:
       if not select.select([f], [], [], max(0.0, bat_next - time.monotonic()))[0]:
         bat = battery(dev)
         write_state(True, bat)
-        bat_next = time.monotonic() + BATTERY_EVERY
+        bat_next = time.monotonic() + (BATTERY_EVERY if bat is not None else BATTERY_RETRY)
         continue
       data = f.read(EVENT.size)
       if len(data) < EVENT.size:
