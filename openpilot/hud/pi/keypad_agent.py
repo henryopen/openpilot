@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from led_director import MANUAL_FILE
 
 DEVICE_NAME = "COIDEA KM Keyboard"
+KEYPAD_MAC = "d0:54:7b:63:c7:7d"   # paired 10/11; find_device goes by this
 HOST_JSON = "http://127.0.0.1:8080/host.json"
 CAR_PORT = 8902
 TOKEN_FILE = os.path.expanduser("~/.keypad_token")
@@ -79,13 +80,21 @@ def say(msg):
 
 
 def find_device():
+  """The keypad's keyboard node. By its Bluetooth address, not its name: the name it reports
+  changes - 'COIDEA KM' when first paired, 'REMOTER' once BlueZ has its real name (10/11: after
+  the Pi rebooted in the car the node was 'REMOTER Keyboard' and the exact-name match never found
+  it, so no key was read at all). Its Consumer Control and Mouse nodes share the address."""
   for path in sorted(glob.glob("/sys/class/input/event*/device/name")):
+    base = os.path.dirname(path)
     try:
       with open(path) as f:
-        if f.read().strip() == DEVICE_NAME:
-          return "/dev/input/" + path.split("/")[4]
+        name = f.read().strip()
+      with open(os.path.join(base, "uniq")) as f:
+        uniq = f.read().strip().lower()
     except OSError:
       continue
+    if (uniq == KEYPAD_MAC and name.endswith(" Keyboard")) or name == DEVICE_NAME:
+      return "/dev/input/" + path.split("/")[4]
   return None
 
 

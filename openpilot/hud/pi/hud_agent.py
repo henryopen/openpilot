@@ -379,7 +379,18 @@ class Handler(SimpleHTTPRequestHandler):
       self.end_headers()
       self.wfile.write(body)
     else:
+      self._static = True
       super().do_GET()
+
+  def end_headers(self):
+    # Static files (dash.html and friends) went out with Last-Modified only, so chromium kept serving
+    # its cached copy by heuristic. kiosk.sh runs with the disk cache off, but the browser that the Pi
+    # starts at boot (labwc autostart) does not - 10/11 in the car a boot showed a HUD without the
+    # keypad chip that had been deployed hours before. no-cache = revalidate every load (a 304 when
+    # nothing changed), never use a stale copy.
+    if getattr(self, "_static", False):
+      self.send_header("Cache-Control", "no-cache")
+    super().end_headers()
 
 
 def main():
