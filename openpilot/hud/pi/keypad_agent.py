@@ -43,6 +43,9 @@ SEND_TIMEOUT = 0.5     # s
 # 駕駛要知道下一下按鍵只會叫醒它。寫在 RAM，~/hud 放一個 symlink 讓 HUD 同源讀得到。
 STATE_FILE = "/dev/shm/keypad_state.json"
 STATE_LINK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "keypad_state.json")
+LOG = os.path.expanduser("~/hud/keypad.log")
+LOG_MAX = 1_000_000    # bytes, then one rotation to keypad.log.1
+BT_EVERY = 30.0        # s: how often to look at BlueZ while the keyboard node is missing
 BATTERY_EVERY = 60.0   # s
 BATTERY_RETRY = 5.0    # s
 
@@ -76,7 +79,27 @@ KEYS = {
 
 
 def say(msg):
+  """journal (gone when the car powers the Pi off) and ~/hud/keypad.log on the SD card (kept).
+  10/11 the drive home had the keypad never connect and nothing left to say why. Pi time is not
+  trustworthy in the car (no RTC), so each line also carries seconds since boot."""
   print(time.strftime("%H:%M:%S"), msg, flush=True)
+  try:
+    if os.path.exists(LOG) and os.path.getsize(LOG) > LOG_MAX:
+      os.replace(LOG, LOG + ".1")
+    with open(LOG, "a", encoding="utf-8") as f:
+      f.write(f"{time.strftime('%Y-%m-%dT%H:%M:%S')}(pi) up={time.monotonic():.0f}s {msg}\n")
+  except OSError:
+    pass
+
+
+def bt_connected():
+  """BlueZ's view, independent of whether an input node exists: tells 'keypad asleep / out of
+  range' (not connected) apart from 'connected but no keyboard node' (the 10/11 rename)."""
+  try:
+    out = subprocess.run(["bluetoothctl", "info", KEYPAD_MAC], capture_output=True, text=True, timeout=5).stdout
+  except (OSError, subprocess.SubprocessError):
+    return None
+  return "Connected: yes" in out
 
 
 def find_device():
@@ -194,6 +217,7 @@ def run(dev, token):
         continue
       cmd = KEYS.get(code)
       if cmd is None:
+        say(f"key code {code} (no function)")   # 8 = the wake key; the log shows it was read
         continue
       age = time.monotonic() - (sec + usec / 1e6)
       if age > MAX_AGE:
@@ -218,6 +242,7 @@ def main():
   if not token:
     raise SystemExit(f"no token in {TOKEN_FILE}")
   said_missing = False
+  bt_last, bt_next = "unknown", 0.0
   while True:
     dev = find_device()
     if dev is None:
@@ -225,9 +250,16 @@ def main():
         say("keypad not connected")
         write_state(False)
         said_missing = True
+      if time.monotonic() >= bt_next:
+        bt = bt_connected()
+        if bt != bt_last:
+          say(f"  bluetooth says connected={bt} while no keyboard node")
+          bt_last = bt
+        bt_next = time.monotonic() + BT_EVERY
       time.sleep(1)
       continue
     said_missing = False
+    bt_last, bt_next = "unknown", 0.0
     try:
       run(dev, token)
     except OSError as e:

@@ -63,6 +63,7 @@ class Relay:
         s.reset_input_buffer()
         self.s = s
       p = path.encode()
+      self.s.reset_input_buffer()   # a late reply to a request that already timed out must not be read as this one's
       self.s.write(b"LRQ1" + method.encode() + struct.pack(">HI", len(p), len(body)) + p + body)
       deadline = time.monotonic() + (timeout or self.timeout)
       win = b""
@@ -75,6 +76,13 @@ class Relay:
       hdr = self._read(6, deadline)
       code, n = struct.unpack(">hI", hdr)
       data = self._read(n, deadline) if n else b""
+    except TimeoutError as e:
+      # A slow card or a lost packet: the port and the board are fine, so keep the port. Closing it
+      # here meant reopening it on the next request, and an open resets the board (~2 s to rejoin
+      # the card's AP) - on 10/11 in the car every "no reply" turned into a reset and seconds of
+      # outage, dozens of times a drive. A board that really did reset or vanish raises
+      # SerialException on the next read, and that path still closes.
+      raise OSError(f"relay: {e}") from e
     except (OSError, serial.SerialException) as e:
       self.close()   # unplugged or reset: reopen next time
       raise OSError(f"relay: {e}") from e
@@ -94,8 +102,8 @@ class Relay:
         raise TimeoutError("relay: short reply")
     return buf
 
-  def info(self):
-    return json.loads(self.request("I", "/").decode("utf-8"))
+  def info(self, timeout=None):
+    return json.loads(self.request("I", "/", timeout=timeout).decode("utf-8"))
 
 
 class Led:

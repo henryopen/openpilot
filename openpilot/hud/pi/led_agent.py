@@ -16,6 +16,7 @@ import argparse
 import datetime
 import json
 import os
+import subprocess
 import sys
 import threading
 import time
@@ -134,6 +135,32 @@ class ManualKeys:
       say(f"manual {m.get('key')} -> {director.manual or 'off'}")
 
 
+def relay_diag(led):
+  """Right after the card drops: is the relay itself still up, how long since it booted, and how
+  strong the card's AP is from where it sits - and whether the Pi has seen under-voltage. 10/11
+  the link dropped every few seconds to minutes all drive and the log could not say whether that
+  was signal, power or the board resetting. up small = the board rebooted on its own (power or a
+  crash); rssi low = signal; throttled bit 0x1/0x10000 = the Pi's supply sagged."""
+  parts = []
+  relay = getattr(led, "relay", None)
+  if relay is not None and relay.s is not None:
+    try:
+      i = relay.info(timeout=0.5)
+      parts.append(f"relay wifi={i.get('wifi')} rssi={i.get('rssi')} up={i.get('up_ms', 0) / 1000:.0f}s heap={i.get('heap')}")
+    except Exception as e:
+      parts.append(f"relay silent ({e})")
+  parts.append(f"pi {throttled()}")
+  return " | " + " | ".join(parts)
+
+
+def throttled():
+  try:
+    out = subprocess.run(["vcgencmd", "get_throttled"], capture_output=True, text=True, timeout=2).stdout.strip()
+    return out or "throttled=?"
+  except (OSError, subprocess.SubprocessError):
+    return "throttled=?"
+
+
 def mirror(img, key, text, card_ok, manual_left=None):
   """原子寫入（先寫暫存檔再 rename），HUD 不會讀到寫一半的圖。"""
   try:
@@ -207,6 +234,7 @@ def main():
   card_ok, card_next = None, 0.0
   last_key, last_text = None, ""
   mirror_next = 0.0
+  power_next, power_last = 0.0, None   # Pi supply: logged whenever vcgencmd's flags change
   mirror_setup()
   say(f"led_agent start card={args.card}")
 
@@ -215,6 +243,12 @@ def main():
     fresh = tick - stream.latest_t < STREAM_STALE
     d: dict = stream.latest if fresh else {"standby": True}
     manual.poll(director, tick)
+    if tick >= power_next:
+      power_next = tick + 10.0
+      p = throttled()
+      if p != power_last:
+        say(f"pi power {p}")
+        power_last = p
     screen, shown = director.update(d, tick)
 
     page = screen.page(shown)
@@ -243,7 +277,7 @@ def main():
         card_ok = True
       except Exception as e:
         if card_ok is not False:
-          say(f"card down {args.card}: {e}")
+          say(f"card down {args.card}: {e}{relay_diag(led)}")
         card_ok, card_next = False, tick + CARD_RETRY
         led.P = None                               # 下次重新登入
 
