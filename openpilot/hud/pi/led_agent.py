@@ -24,7 +24,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import led_render as R
 from led_card import Led
-from led_director import Director
+from led_director import MANUAL_FILE, Director
 
 HOST_JSON = "http://127.0.0.1:8080/host.json"
 STREAM_PORT = 8902
@@ -111,7 +111,29 @@ def mirror_setup():
       say(f"mirror link {name}: {e}")
 
 
-def mirror(img, key, text, card_ok):
+class ManualKeys:
+  """鍵盤的字幕鍵：keypad_agent 每按一下就寫一次 MANUAL_FILE（seq 遞增），這裡把新的交給 Director。"""
+  MAX_AGE = 2.0          # 秒：比這舊的按鍵不算（例如 led_agent 重啟時檔案裡留著的那一下）
+
+  def __init__(self):
+    self.seq = None
+
+  def poll(self, director, now):
+    try:
+      with open(MANUAL_FILE, encoding="utf-8") as f:
+        m = json.load(f)
+    except (OSError, ValueError):
+      return
+    if not isinstance(m, dict) or m.get("seq") == self.seq:
+      return
+    first = self.seq is None
+    self.seq = m.get("seq")
+    if not first and now - float(m.get("t", 0.0)) <= self.MAX_AGE:
+      director.manual_press(m.get("key"), now)
+      say(f"manual {m.get('key')} -> {director.manual or 'off'}")
+
+
+def mirror(img, key, text, card_ok, manual_left=None):
   """原子寫入（先寫暫存檔再 rename），HUD 不會讀到寫一半的圖。"""
   try:
     tmp = os.path.join(MIRROR_DIR, ".led_now.png")
@@ -119,7 +141,8 @@ def mirror(img, key, text, card_ok):
     os.replace(tmp, os.path.join(MIRROR_DIR, "led_now.png"))
     tmp = os.path.join(MIRROR_DIR, ".led_now.json")
     with open(tmp, "w", encoding="utf-8") as f:
-      json.dump({"key": key, "text": text, "card": card_ok}, f, ensure_ascii=False)
+      json.dump({"key": key, "text": text, "card": card_ok,
+                 "manual": None if manual_left is None else round(manual_left, 1)}, f, ensure_ascii=False)
     os.replace(tmp, os.path.join(MIRROR_DIR, "led_now.json"))
   except OSError:
     pass
@@ -178,6 +201,7 @@ def main():
   stream = Stream(args.host)
   stream.start()
   director = Director()
+  manual = ManualKeys()
   led = None if args.card == "none" else Led(args.card, timeout=CARD_TIMEOUT)
   card_ok, card_next = None, 0.0
   last_key, last_text = None, ""
@@ -189,6 +213,7 @@ def main():
     tick = time.monotonic()
     fresh = tick - stream.latest_t < STREAM_STALE
     d: dict = stream.latest if fresh else {"standby": True}
+    manual.poll(director, tick)
     screen, shown = director.update(d, tick)
 
     page = screen.page(shown)
@@ -205,7 +230,7 @@ def main():
     img = R.draw(screen, shown, car_now() or R.NO_TIME)
     if tick >= mirror_next:                        # HUD 鏡像：跟推給控制卡的是同一張圖
       mirror_next = tick + 1 / MIRROR_FPS
-      mirror(img, screen.key, text, card_ok)
+      mirror(img, screen.key, text, card_ok, director.manual_left(tick))
 
     if led is not None and tick >= card_next:
       try:

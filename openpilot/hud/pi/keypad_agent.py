@@ -6,7 +6,9 @@
 
   第 1 排：1 MAIN ON   2 MAIN OFF   3 ENGAGE    4 DISENGAGE   （3／4＝方向盤中間鍵拆成兩顆）
   第 2 排：5 SET-／-10 6 RES+／+10  7 起步      8 （空）     （5／6 跟方向盤一樣：沒接管時接回）
-  第 3、4 排（9 0 A B / C D E F）和兩個旋鈕：先不用（旋鈕轉快會掉格，2026-10-11 實測）
+  第 3 排：9 禮讓行人  0 禮讓救護車  A 前方事故  B 準備靠邊      ┐ 後窗 LED 手動字幕：顯示 10 秒、
+  第 4 排：C 路況不熟  D 謝謝禮讓    E 不好意思  F 臨時停車      ┘ 再按同一顆取消（led_director.MANUAL）
+  兩個旋鈕：不用（轉快會掉格，2026-10-11 實測）
 
 - 直接讀 /dev/input/eventN，不靠 python-evdev（pi 在 input 群組，讀得到）。
 - 一定要 grab 獨佔：Pi 上有 HUD 瀏覽器，不獨佔的話按鍵會打進瀏覽器。
@@ -20,9 +22,13 @@ import glob
 import json
 import os
 import struct
+import sys
 import time
 import urllib.error
 import urllib.request
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from led_director import MANUAL_FILE
 
 DEVICE_NAME = "COIDEA KM Keyboard"
 HOST_JSON = "http://127.0.0.1:8080/host.json"
@@ -36,6 +42,18 @@ EVENT = struct.Struct("llHHi")   # struct input_event on aarch64: timeval, type,
 EVIOCGRAB = 0x40044590
 EVIOCSCLOCKID = 0x400445a0
 CLOCK_MONOTONIC = 1
+
+# 第 3、4 排：後窗 LED 手動字幕，在 Pi 本機交給 led_agent（不經車機，車機斷線也能用）
+LED_KEYS = {
+  10: "m_ped",         # KEY_9  禮讓行人
+  11: "m_ambulance",   # KEY_0  禮讓救護車
+  30: "m_accident",    # KEY_A  前方事故
+  48: "m_pull_over",   # KEY_B  準備靠邊
+  46: "m_unfamiliar",  # KEY_C  路況不熟
+  32: "m_thanks",      # KEY_D  謝謝禮讓
+  18: "m_sorry",       # KEY_E  不好意思
+  33: "m_temp_stop",   # KEY_F  臨時停車
+}
 
 KEYS = {
   2: "main_on",      # KEY_1
@@ -86,6 +104,19 @@ def send(host, token, cmd):
     return f"{type(e).__name__}({e})"
 
 
+_led_seq = 0
+
+
+def led_manual(key):
+  """寫一筆按鍵給 led_agent（原子寫入）；顯示多久、再按取消都由 led_director 決定。"""
+  global _led_seq
+  _led_seq += 1
+  tmp = MANUAL_FILE + ".tmp"
+  with open(tmp, "w", encoding="utf-8") as f:
+    json.dump({"seq": f"{os.getpid()}-{_led_seq}", "key": key, "t": time.monotonic()}, f)
+  os.replace(tmp, MANUAL_FILE)
+
+
 def run(dev, token):
   host = car_host()
   with open(dev, "rb", buffering=0) as f:
@@ -99,6 +130,10 @@ def run(dev, token):
         raise OSError("short read")
       sec, usec, etype, code, value = EVENT.unpack(data)
       if etype != EV_KEY or value != 1:
+        continue
+      if code in LED_KEYS:
+        led_manual(LED_KEYS[code])
+        say(f"led {LED_KEYS[code]}")
         continue
       cmd = KEYS.get(code)
       if cmd is None:

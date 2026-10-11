@@ -103,6 +103,23 @@ WHITE, GREEN, YELLOW, RED, CYAN = (255, 255, 255), (0, 235, 60), (255, 190, 0), 
 AMBER = (255, 150, 0)       # 方向燈色：準備左/右轉
 GRAY_TXT = (200, 200, 200)
 
+# 手動字幕：鍵盤第 3、4 排（keypad_agent 寫 MANUAL_FILE，led_agent 交給 Director.manual_press）。
+# OP 自己偵測不到、但後車需要知道的情境（使用者 10/11 挑的 8 個）。按下顯示 MANUAL_SECS 秒、
+# 同一顆再按一次就取消、按別顆就換掉重算；顯示中蓋過所有自動畫面，只有前車急煞（URGENT）能插隊。
+MANUAL_SECS = 10.0
+MANUAL_FILE = "/dev/shm/led_manual.json"   # {"seq", "key", "t"(monotonic)}，keypad_agent 寫、led_agent 讀
+MANUAL = {
+  "m_ped":        ("octagon",   "禮讓行人",   "請勿超車",     RED),
+  "m_ambulance":  ("octagon",   "禮讓救護車", "請一同靠邊",   RED),
+  "m_accident":   ("chev_down", "前方事故",   "請減速慢行",   YELLOW),
+  "m_pull_over":  ("chev_down", "準備靠邊",   "請小心超車",   YELLOW),
+  "m_unfamiliar": ("road",      "路況不熟",   "請見諒",       WHITE),
+  "m_thanks":     ("none",      "謝謝禮讓",   "",             GREEN),
+  "m_sorry":      ("none",      "不好意思",   "抱歉",         WHITE),
+  "m_temp_stop":  ("car_gray",  "臨時停車",   "請由左側超車", YELLOW),
+}
+SEV.update(dict.fromkeys(MANUAL, 2))   # 只在到期後的交接用得到；顯示中不走嚴重度比較
+
 
 @dataclass
 class Screen:
@@ -180,6 +197,9 @@ def pages(s):
     return [Page("chev_up", "省油加速", "請稍候", GREEN)] + _ahead_page(p)
   if k == "cruise":
     return [Page("road", "平穩行駛", "請保持車距", WHITE)] + _ahead_page(p)
+  if k in MANUAL:
+    icon, big, small, color = MANUAL[k]
+    return [Page(icon, big, small, color)]
   raise KeyError(k)
 
 
@@ -204,6 +224,21 @@ class Director:
     self.pending_since = 0.0
     self._reset_drive()
     self.last_limit = None
+    self.manual = None              # 手動字幕：不跟著 _reset_drive 清（停車、沒接管時也要能顯示）
+    self.manual_until = 0.0
+
+  def manual_press(self, key, now):
+    """鍵盤按了一顆字幕鍵：同一顆在顯示中 = 取消，否則換成它、重算 MANUAL_SECS。"""
+    if key not in MANUAL:
+      return
+    if self.manual == key and now < self.manual_until:
+      self.manual, self.manual_until = None, 0.0
+    else:
+      self.manual, self.manual_until = key, now + MANUAL_SECS
+
+  def manual_left(self, now):
+    """手動字幕還剩幾秒（沒有就 None），給 HUD 鏡像標示用。"""
+    return self.manual_until - now if self.manual and now < self.manual_until else None
 
   # ------------------------------------------------------------ 候選
   def _candidate(self, d, now):
@@ -391,7 +426,17 @@ class Director:
   # ------------------------------------------------------------ 仲裁
   def update(self, d, now):
     """回傳 (Screen, 這個畫面已經顯示幾秒)。now 用單調時鐘（離線重放傳 log 的時間）。"""
-    want = self._candidate(d, now)
+    want = self._candidate(d, now)          # 每格都算，遲滯旗標才會跟著走
+    if self.manual and now >= self.manual_until:
+      self.manual = None
+    if self.manual and want.key not in URGENT:
+      want = Screen(self.manual)
+      if self.cur.key != want.key:
+        self._switch(want, now)
+      return self.cur, now - self.cur_since
+    if self.cur.key in MANUAL and want.key != self.cur.key:
+      self._switch(want, now)               # 手動字幕到期或被取消：直接交回，不等 DEBOUNCE
+      return self.cur, now - self.cur_since
     if want.key == self.cur.key:
       self.cur = want                                # 同一個畫面：只更新內容（距離、秒數、時速）
       self.pending_key = None
