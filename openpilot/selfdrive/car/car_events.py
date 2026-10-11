@@ -25,7 +25,7 @@ class CarEvents:
     self.silent_steer_warning = True
     self.cancel_pressed_while_enabled = False
     self.panda_allowed = False
-    self.keypad = KeypadReader(("engage", "disengage"))
+    self.keypad = KeypadReader(("engage", "disengage", "speed_up", "speed_down"))
 
   def update(self, CS: car.CarState, CS_prev: car.CarState, CC: car.CarControl, panda_allowed: bool = False):
     if self.CP.brand in ('body', 'mock'):
@@ -197,14 +197,16 @@ class CarEvents:
     # see the keypad, so it can not be what authorises it, and engaging past the panda would just
     # be a controlsMismatch. So after the brake at a stop or the wheel's middle button, it is RES
     # or the accelerator again.
+    # engage / disengage are the middle button split in two, so a repeat cannot flip it; +10 and
+    # -10 are RES+ and SET-, which engage too when openpilot is off (card picks the speed).
     for cmd in self.keypad.poll():
       if cmd == "disengage" and CC.enabled:
         events.add(EventName.buttonCancel)
-      elif cmd == "engage" and not CC.enabled:
+      elif cmd in ("engage", "speed_up", "speed_down") and not CC.enabled:
         if self.panda_allowed and CS.cruiseState.available and CS.gearShifter == GearShifter.drive and not CS.brakePressed:
           events.add(EventName.buttonEnable)
         else:
-          cloudlog.event("keypad engage refused", panda_allowed=self.panda_allowed, main=bool(CS.cruiseState.available),
+          cloudlog.event("keypad engage refused", cmd=cmd, panda_allowed=self.panda_allowed, main=bool(CS.cruiseState.available),
                          gear=str(CS.gearShifter), brake=bool(CS.brakePressed))
 
     # Handle permanent and temporary steering faults

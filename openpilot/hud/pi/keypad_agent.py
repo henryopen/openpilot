@@ -4,8 +4,8 @@
 跑在 PiBar 上，跟 hud_agent.py 放同一個目錄。鍵盤配對在 Pi 上，每按一個鍵就 POST 一個指令到
 車機 hud/server.py 的 /keypad，車機那邊再交給 card／selfdrived／plannerd（selfdrive/keypad.py）。
 
-  第 1 排：1 MAIN ON   2 MAIN OFF   3 ENGAGE    4 DISENGAGE
-  第 2 排：5 速度 -10  6 速度 +10   7 起步      8 （空）
+  第 1 排：1 MAIN ON   2 MAIN OFF   3 ENGAGE    4 DISENGAGE   （3／4＝方向盤中間鍵拆成兩顆）
+  第 2 排：5 SET-／-10 6 RES+／+10  7 起步      8 （空）     （5／6 跟方向盤一樣：沒接管時接回）
   第 3、4 排（9 0 A B / C D E F）和兩個旋鈕：先不用（旋鈕轉快會掉格，2026-10-11 實測）
 
 - 直接讀 /dev/input/eventN，不靠 python-evdev（pi 在 input 群組，讀得到）。

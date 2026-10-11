@@ -197,7 +197,7 @@ class VCruiseHelper:
     self.v_cruise_kph = np.clip(round(self.v_cruise_kph, 1), V_CRUISE_MIN, V_CRUISE_MAX)
     self.v_cruise_cluster_kph = self.v_cruise_kph
 
-  def initialize_v_cruise(self, CS, experimental_mode: bool) -> None:
+  def initialize_v_cruise(self, CS, experimental_mode: bool, keypad_set: bool = False) -> None:
     # initializing is handled by the PCM
     if self.CP.pcmCruise:
       return
@@ -206,8 +206,8 @@ class VCruiseHelper:
 
     # set picks the next ten at or above the current speed, every other button resumes
     # the speed that was set before. with nothing set yet there is nothing to resume to,
-    # so those fall back to the same next ten.
-    if any(b.type == ButtonType.decelCruise for b in CS.buttonEvents) or not self.v_cruise_initialized:
+    # so those fall back to the same next ten. keypad_set is the keypad's -10, which is SET.
+    if keypad_set or any(b.type == ButtonType.decelCruise for b in CS.buttonEvents) or not self.v_cruise_initialized:
       # round first, m/s to km/h leaves 60 as 60.00000000000001 and that would jump a whole step
       next_ten = math.ceil(round(CS.vEgo * CV.MS_TO_KPH, 1) / 10.) * 10.
       self.v_cruise_kph = int(np.clip(next_ten, initial, V_CRUISE_MAX))

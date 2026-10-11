@@ -155,7 +155,9 @@ def check_events(paths, cp):
   ce.keypad.poll = lambda: take(pending)
   sm = {}
   prev_cs = None
-  seen = {'cancel': [0, 0], 'enable': [0, 0], 'refused': [0, 0]}   # [cases, right]
+  # [cases, right]. While engaged: disengage must cancel, +10 / -10 must do neither. While off and
+  # allowed: engage, +10 (RES+) and -10 (SET-) must all engage. While off and not allowed: none may.
+  seen = {'cancel': [0, 0], 'step_while_on': [0, 0], 'enable': [0, 0], 'refused': [0, 0]}
   last_kind = None
   for rl in rlogs(paths):
     for m in LogReader(rl):
@@ -172,23 +174,26 @@ def check_events(paths, cp):
       panda_allowed = any(ps.controlsAllowed for ps in sm['pandaStates'])
       can_engage = panda_allowed and cs.cruiseState.available and str(cs.gearShifter) == 'drive' and not cs.brakePressed
       if cc.enabled:
-        kind, cmd = 'cancel', 'disengage'
+        situation, tests = 'on', [('cancel', 'disengage'), ('step_while_on', 'speed_up'), ('step_while_on', 'speed_down')]
       elif can_engage:
-        kind, cmd = 'enable', 'engage'
+        situation, tests = 'allowed', [('enable', 'engage'), ('enable', 'speed_up'), ('enable', 'speed_down')]
       else:
-        kind, cmd = 'refused', 'engage'
-      # one injection per change of situation, so the cases are spread over the drive
-      if kind != last_kind:
-        pending.append(cmd)
-        names = [str(e.name) for e in ce.update(cs, prev_cs, cc, panda_allowed).to_msg()]
-        seen[kind][0] += 1
-        if kind == 'cancel':
-          seen[kind][1] += 'buttonCancel' in names
-        elif kind == 'enable':
-          seen[kind][1] += 'buttonEnable' in names
-        else:
-          seen[kind][1] += 'buttonEnable' not in names
-        last_kind = kind
+        situation, tests = 'refused', [('refused', 'engage'), ('refused', 'speed_up'), ('refused', 'speed_down')]
+      # one round per change of situation, so the cases are spread over the drive
+      if situation != last_kind:
+        for kind, cmd in tests:
+          pending.append(cmd)
+          names = [str(e.name) for e in ce.update(cs, prev_cs, cc, panda_allowed).to_msg()]
+          seen[kind][0] += 1
+          if kind == 'cancel':
+            seen[kind][1] += 'buttonCancel' in names
+          elif kind == 'step_while_on':
+            seen[kind][1] += 'buttonCancel' not in names and 'buttonEnable' not in names
+          elif kind == 'enable':
+            seen[kind][1] += 'buttonEnable' in names
+          else:
+            seen[kind][1] += 'buttonEnable' not in names
+        last_kind = situation
       prev_cs = cs
   ok = True
   for kind, (n, right) in seen.items():
@@ -209,6 +214,16 @@ def check_speed():
     good = h.v_cruise_kph == want
     ok &= good
     print(f"  {'PASS' if good else 'FAIL'} {start:3d} {'+' if sign > 0 else '-'}{'' if enabled else ' (not engaged)'}" +
+          f" -> {h.v_cruise_kph} (want {want})")
+  # engaging: -10 is SET (next ten up from the speed), +10 / engage resume the speed set before
+  no_buttons = SimpleNamespace(buttonEvents=[], vEgo=47 / 3.6)
+  for keypad_set, want in [(True, 50), (False, 80)]:
+    h.v_cruise_kph = 80
+    h.v_cruise_kph_last = 80
+    h.initialize_v_cruise(no_buttons, False, keypad_set=keypad_set)
+    good = h.v_cruise_kph == want
+    ok &= good
+    print(f"  {'PASS' if good else 'FAIL'} engage at 47 kph, last set 80, {'-10 (SET)' if keypad_set else '+10 / engage (RESUME)'}" +
           f" -> {h.v_cruise_kph} (want {want})")
   return ok
 

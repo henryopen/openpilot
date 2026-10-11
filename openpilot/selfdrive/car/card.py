@@ -30,6 +30,7 @@ ALT_EXP_PEDAL_HANDOVER = 64
 
 
 REPLAY = "REPLAY" in os.environ
+KEYPAD_SET_WINDOW = 1.0  # s - a -10 that engages has selfdrived enable within this, then it reads as SET
 
 EventName = log.OnroadEvent.EventName
 
@@ -167,6 +168,7 @@ class Car:
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
     self.keypad = KeypadReader(("main_on", "main_off", "speed_up", "speed_down"))
+    self.keypad_set_until = 0.
 
     self.is_metric = self.params.get_bool("IsMetric")
     self.experimental_mode = self.params.get_bool("ExperimentalMode")
@@ -206,12 +208,19 @@ class Car:
       self.can_log_mono_time = messaging.log_from_bytes(can_strs[0]).logMonoTime
 
     self.v_cruise_helper.update_v_cruise(CS, self.sm['carControl'].enabled, self.is_metric)
+    # The keypad's +10 / -10 are RES+ / SET-: a step while engaged, and while off they engage
+    # (car_events) - -10 then sets the next ten up from the current speed, as SET does.
     for cmd in keypad_cmds:
       if cmd in ("speed_up", "speed_down"):
-        self.v_cruise_helper.keypad_step(CS, self.sm['carControl'].enabled, +1 if cmd == "speed_up" else -1)
+        if self.sm['carControl'].enabled:
+          self.v_cruise_helper.keypad_step(CS, True, +1 if cmd == "speed_up" else -1)
+        elif cmd == "speed_down":
+          self.keypad_set_until = time.monotonic() + KEYPAD_SET_WINDOW
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Use CarState w/ buttons from the step selfdrived enables on
-      self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode)
+      self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode,
+                                               keypad_set=time.monotonic() < self.keypad_set_until)
+      self.keypad_set_until = 0.
 
     # TODO: mirror the carState.cruiseState struct?
     CS.vCruise = float(self.v_cruise_helper.v_cruise_kph)
