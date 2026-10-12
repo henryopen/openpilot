@@ -1554,9 +1554,11 @@ if(new URLSearchParams(location.search).has('play')){
       const url=URL.createObjectURL(await pr.blob());
       const old=img.src; img.src=url; if(old.startsWith('blob:')) URL.revokeObjectURL(old);
       let card=null, man=null; try{ if(jr.ok){ const j=await jr.json(); card=j.card; man=j.manual; } }catch(e){}
-      const isMan = typeof man==='number' && man>0;
+      const sticky = man==='sticky';
+      const isMan = sticky || (typeof man==='number' && man>0);
       tag.textContent = (card===true ? '後窗 LED' : '後窗 LED（控制卡未連線）')
-                      + (isMan ? `・手動字幕 剩 ${Math.ceil(man)} 秒（再按同鍵取消）` : '');
+                      + (sticky ? '・手動字幕 常駐中（再按同鍵關閉）'
+                         : isMan ? `・手動字幕 剩 ${Math.ceil(man)} 秒（再按同鍵取消）` : '');
       tag.classList.toggle('down', card!==true && !isMan);
       tag.classList.toggle('man', isMan);
       img.classList.toggle('man', isMan);

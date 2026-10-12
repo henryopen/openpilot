@@ -32,6 +32,7 @@ STREAM_PORT = 8902
 FPS = 6.0                 # 控制卡整張重建約 155 ms，6 格／秒剛好
 STREAM_STALE = 3.0        # 秒沒收到串流就當作斷線，畫面回日期時間
 CARD_RETRY = 5.0          # 控制卡推失敗後多久再試
+SLOW_LIMIT = 3            # 連續這麼多張逾時才算斷線（偶爾一張慢只跳過）
 CARD_TIMEOUT = 1.5
 LOG = os.path.expanduser("~/hud/led.log")
 # HUD 上看得到後窗 LED 正在顯示什麼（駕駛在車裡看不到後窗）：每幾格把同一張圖寫到 RAM，
@@ -144,11 +145,22 @@ def relay_diag(led):
   parts = []
   relay = getattr(led, "relay", None)
   if relay is not None and relay.s is not None:
-    try:
-      i = relay.info(timeout=0.5)
+    # The card's late answer to the frame that timed out can arrive first and be read as this reply
+    # (10/12: every diag read wifi=None - it was the card's JSON). Ask again until the relay's own
+    # answer, the one with "wifi", comes back.
+    i, err = None, None
+    for _ in range(3):
+      try:
+        r = relay.info(timeout=0.8)
+        if isinstance(r, dict) and "wifi" in r:
+          i = r
+          break
+      except Exception as e:
+        err = e
+    if i is not None:
       parts.append(f"relay wifi={i.get('wifi')} rssi={i.get('rssi')} up={i.get('up_ms', 0) / 1000:.0f}s heap={i.get('heap')}")
-    except Exception as e:
-      parts.append(f"relay silent ({e})")
+    else:
+      parts.append(f"relay silent ({err})" if err else "relay answered with the card's late reply only")
   parts.append(f"pi {throttled()}")
   return " | " + " | ".join(parts)
 
@@ -170,7 +182,8 @@ def mirror(img, key, text, card_ok, manual_left=None):
     tmp = os.path.join(MIRROR_DIR, ".led_now.json")
     with open(tmp, "w", encoding="utf-8") as f:
       json.dump({"key": key, "text": text, "card": card_ok,
-                 "manual": None if manual_left is None else round(manual_left, 1)}, f, ensure_ascii=False)
+                 "manual": manual_left if manual_left is None or isinstance(manual_left, str)
+                 else round(manual_left, 1)}, f, ensure_ascii=False)   # 秒數，或常駐字幕的 "sticky"
     os.replace(tmp, os.path.join(MIRROR_DIR, "led_now.json"))
   except OSError:
     pass
@@ -232,6 +245,7 @@ def main():
   manual = ManualKeys()
   led = None if args.card == "none" else Led(args.card, timeout=CARD_TIMEOUT)
   card_ok, card_next = None, 0.0
+  slow = 0                                         # 連續逾時的張數（見 SLOW_LIMIT）
   last_key, last_text = None, ""
   mirror_next = 0.0
   power_next, power_last = 0.0, None   # Pi supply: logged whenever vcgencmd's flags change
@@ -274,12 +288,19 @@ def main():
         led.show(img)
         if card_ok is not True:
           say(f"card up {args.card}")
-        card_ok = True
+        card_ok, slow = True, 0
       except Exception as e:
-        if card_ok is not False:
-          say(f"card down {args.card}: {e}{relay_diag(led)}")
-        card_ok, card_next = False, tick + CARD_RETRY
-        led.P = None                               # 下次重新登入
+        # 一張圖回得慢不算斷線：10/12 斷線後問中繼，讀到的是控制卡遲到的回覆 —— 卡和中繼都活著，
+        # 只是那張超過 CARD_TIMEOUT。以前一慢就判斷線、等 CARD_RETRY 重登，畫面停 3-4 秒；
+        # 現在連續 SLOW_LIMIT 張都逾時才算斷線，中間只跳過那幾張，同一個登入繼續用。
+        if card_ok is True and "no reply" in str(e) and slow + 1 < SLOW_LIMIT:
+          slow += 1
+          say(f"card slow ({slow}/{SLOW_LIMIT}), frame skipped")
+        else:
+          if card_ok is not False:
+            say(f"card down {args.card}: {e}{relay_diag(led)}")
+          card_ok, card_next, slow = False, tick + CARD_RETRY, 0
+          led.P = None                               # 下次重新登入
 
     time.sleep(max(0.0, 1 / FPS - (time.monotonic() - tick)))
 

@@ -104,20 +104,25 @@ AMBER = (255, 150, 0)       # 方向燈色：準備左/右轉
 GRAY_TXT = (200, 200, 200)
 
 # 手動字幕：鍵盤第 3、4 排（keypad_agent 寫 MANUAL_FILE，led_agent 交給 Director.manual_press）。
-# OP 自己偵測不到、但後車需要知道的情境（使用者 10/11 挑的 8 個）。按下顯示 MANUAL_SECS 秒、
-# 同一顆再按一次就取消、按別顆就換掉重算；顯示中蓋過所有自動畫面，只有前車急煞（URGENT）能插隊。
+# OP 自己偵測不到、但後車需要知道的情境（使用者 10/11 挑的 8 個）。同一顆再按一次就取消、按別顆就換掉。
+# 兩種（使用者 10/12：「臨時停車 10 秒不太對，我變成要一直按」）：
+#   一下子的事（謝謝、抱歉）—— 顯示 MANUAL_SECS 秒自己消失；顯示中只有前車急煞（URGENT）能插隊。
+#   要看現場多久的（其餘）—— 常駐到再按同一顆。可能一掛十幾分鐘，所以比它重要的自動畫面
+#   （嚴重度 >= STICKY_YIELD_SEV：減速、彎道、前車減速/停止、轉彎、路口、前方停車、急煞）照樣插隊，
+#   結束後回到字幕；巡航、跟車、加速這些蓋不過它。
 MANUAL_SECS = 10.0
+STICKY_YIELD_SEV = 3
 MANUAL_FILE = "/dev/shm/led_manual.json"   # {"seq", "key", "t"(monotonic)}，keypad_agent 寫、led_agent 讀
 MANUAL = {
-  "m_ped":        ("octagon",   "禮讓行人",   "請勿超車",     RED),
-  "m_ambulance":  ("octagon",   "禮讓救護車", "請一同靠邊",   RED),
-  "m_accident":   ("chev_down", "前方事故",   "請減速慢行",   YELLOW),
-  "m_pull_over":  ("chev_down", "準備靠邊",   "請小心超車",   YELLOW),
-  "m_unfamiliar": ("road",      "路況不熟",   "請見諒",       WHITE),
-  "m_thanks":     ("none",      "謝謝禮讓",   "",             GREEN),
-  "m_sorry":      ("none",      "不好意思",   "抱歉",         WHITE),
-  "m_temp_stop":  ("car_gray",  "臨時停車",   "請由左側超車", YELLOW),
-}
+  "m_ped":        ("octagon",   "禮讓行人",   "請勿超車",     RED,    True),
+  "m_ambulance":  ("octagon",   "禮讓救護車", "請一同靠邊",   RED,    True),
+  "m_accident":   ("chev_down", "前方事故",   "請減速慢行",   YELLOW, True),
+  "m_pull_over":  ("chev_down", "準備靠邊",   "請小心超車",   YELLOW, True),
+  "m_unfamiliar": ("road",      "路況不熟",   "請見諒",       WHITE,  True),
+  "m_thanks":     ("none",      "謝謝禮讓",   "",             GREEN,  False),
+  "m_sorry":      ("none",      "不好意思",   "抱歉",         WHITE,  False),
+  "m_temp_stop":  ("car_gray",  "臨時停車",   "請由左側超車", YELLOW, True),
+}                                            # 最後一欄：True = 常駐到再按一次
 SEV.update(dict.fromkeys(MANUAL, 2))   # 只在到期後的交接用得到；顯示中不走嚴重度比較
 
 
@@ -198,7 +203,7 @@ def pages(s):
   if k == "cruise":
     return [Page("road", "平穩行駛", "請保持車距", WHITE)] + _ahead_page(p)
   if k in MANUAL:
-    icon, big, small, color = MANUAL[k]
+    icon, big, small, color, _sticky = MANUAL[k]
     return [Page(icon, big, small, color)]
   raise KeyError(k)
 
@@ -226,6 +231,7 @@ class Director:
     self.last_limit = None
     self.manual = None              # 手動字幕：不跟著 _reset_drive 清（停車、沒接管時也要能顯示）
     self.manual_until = 0.0
+    self.yield_since = None         # 常駐字幕：重要自動畫面從何時開始要插隊
 
   def manual_press(self, key, now):
     """鍵盤按了一顆字幕鍵：同一顆在顯示中 = 取消，否則換成它、重算 MANUAL_SECS。"""
@@ -234,11 +240,13 @@ class Director:
     if self.manual == key and now < self.manual_until:
       self.manual, self.manual_until = None, 0.0
     else:
-      self.manual, self.manual_until = key, now + MANUAL_SECS
+      self.manual, self.manual_until = key, (float("inf") if MANUAL[key][4] else now + MANUAL_SECS)
 
   def manual_left(self, now):
-    """手動字幕還剩幾秒（沒有就 None），給 HUD 鏡像標示用。"""
-    return self.manual_until - now if self.manual and now < self.manual_until else None
+    """手動字幕還剩幾秒（沒有就 None；常駐的回 "sticky"），給 HUD 鏡像標示用。"""
+    if not self.manual or now >= self.manual_until:
+      return None
+    return "sticky" if MANUAL[self.manual][4] else self.manual_until - now
 
   # ------------------------------------------------------------ 候選
   def _candidate(self, d, now):
@@ -430,10 +438,21 @@ class Director:
     if self.manual and now >= self.manual_until:
       self.manual = None
     if self.manual and want.key not in URGENT:
-      want = Screen(self.manual)
-      if self.cur.key != want.key:
-        self._switch(want, now)
-      return self.cur, now - self.cur_since
+      # a sticky caption gives way to a serious automatic page, once it has been wanted ENTER
+      # seconds (the same debounce any page needs to go up), and gets the screen back after that
+      # page has had its MIN_SHOW - so a flickering candidate cannot make the two alternate
+      serious = MANUAL[self.manual][4] and want.sev >= STICKY_YIELD_SEV
+      self.yield_since = (self.yield_since if self.yield_since is not None else now) if serious else None
+      showing_auto = self.cur.key not in MANUAL
+      if serious and (showing_auto or now - self.yield_since >= ENTER):
+        pass                                # falls through: the automatic page is arbitrated as usual
+      elif showing_auto and now - self.cur_since < MIN_SHOW:
+        return self.cur, now - self.cur_since
+      else:
+        want = Screen(self.manual)
+        if self.cur.key != want.key:
+          self._switch(want, now)
+        return self.cur, now - self.cur_since
     if self.cur.key in MANUAL and want.key != self.cur.key:
       self._switch(want, now)               # 手動字幕到期或被取消：直接交回，不等 DEBOUNCE
       return self.cur, now - self.cur_since
