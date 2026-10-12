@@ -43,6 +43,16 @@ STOPPED_V = 0.3         # m/s 以下當作停住
 MOVING_V = 1.0          # m/s 以上才算離開停住
 FOLLOW_STOP_GAP = 15.0  # m：停住時前車在這距離內 = 跟車停等，否則是停止中
 LEAD_LAUNCH_V = 1.0     # m/s：跟車停等中前車開到這速度 = 前車起步
+# 前方塞車（10/12 定；門檻是常理估的，重放驗證見 commit）
+JAM_STOPS = 2                 # 次：這段時間內跟著前車停下這麼多次 = 停停走走
+JAM_STOP_WINDOW = 120.0       # s
+JAM_STOP_MIN_GAP = 10.0       # m：兩次停車之間至少走這麼遠才算新的一次（排隊挪車不算）
+JAM_STOP_PEAK_V = 25 / 3.6    # m/s：而且中間最快沒超過這個（連續紅燈之間會開到 30-50）
+JAM_LEAD_V = 20 / 3.6         # m/s：前車比這慢
+JAM_LEAD_GAP = 40.0           # m：而且在這距離內
+JAM_CRAWL_SECS = 20.0         # s：我們在動、一路跟著這種慢車這麼久 = 車陣蠕行
+JAM_EXIT_V = 40 / 3.6         # m/s：快過這個
+JAM_EXIT_SECS = 30.0          # s：持續這麼久 = 出了車陣
 LEAD_LAUNCH_GAP = 2.0   # m：或前車比停住時拉開這麼多
 
 # 縱向門檻（m/s²），進入／離開分開做遲滯
@@ -74,12 +84,15 @@ CURVE_SIDE_M = 0.3      # m：模型路線在 30-60 m 處偏這麼多才講左�
 FLOW = {("stop", "stopped"), ("junction", "stopped"), ("junction", "stopped_follow"),
         ("lower_max", "stopped"), ("slow_ahead", "stopped"), ("decel", "stopped"),
         ("hard_brake", "stopped_follow"), ("lead_stop", "stopped_follow"), ("lead_slow", "stopped_follow"),
-        ("stopped_follow", "lead_launch"), ("stopped", "accel"), ("stopped_follow", "catch_up"), ("stopped_follow", "accel")}
+        ("stopped_follow", "lead_launch"), ("stopped", "accel"), ("stopped_follow", "catch_up"), ("stopped_follow", "accel"),
+        # 塞車時「前方塞車」站在跟車停等的位置，接續關係照抄
+        ("junction", "jam"), ("hard_brake", "jam"), ("lead_stop", "jam"), ("lead_slow", "jam"),
+        ("jam", "lead_launch"), ("jam", "accel")}
 # 前車起步不在裡面：我們幾乎馬上跟著走，直接接續的話只閃 1 秒（9/24 重放 27 次裡 19 次不到 1.5 秒）
 
 SEV = {"clock": -1,
        "cruise": 0, "follow": 0,
-       "accel": 1, "catch_up": 1, "stopped": 1, "stopped_follow": 1,
+       "accel": 1, "catch_up": 1, "stopped": 1, "stopped_follow": 1, "jam": 1,
        "limit_changed": 2, "lead_launch": 2, "slow_ahead": 2,
        "decel": 3, "lower_max": 3, "curve": 3, "lead_slow": 3,
        "lane": 4, "turn": 4, "junction": 4,
@@ -201,7 +214,13 @@ def pages(s):
   if k == "accel":
     return [Page("chev_up", "省油加速", "請稍候", GREEN)] + _ahead_page(p)
   if k == "cruise":
-    return [Page("road", "平穩行駛", "請保持車距", WHITE)] + _ahead_page(p)
+    # 平穩行駛是最常出現的畫面（9/24-10/12 行車 21.7%），使用者 10/12 覺得單調：知道速限時多輪一頁
+    # 本路段速限（只講路的速限，不講自己的車速 —— 9/24「免得別人說我們超速」）
+    lim = p.get("limit") or 0
+    lim_page = [Page("limit", "本路段速限", f"{lim} 公里", WHITE, arg=lim)] if lim else []
+    return [Page("road", "平穩行駛", "請保持車距", WHITE)] + lim_page + _ahead_page(p)
+  if k == "jam":
+    return [Page("car", "前方塞車", "請保持距離", YELLOW)]
   if k in MANUAL:
     icon, big, small, color, _sticky = MANUAL[k]
     return [Page(icon, big, small, color)]
@@ -300,6 +319,12 @@ class Director:
     else:
       self.close = False
 
+    # 走了多遠（塞車判斷要看兩次停車之間走了多少）
+    if self.odo_t is not None and 0 < now - self.odo_t < 1.0:
+      self.odo += v * (now - self.odo_t)
+    self.odo_t = now
+    self.peak_v = max(self.peak_v, v)    # 上次停下以來的最高車速
+
     # --- 停住／起步
     if self.stopped_since is None:
       stopped = v < STOPPED_V and (cs.get("standstill", False) or v < 0.1)
@@ -311,8 +336,28 @@ class Director:
         near = present and d_rel is not None and d_rel < FOLLOW_STOP_GAP
         self.stop_kind = "follow" if near else "alone"
         self.stop_d_rel = d_rel if near else None
+        # 停停走走 = 兩次停之間真的走了一段（排隊挪幾公尺不算），但車速一直起不來。10/12 重放 6 趟：
+        # 只看「2 分鐘停 2 次」觸發 14 次、「前方塞車」占顯示 11.8%，多是市區連續兩個紅燈都停在車後面
+        # （中間開到 30-50 km/h）；只加距離門檻也只少 2 次 —— 兩停之間的最高車速才分得開
+        if near and self.odo - self.last_stop_odo >= JAM_STOP_MIN_GAP and self.peak_v < JAM_STOP_PEAK_V:
+          self.follow_stops.append(now)
+        self.last_stop_odo, self.peak_v = self.odo, 0.0
     else:
       self.stopped_since = None
+
+    # --- 塞車（使用者 10/12）：停停走走 = JAM_STOP_WINDOW 內跟著前車停下 JAM_STOPS 次；或一路跟著慢車蠕行
+    # （我們在動、前車 JAM_LEAD_GAP 內、慢過 JAM_LEAD_V）連續 JAM_CRAWL_SECS。只算在動的蠕行，所以
+    # 紅燈前停在一台車後面等久了不算。持續快過 JAM_EXIT_V 達 JAM_EXIT_SECS 才算出了車陣。
+    self.follow_stops = [t for t in self.follow_stops if now - t <= JAM_STOP_WINDOW]
+    crawling = (not stopped) and present and d_rel is not None and d_rel < JAM_LEAD_GAP and v_lead < JAM_LEAD_V
+    self.crawl_since = (self.crawl_since or now) if crawling else None
+    if not self.jam and (len(self.follow_stops) >= JAM_STOPS or
+                         (self.crawl_since is not None and now - self.crawl_since >= JAM_CRAWL_SECS)):
+      self.jam = True
+    if self.jam:
+      self.fast_since = (self.fast_since or now) if v > JAM_EXIT_V else None
+      if self.fast_since is not None and now - self.fast_since >= JAM_EXIT_SECS:
+        self.jam, self.fast_since, self.follow_stops = False, None, []
     stop_ahead = float(_g(d, "modelV2", "stopAhead", default=0.0) or 0.0)
 
     # --- 速限
@@ -367,7 +412,7 @@ class Director:
         moved = present and self.stop_d_rel is not None and d_rel is not None and d_rel - self.stop_d_rel > LEAD_LAUNCH_GAP
         if present and (v_lead > LEAD_LAUNCH_V or moved):
           return Screen("lead_launch")
-        return Screen("stopped_follow", {"dRel": d_rel if present else None})
+        return self._lead_page("stopped_follow", {"dRel": d_rel if present else None})
       return Screen("stopped", {"secs": waited})
 
     # 彎道（通用）：減速中講「前方左/右彎」，彎中不加不減講「彎道中」
@@ -386,12 +431,12 @@ class Director:
       if now < self.limit_changed_until:
         return Screen("limit_changed", {"limit": self.limit_changed_to})
       if self.far and self.accel and v_rel > PULLING_AWAY:
-        return Screen("catch_up", {"lead_kph": dash_kph(v_lead)})
-      return Screen("follow", {"dRel": d_rel, "lead_kph": dash_kph(v_lead)})
+        return self._lead_page("catch_up", {"lead_kph": dash_kph(v_lead)})
+      return self._lead_page("follow", {"dRel": d_rel, "lead_kph": dash_kph(v_lead)})
     self.far = False
     # 前車拉開到跟車距離外、我們在追
     if self.lead_shown and r < CATCH_UP_MAX and self.accel and v_rel >= 0 and now >= self.limit_changed_until:
-      return Screen("catch_up", {"lead_kph": dash_kph(v_lead)})
+      return self._lead_page("catch_up", {"lead_kph": dash_kph(v_lead)})
 
     # ---- 沒前車（在跟車距離內）
     slowing = (self.decel or self.coast) and not brake
@@ -405,7 +450,11 @@ class Director:
       return Screen("limit_changed", {"limit": self.limit_changed_to})
     if self.accel and max_kph and kph < max_kph - AT_MAX:
       return Screen("accel", {"ahead": ahead})
-    return Screen("cruise", {"ahead": ahead})
+    return Screen("cruise", {"ahead": ahead, "limit": limit_kph})
+
+  def _lead_page(self, key, params):
+    """跟車、跟車停等、跟上前車：在車陣裡一律講「前方塞車」（前車急煞／停止／減速不受影響，排在前面）。"""
+    return Screen("jam") if self.jam else Screen(key, params)
 
   @staticmethod
   def _curve_dir(d):
@@ -430,6 +479,10 @@ class Director:
     self.alert_until = 0.0
     self.limit_changed_until = 0.0
     self.limit_changed_to = 0
+    self.jam = False
+    self.follow_stops = []
+    self.crawl_since = self.fast_since = None
+    self.odo, self.odo_t, self.last_stop_odo, self.peak_v = 0.0, None, -1e9, 0.0
 
   # ------------------------------------------------------------ 仲裁
   def update(self, d, now):
