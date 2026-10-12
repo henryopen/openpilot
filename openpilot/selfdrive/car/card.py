@@ -27,6 +27,9 @@ ALT_EXP_ALWAYS_ON_LATERAL = 32
 # and with ALT_EXP_PEDAL_HANDOVER there. selfdrived compares what the panda reports against
 # what is set here, so a mismatch is caught on the first frame rather than on the road.
 ALT_EXP_PEDAL_HANDOVER = 64
+# and ALT_EXP_KEEP_AUTHORISATION: once authorised, the panda keeps it for the drive (pandad
+# reports it held in the heartbeat too, so the panda's 3 s unused check does not take it back)
+ALT_EXP_KEEP_AUTHORISATION = 128
 
 
 REPLAY = "REPLAY" in os.environ
@@ -126,6 +129,8 @@ class Car:
     # means and there is nothing here to hand back.
     if self.CP.openpilotLongitudinalControl:
       self.CP.alternativeExperience |= ALT_EXP_PEDAL_HANDOVER
+      # the keypad can bring openpilot back all drive, not only until the next stop (10/12)
+      self.CP.alternativeExperience |= ALT_EXP_KEEP_AUTHORISATION
     openpilot_enabled_toggle = self.params.get_bool("OpenpilotEnabledToggle")
     controller_available = self.CI.CC is not None and openpilot_enabled_toggle and not self.CP.dashcamOnly
     self.CP.passive = not controller_available or self.CP.dashcamOnly

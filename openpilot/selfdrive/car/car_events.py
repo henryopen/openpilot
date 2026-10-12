@@ -12,6 +12,7 @@ from openpilot.selfdrive.selfdrived.events import Events
 ButtonType = structs.CarState.ButtonEvent.Type
 GearShifter = structs.CarState.GearShifter
 EventName = log.OnroadEvent.EventName
+ALT_EXP_KEEP_AUTHORISATION = 128   # opendbc/safety/declarations.h, set in card.py
 NetworkLocation = structs.CarParams.NetworkLocation
 
 
@@ -182,21 +183,25 @@ class CarEvents:
     # panda, which then dropped every SCC12 openpilot sent; 0.54 s without one and the ESC set
     # ACCEnable=3 and locked the ACC out until the engine was restarted. Once both are off, the
     # next press brings both back.
+    # Under ALT_EXP_KEEP_AUTHORISATION (10/12) the panda no longer pauses on this button - its
+    # authorisation lasts the drive - so the pause is openpilot's alone and only openpilot's own
+    # state decides; counting the panda's in would make every press after a stop a pause.
+    keep_auth = (self.CP.alternativeExperience & ALT_EXP_KEEP_AUTHORISATION) != 0
     for b in CS.buttonEvents:
       if b.type == ButtonType.cancel and (allow_button_cancel or not self.CP.pcmCruise):
         if b.pressed:
-          self.cancel_pressed_while_enabled = CC.enabled or self.panda_allowed
+          self.cancel_pressed_while_enabled = CC.enabled or (self.panda_allowed and not keep_auth)
           if CC.enabled:
             events.add(EventName.buttonCancel)
         elif not self.cancel_pressed_while_enabled:
           events.add(EventName.buttonEnable)
 
     # The keypad on the PiBar (selfdrive/keypad.py). Disengaging is openpilot's own business and
-    # always works; the panda keeps its authorisation, as it does when MAIN goes off. Engaging is
-    # only bringing openpilot back to where the panda already allows control - the panda can not
-    # see the keypad, so it can not be what authorises it, and engaging past the panda would just
-    # be a controlsMismatch. So after the brake at a stop or the wheel's middle button, it is RES
-    # or the accelerator again.
+    # always works. Engaging is only bringing openpilot back to where the panda already allows
+    # control - the panda can not see the keypad, so it can not be what authorises it, and engaging
+    # past the panda would just be a controlsMismatch. With ALT_EXP_KEEP_AUTHORISATION the panda's
+    # authorisation lasts the drive, so only the first engage of a drive needs the wheel (RES/SET/
+    # middle button) or the accelerator at a standstill.
     # engage / disengage are the middle button split in two, so a repeat cannot flip it; +10 and
     # -10 are RES+ and SET-, which engage too when openpilot is off (card picks the speed).
     for cmd in self.keypad.poll():

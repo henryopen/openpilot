@@ -16,6 +16,7 @@ void PandaSafety::configureSafetyMode(bool is_onroad) {
     initialized_ = false;
     safety_configured_ = false;
     log_once_ = false;
+    alternative_experience_ = 0;
   }
 }
 
@@ -65,6 +66,7 @@ void PandaSafety::setSafetyMode(const std::string &params_string) {
   uint16_t safety_param = safety_configs[0].getSafetyParam();
 
   LOGW("setting safety model: %d, param: %d, alternative experience: %d", (int)safety_model, safety_param, alternative_experience);
+  alternative_experience_ = alternative_experience;
   panda_->set_alternative_experience(alternative_experience);
   panda_->set_safety_model(safety_model, safety_param);
 }

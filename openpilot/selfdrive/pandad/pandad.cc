@@ -388,7 +388,13 @@ void pandad_run(Panda *panda) {
       if (sm.updated("deviceState")) {
         is_onroad = sm["deviceState"].getDeviceState().getStarted();
       }
-      process_panda_state(panda, &pm, engaged, is_onroad, spoofing_started);
+      // The panda drops an authorisation openpilot reports unused for 3 s (panda/board/main.c).
+      // Under ALT_EXP_KEEP_AUTHORISATION the authorisation is meant to last the drive, through
+      // openpilot being paused or stopped by the brake, so while onroad the heartbeat says it is
+      // held. The heartbeat's only other use in the panda is the siren on a lost heartbeat, which
+      // this extends to any time onroad. `engaged` itself stays as it was for the exit path below.
+      const bool authorisation_held = engaged || (is_onroad && panda_safety.keepsAuthorisation());
+      process_panda_state(panda, &pm, authorisation_held, is_onroad, spoofing_started);
       panda_safety.configureSafetyMode(is_onroad);
     }
 
