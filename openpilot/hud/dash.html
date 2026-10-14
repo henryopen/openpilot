@@ -939,10 +939,14 @@ function renderTL(tl, la){
   const pc = v => Math.round((v||0)*100)+'%';
   // 10/14 使用者：「你要在 HUD 上讓我知道這些判斷，不然我怎知準不準」→ 每次停車都講燈色和把握，
   // 下 GO 的那一刻講 GO；它不會下 GO 的停車（前有車／踩煞車／沒接管）也照判，後面標原因。
-  if(tl.mode==='standstill' && tl.wait){
+  if(tl.go){
+    // 下 GO 後留 3 秒：常常 GO 和起步同一瞬間，不留的話駕駛根本看不到它是在哪一刻下的
+    cls='green'; txt = tl.go.sent ? 'GO 已送出' : ('GO（觀察）'+(tl.go.cls_only?'・只靠判色':''));
+  } else if(tl.mode==='standstill' && tl.wait){
     const w=tl.wait, p=w.p||[0,0,0];
     const only = w.cls_only ? '（只靠判色）' : '';
     if(w.phase==='finding'){ cls='off'; txt='停等・找燈中'; }
+    else if(!w.p && w.phase!=='fired'){ cls='off'; txt='停等・看燈中'+only; }   // 剛找完燈、判色還沒跑第一次
     else if(w.phase==='fired'){ cls='green';
       txt = (tl.enable && !w.cls_only) ? 'GO 已送出・綠燈' : 'GO（觀察）・綠燈'+only; }
     else { const lit=(w.lit||[]).some(x=>x);
@@ -952,9 +956,10 @@ function renderTL(tl, la){
   } else if(tl.mode==='stopped'){
     const p=tl.p||[0,0,0];
     const why = {lead:'前有車', brake:'踩煞車', off:'未接管'}[tl.why] || '';
+    // 這一格的判斷原樣講（不用 2 秒保留的 light）：保留的燈色配這一格的把握會出現「紅燈 25%」
     if(!tl.p){ cls='off'; txt='停等・看燈中・'+why; }
-    else if(tl.light==='red'){ cls='red'; txt=`紅燈 ${pc(p[1])}・${why}`; }
-    else if(tl.light==='go'){ cls='green'; txt=`綠燈 ${pc(p[2])}・${why}`; }
+    else if(p[1]>=0.5){ cls='red'; txt=`紅燈 ${pc(p[1])}・${why}`; }
+    else if(p[2]>=0.5){ cls='green'; txt=`綠燈 ${pc(p[2])}・${why}`; }
     else { cls='off'; txt=`判斷中 紅${pc(p[1])} 綠${pc(p[2])}・${why}`; }
   } else if(tl.osm_m!=null){
     const what = tl.osm_kind===1 ? '前方行人號誌' : '前方號誌';

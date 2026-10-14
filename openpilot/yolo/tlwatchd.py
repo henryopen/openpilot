@@ -81,6 +81,7 @@ GO_RUN = 2
 CLS_ONLY_RED = 2     # no lamp found: cycles of P(red) >= LIGHT_P needed before a go counts
 CLS_ONLY_P = 0.85   # 0.85 and 0.9 score the same offline (1 early / 29 released of 35); 0.9 missed 10/14 18:39 by 0.007
 CLS_ONLY_RUN = 3
+GO_SHOW = 3.0        # s the HUD shows a GO for
 SIGNALS = '/data/media/0/osm/tw_signals.npy'
 STATE = '/dev/shm/tlwatch.json'
 AHEAD_RANGE = 250.0  # m: how far ahead to look for a signal
@@ -297,6 +298,9 @@ def main():
   ap.add_argument('--replay', default=None)
   ap.add_argument('--any-state', action='store_true', help='replay only: watch waits even where openpilot was not engaged')
   ap.add_argument('--bands', default=None, help='replay only: dir of band JPEGs per segment (the device has no decoder)')
+  ap.add_argument('--state', action='store_true',
+                  help='replay only: play in real time and write the HUD state file, to check the HUD end to end; '
+                  + 'stop the tlwatchd service first, it writes the same file')
   a = ap.parse_args()
   try:
     os.nice(19)
@@ -351,9 +355,13 @@ def main():
   stopped_since = None
   look = None            # a standstill it will not act on (car in front / brake / not engaged): read the light anyway
   t_busy_until = 0.
+  replay_t0 = None
   light = LightCall()
   osm_m, osm_kind, osm_t, bearing = None, None, 0., 0.
   p_last, state_t = None, 0.
+  # the last GO (when, pressed, classifier only): the HUD keeps it up GO_SHOW s even if the car moves
+  # off in the same instant - the driver has to see the moment it called, not just that it did
+  go_shown = (-1e9, False, False)
   while True:
     try:
       if a.replay:
@@ -361,6 +369,13 @@ def main():
           tag, t, band, st = next(src)
         except StopIteration:
           break
+        if a.state:
+          # played at the recording's own pace, so the HUD sees it as it happened
+          if replay_t0 is None:
+            replay_t0 = time.monotonic() - t
+          lag = replay_t0 + t - time.monotonic()
+          if lag > 0:
+            time.sleep(lag)
         if t < t_busy_until and (wait is not None or look is not None):     # still "computing" the previous cycle
           continue
         if a.any_state:
@@ -392,8 +407,11 @@ def main():
             osm_m, osm_kind = signals.ahead(float(gps.latitude), float(gps.longitude), bearing)
           else:
             osm_m, osm_kind = None, None
-        if t - state_t > 0.25:
-          state_t = t
+
+      if not a.replay or a.state:
+        now = time.monotonic()
+        if now - state_t > 0.25:
+          state_t = now
           ws = None
           if wait is not None:
             phase = ('fired' if wait.fired is not None else 'finding' if wait.lamps is None
@@ -402,8 +420,10 @@ def main():
                   'p': wait.rows[-1]['p'] if wait.rows else None, 'lit': wait.rows[-1]['lit'] if wait.rows else None}
           mode = ('standstill' if wait is not None else 'stopped' if look is not None
                   else 'approach' if osm_m is not None and osm_m <= APPROACH_M and st['v'] >= MOVING else 'idle')
-          write_state({'t': t, 'mode': mode, 'osm_m': None if osm_m is None else round(osm_m, 1), 'osm_kind': osm_kind,
+          write_state({'t': now, 'mode': mode, 'osm_m': None if osm_m is None else round(osm_m, 1), 'osm_kind': osm_kind,
                        'light': light.call, 'p': p_last, 'wait': ws, 'why': look['why'] if look is not None else None,
+                       'go': ({'age': round(now - go_shown[0], 1), 'sent': go_shown[1], 'cls_only': go_shown[2]}
+                              if now - go_shown[0] < GO_SHOW else None),
                        'enable': ENABLE.exists()})
 
       stopped = st['v'] < STOPPED
@@ -505,6 +525,7 @@ def main():
       elif wait.lamps == [] and wait.watch_cls(cls, band, t):
         # classifier alone: shadow only, never pressed (1 early release in 35 offline, see the top)
         wait.fired = round(t - wait.t0, 2)
+        go_shown = (time.monotonic(), False, True)
         snap(out, band, f'{tag}_go_cls')
         print(f'tlwatchd: {tag} green (classifier only), would GO (shadow, never pressed) after {wait.fired} s stopped', flush=True)
       elif wait.lamps and wait.watch(cls, band, t):
@@ -522,6 +543,7 @@ def main():
         enabled = ENABLE.exists()
         if not a.replay and enabled:
           keypad.post('go')
+        go_shown = (time.monotonic(), enabled and not a.replay, False)
         what = 'GO sent' if enabled and not a.replay else 'would GO (shadow)'
         print(f'tlwatchd: {tag} green, {what} after {wait.fired} s stopped', flush=True)
       cost = time.monotonic() - busy0
