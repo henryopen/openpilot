@@ -162,8 +162,10 @@ A_CRUISE_MAX_VALS = [0.72, 0.68,  0.78, 0.48, 0.40, 0.38, 0.34, 0.26]
 # The ceiling is the limit there (the request sits on it 86-91% of the time), and from 18 km/h the body gives
 # only 70-85% of what is asked. So 18-72 km/h is lifted for about 0.68 at the body - between his median and
 # his p75 - and 0-10 km/h, where openpilot is already the quicker, does not move.
+#
+# 2026-10-15: the driver: the 10 km/h point 0.68 -> 0.80 (pulling away with the road clear is still slow).
 #                          0    10km/h  18    36    54    72    90   144
-A_CRUISE_MAX_VALS_FREE = [0.72, 0.68, 0.95, 0.80, 0.75, 0.75, 0.64, 0.50]
+A_CRUISE_MAX_VALS_FREE = [0.72, 0.80, 0.95, 0.80, 0.75, 0.75, 0.64, 0.50]
 # How much more room than the MPC is asking for before the road counts as clear. A fixed
 # distance was considered and measured worse: the MPC's target gap is
 # v^2/(2*COMFORT_BRAKE) - v_lead^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so 50 m
