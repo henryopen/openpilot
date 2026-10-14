@@ -959,6 +959,9 @@ function renderTL(tl, la){
 
 function clearLight(){    // 辨識停了：這時候留著上一顆燈就是騙人
   litHold=null; litAt=0;
+  // 燈牌現在歸看燈服務（renderTL）管。yolod 停用後這裡每一格都會被叫到（YOLO 永遠不是 live），
+  // 10/14 那兩趟它把 renderTL 剛顯示的燈牌每一格都收掉：文字有更新、class 少了 on，駕駛什麼都沒看到。
+  if(Date.now()-tlAt<1500) return;
   const box=document.getElementById('litBox');
   if(box) box.className='ov lit';
 }
