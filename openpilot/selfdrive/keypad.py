@@ -21,7 +21,9 @@ import time
 PATH = "/dev/shm/keypad.json"
 MAX_AGE = 1.0          # s
 KEEP = 16              # commands kept in the file; far more than can arrive between two reads
-COMMANDS = frozenset({"main_on", "main_off", "engage", "disengage", "speed_up", "speed_down", "go"})
+# max_up / max_down: the left knob - the set speed +10 / -10 while engaged, and nothing at all while not
+# (speed_up / speed_down are RES+ / SET- and engage when off; a knob nudged by accident must not)
+COMMANDS = frozenset({"main_on", "main_off", "engage", "disengage", "speed_up", "speed_down", "go", "max_up", "max_down"})
 
 _lock = threading.Lock()
 

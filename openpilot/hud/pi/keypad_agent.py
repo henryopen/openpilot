@@ -8,7 +8,9 @@
   第 2 排：5 SET-／-10 6 RES+／+10  7 起步      8 （空）     （5／6 跟方向盤一樣：沒接管時接回）
   第 3 排：9 禮讓行人  0 禮讓救護車  A 前方事故  B 準備靠邊      ┐ 後窗 LED 手動字幕：顯示 10 秒、
   第 4 排：C 路況不熟  D 謝謝禮讓    E 不好意思  F 臨時停車      ┘ 再按同一顆取消（led_director.MANUAL）
-  兩個旋鈕：不用（轉快會掉格，2026-10-11 實測）
+  左旋鈕：調 MAX —— 順時針轉 3 格 +10、逆時針 3 格 -10（只在接管中有效，沒接管時轉了也不會接回；
+          轉快會掉格（10/11 實測），所以算收到的格數；兩格隔超過 1.5 s 或轉向反過來就重算）
+  右旋鈕：不用
 
 - 直接讀 /dev/input/eventN，不靠 python-evdev（pi 在 input 群組，讀得到）。
 - 一定要 grab 獨佔：Pi 上有 HUD 瀏覽器，不獨佔的話按鍵會打進瀏覽器。
@@ -66,6 +68,14 @@ LED_KEYS = {
   18: "m_sorry",       # KEY_E  不好意思
   33: "m_temp_stop",   # KEY_F  臨時停車
 }
+
+# 左旋鈕：每一格送一次按鍵（10/11 evtest：左轉 G、按下 H、右轉 I）
+KNOB = {
+  34: -1,            # KEY_G  逆時針
+  23: +1,            # KEY_I  順時針
+}
+KNOB_STEPS = 3         # detents in one direction for one +10 / -10: one nudged by accident does nothing
+KNOB_GAP = 1.5         # s between detents before the count starts over
 
 KEYS = {
   2: "main_on",      # KEY_1
@@ -199,6 +209,7 @@ def run(dev, token):
     # 剛連上時藍牙還沒讀到電量（10/11 實測連上那一刻 None、一分鐘後 100），讀不到就 5 秒後再試
     bat_next = time.monotonic() + (BATTERY_EVERY if bat is not None else BATTERY_RETRY)
     say(f"keypad on {dev}, car {host or '-'}, battery {bat}")
+    knob_dir, knob_n, knob_t = 0, 0, 0.0
     while True:
       if not select.select([f], [], [], max(0.0, bat_next - time.monotonic()))[0]:
         bat = battery(dev)
@@ -215,7 +226,17 @@ def run(dev, token):
         led_manual(LED_KEYS[code])
         say(f"led {LED_KEYS[code]}")
         continue
-      cmd = KEYS.get(code)
+      if code in KNOB:
+        d, now = KNOB[code], time.monotonic()
+        if d != knob_dir or now - knob_t > KNOB_GAP:
+          knob_dir, knob_n = d, 0
+        knob_n, knob_t = knob_n + 1, now
+        if knob_n < KNOB_STEPS:
+          continue
+        knob_n = 0
+        cmd = "max_up" if d > 0 else "max_down"
+      else:
+        cmd = KEYS.get(code)
       if cmd is None:
         say(f"key code {code} (no function)")   # 8 = the wake key; the log shows it was read
         continue

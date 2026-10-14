@@ -172,7 +172,7 @@ class Car:
     self.params.put("CarParamsPersistent", cp_bytes)
 
     self.v_cruise_helper = VCruiseHelper(self.CP)
-    self.keypad = KeypadReader(("main_on", "main_off", "speed_up", "speed_down"))
+    self.keypad = KeypadReader(("main_on", "main_off", "speed_up", "speed_down", "max_up", "max_down"))
     self.keypad_set_until = 0.
 
     self.is_metric = self.params.get_bool("IsMetric")
@@ -221,6 +221,9 @@ class Car:
           self.v_cruise_helper.keypad_step(CS, True, +1 if cmd == "speed_up" else -1)
         elif cmd == "speed_down":
           self.keypad_set_until = time.monotonic() + KEYPAD_SET_WINDOW
+      elif cmd in ("max_up", "max_down") and self.sm['carControl'].enabled:
+        # the left knob: only ever the set speed, never an engage
+        self.v_cruise_helper.keypad_step(CS, True, +1 if cmd == "max_up" else -1)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Use CarState w/ buttons from the step selfdrived enables on
       self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode,
