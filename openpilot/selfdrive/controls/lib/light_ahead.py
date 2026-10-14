@@ -49,7 +49,12 @@ V_FLOOR_RED = 10 * CV.KPH_TO_MS  # a red seen: slow further, the stop logic stil
 MIN_SPEED = 25 * CV.KPH_TO_MS
 LEAD_IGNORE = 80.0               # m: a car nearer than this sets the pace
 INTENT_FRAC = 0.6
-INTENT_FRAMES = 10               # 0.5 s at 20 Hz
+INTENT_FRAMES = 20               # 1 s at 20 Hz. 0.5 s let a dip the model takes crossing a junction slow us for
+                                 # the next signal (10/14 18:53: -1.2 at 61 m on a green)
+SLOW_START_MIN = 25.0            # m: a slowdown only starts this far out. Nearer is inside the junction, where an
+                                 # 'early' slowdown is neither early nor gentle (10/14 17:16: -1.2 at 9 m); the stop
+                                 # logic owns that. Replayed: 10/14 needless slows 3 -> 1 (with INTENT_FRAMES 20),
+                                 # 8/26-10/13 greens slowed 2 -> 1 of 129; the reds it drops all needed > 1.2 m/s^2
 
 
 class LightAhead:
@@ -60,6 +65,8 @@ class LightAhead:
     self.intent_frames = 0
     self.a_limit = None
     self.mode = ''               # '', 'coast', 'slow' - what it is (or in shadow would be) doing
+    self.slowing = False         # it was slowing on the last tick, for this same signal
+    self._osm_prev = None
     self.a_shadow = None
     self._out_mode, self._out_t = None, 0.
 
@@ -91,6 +98,11 @@ class LightAhead:
       self.enabled = os.path.exists(FLAG)
     if self.frame % 5 == 0:
       self.state = self._read()
+    # a slowdown already under way carries on inside SLOW_START_MIN - but not into the next signal's
+    osm_now = self.state.get('osm_m') if self.state is not None else None
+    passed = osm_now is not None and self._osm_prev is not None and osm_now > self._osm_prev + 25.
+    self.slowing = self.mode == 'slow' and not passed
+    self._osm_prev = osm_now
     self.a_limit, self.mode, self.a_shadow = None, '', None
 
     vmin = min(md.velocity.x) if len(md.velocity.x) else v_ego
@@ -104,7 +116,7 @@ class LightAhead:
     if light == 'go':
       return
     d = max(float(s['osm_m']) - STOP_ZONE, 5.)
-    if light == 'red' or self.intent_frames >= INTENT_FRAMES:
+    if (light == 'red' or self.intent_frames >= INTENT_FRAMES) and (self.slowing or float(s['osm_m']) >= SLOW_START_MIN):
       v_floor = V_FLOOR_RED if light == 'red' else V_FLOOR
       a = -(v_ego ** 2 - v_floor ** 2) / (2. * d)
       self.mode, a = 'slow', float(np.clip(a, A_EARLY_MAX, A_COAST))

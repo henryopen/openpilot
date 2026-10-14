@@ -91,6 +91,7 @@ MOVING = 3.0         # m/s
 LIGHT_P = 0.7
 LIGHT_HOLD = 2.0     # s a red / go call is held after the last cycle that agreed
 GPS_MAX_ACC = 25.0   # m: worse than this and the signal list is not trusted
+NEXT_SIGNAL_JUMP = 25.0  # m: the distance ahead growing by more than this = we passed one, a new one is ahead
 MEAN = np.array([0.485, 0.456, 0.406], np.float32).reshape(3, 1, 1)
 STD = np.array([0.229, 0.224, 0.225], np.float32).reshape(3, 1, 1)
 
@@ -404,7 +405,13 @@ def main():
               and not (gps.latitude == 0 and gps.longitude == 0)):
             if gps.speed > 2.0:
               bearing = float(gps.bearingDeg)
+            osm_prev = osm_m
             osm_m, osm_kind = signals.ahead(float(gps.latitude), float(gps.longitude), bearing)
+            if osm_m is not None and osm_prev is not None and osm_m > osm_prev + NEXT_SIGNAL_JUMP:
+              # passed that signal: the next one is another light. The held call belonged to the old one -
+              # on 10/14 a (wrong) red was carried 2 s into the next approach and slowed for it at 142 m.
+              light.reset()
+              p_last = None
           else:
             osm_m, osm_kind = None, None
 
