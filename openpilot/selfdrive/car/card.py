@@ -221,9 +221,9 @@ class Car:
           self.v_cruise_helper.keypad_step(CS, True, +1 if cmd == "speed_up" else -1)
         elif cmd == "speed_down":
           self.keypad_set_until = time.monotonic() + KEYPAD_SET_WINDOW
-      elif cmd in ("max_up", "max_down") and self.sm['carControl'].enabled:
-        # the left knob: only ever the set speed, never an engage
-        self.v_cruise_helper.keypad_step(CS, True, +1 if cmd == "max_up" else -1)
+      elif cmd in ("max_up", "max_down"):
+        # the left knob: only ever the set speed, never an engage - while off, the speed the next engage resumes to
+        self.v_cruise_helper.keypad_max_step(CS, +1 if cmd == "max_up" else -1)
     if self.sm['carControl'].enabled and not self.CC_prev.enabled:
       # Use CarState w/ buttons from the step selfdrived enables on
       self.v_cruise_helper.initialize_v_cruise(self.CS_prev, self.experimental_mode,

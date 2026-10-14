@@ -197,6 +197,18 @@ class VCruiseHelper:
     self.v_cruise_kph = np.clip(round(self.v_cruise_kph, 1), V_CRUISE_MIN, V_CRUISE_MAX)
     self.v_cruise_cluster_kph = self.v_cruise_kph
 
+  def keypad_max_step(self, CS, sign: int) -> None:
+    """The keypad's left knob: +10 / -10 on the set speed, engaged or not. While not engaged it sets the
+    speed the next engage resumes to (initialize_v_cruise takes v_cruise_kph_last unless it is SET), so
+    the speed can be chosen before engaging. With nothing set yet since MAIN came on, it starts from the
+    next ten at or above the current speed, as SET would, and steps from there."""
+    if self.CP.pcmCruise or not CS.cruiseState.available:
+      return
+    if not self.v_cruise_initialized:
+      next_ten = math.ceil(round(CS.vEgo * CV.MS_TO_KPH, 1) / 10.) * 10.
+      self.v_cruise_kph = int(np.clip(next_ten, V_CRUISE_INITIAL, V_CRUISE_MAX))
+    self.keypad_step(CS, True, sign)
+
   def initialize_v_cruise(self, CS, experimental_mode: bool, keypad_set: bool = False) -> None:
     # initializing is handled by the PCM
     if self.CP.pcmCruise:
