@@ -459,6 +459,17 @@ def _produce():
         data["intent"] = {"laneChangeState": str(_meta.laneChangeState),
                           "laneChangeDirection": str(_meta.laneChangeDirection),
                           "turn": ("left" if _cs.leftBlinker else "right") if _turning else ""}
+        # The light watcher (yolo/tlwatchd.py): the OSM signal ahead, its read of the light, and
+        # at a standstill whether it is finding / watching the lamps or has called the green.
+        # Its file says when it was written on this device's monotonic clock; older than 1.5 s
+        # means the watcher is not running, and then the page shows nothing rather than a stale call.
+        try:
+          with open("/dev/shm/tlwatch.json") as _f:
+            _tl = json.load(_f)
+          if time.monotonic() - float(_tl.get("t", 0)) < 1.5:
+            data["tlwatch"] = _tl
+        except (OSError, ValueError):
+          pass
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         # what cruise is really working to, which is not the driver's MAX whenever something

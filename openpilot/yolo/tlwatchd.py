@@ -20,6 +20,15 @@ How it decides (2026-10-14, see stop-for-lights-findings in memory for the numbe
   Offline on 35 held-out waits (10/11-10/13): 0 releases before the green, 34 after it, median
   0.5 s after the green at 4 frames a second; one wait it never released.
 
+Moving (2026-10-14): from GPS and the OSM signal list (/data/media/0/osm/tw_signals.npy, every
+highway=traffic_signals and crossing=traffic_signals node in Taiwan) it works out the nearest signal
+ahead - within AHEAD_RANGE m along the heading and CROSS_M m either side of it. Inside APPROACH_M of
+one it runs the classifier every cycle and calls the light red or go once two cycles in a row agree
+at LIGHT_P; that call is held LIGHT_HOLD s. Nothing is pressed while moving: it only reports.
+
+Everything it knows is written to STATE (/dev/shm/tlwatch.json) a few times a second, for the HUD
+and, once that is wired, the planner. A reader must treat a file older than a second as absent.
+
 ENABLE: without /data/tlwatch/ENABLE it only logs what it would have done (shadow mode).
 DISABLE: /data/tlwatch/DISABLE stops it looking at all.
 
@@ -60,6 +69,15 @@ RED_FRAC = 0.5       # a lamp is still lit while its redness is above this share
 RED_MIN = 3.0        # a lamp whose lit redness is below this cannot be judged; it does not block
 GO_P = 0.7
 GO_RUN = 2
+SIGNALS = '/data/media/0/osm/tw_signals.npy'
+STATE = '/dev/shm/tlwatch.json'
+AHEAD_RANGE = 250.0  # m: how far ahead to look for a signal
+CROSS_M = 20.0       # m either side of the heading a node may sit and still be on our road
+APPROACH_M = 160.0   # m: inside this of a signal ahead, read the light while moving
+MOVING = 3.0         # m/s
+LIGHT_P = 0.7
+LIGHT_HOLD = 2.0     # s a red / go call is held after the last cycle that agreed
+GPS_MAX_ACC = 25.0   # m: worse than this and the signal list is not trusted
 MEAN = np.array([0.485, 0.456, 0.406], np.float32).reshape(3, 1, 1)
 STD = np.array([0.229, 0.224, 0.225], np.float32).reshape(3, 1, 1)
 
@@ -70,6 +88,66 @@ def redness(band, box):
   if p.size == 0:
     return 0.
   return float(np.percentile(np.clip(p[..., 0] - np.maximum(p[..., 1], p[..., 2]), 0, None), 90))
+
+
+class Signals:
+  """The OSM traffic signals of Taiwan, and which one is ahead of us."""
+
+  def __init__(self, path=SIGNALS):
+    try:
+      a = np.load(path)
+      self.lat, self.lon, self.kind = a[:, 0], a[:, 1], a[:, 2].astype(int)
+    except Exception:
+      self.lat = self.lon = self.kind = np.zeros(0)
+
+  def ahead(self, lat, lon, bearing_deg):
+    """-> (metres along the heading to the nearest signal in front, kind 0 junction / 1 crossing) or (None, None)."""
+    if len(self.lat) == 0:
+      return None, None
+    box = (np.abs(self.lat - lat) < 0.003) & (np.abs(self.lon - lon) < 0.003)
+    if not box.any():
+      return None, None
+    kx = 111320.0 * np.cos(np.radians(lat))
+    dx = (self.lon[box] - lon) * kx            # east
+    dy = (self.lat[box] - lat) * 110540.0      # north
+    b = np.radians(bearing_deg)
+    along = dx * np.sin(b) + dy * np.cos(b)
+    cross = dx * np.cos(b) - dy * np.sin(b)
+    ok = (along > 0) & (along < AHEAD_RANGE) & (np.abs(cross) < CROSS_M)
+    if not ok.any():
+      return None, None
+    i = np.argmin(np.where(ok, along, np.inf))
+    return float(along[i]), int(self.kind[box][i])
+
+
+class LightCall:
+  """red / go once two cycles in a row agree, held LIGHT_HOLD s; otherwise unknown."""
+
+  def __init__(self):
+    self.last = None
+    self.call, self.until = 'unknown', 0.
+
+  def update(self, p, t):
+    c = 'red' if p[1] >= LIGHT_P else ('go' if p[2] >= LIGHT_P else None)
+    if c is not None and c == self.last:
+      self.call, self.until = c, t + LIGHT_HOLD
+    self.last = c
+    if t > self.until:
+      self.call = 'unknown'
+    return self.call
+
+  def reset(self):
+    self.__init__()
+
+
+def write_state(d):
+  try:
+    tmp = STATE + '.tmp'
+    with open(tmp, 'w') as f:
+      json.dump(d, f)
+    os.replace(tmp, STATE)
+  except Exception:
+    pass
 
 
 def snap(out, band, name):
@@ -221,13 +299,33 @@ def main():
     from openpilot.cereal.visionipc import VisionStreamType
     from msgq.visionipc import VisionIpcClient
     from openpilot.selfdrive import keypad
-    sm = messaging.SubMaster(['carState', 'selfdriveState', 'radarState', 'deviceState'])
+    sm = messaging.SubMaster(['carState', 'selfdriveState', 'radarState', 'deviceState', 'gpsLocationExternal'])
     Thermal = clog.DeviceState.ThermalStatus
     vipc = None
+    signals = Signals()
+    print(f'tlwatchd: {len(signals.lat)} OSM signals loaded', flush=True)
+
+    def grab():
+      """The latest road frame's light band, or None (camerad not up yet)."""
+      nonlocal vipc
+      if vipc is None or not vipc.is_connected():
+        vipc = VisionIpcClient('camerad', VisionStreamType.VISION_STREAM_NARROW_ROAD, conflate=True)
+        if not vipc.connect(False):
+          vipc = None
+          time.sleep(1)
+          return None
+      buf = vipc.recv()
+      if buf is None:
+        time.sleep(0.05)
+        return None
+      return yc.nv12_to_band(buf)
 
   wait = None
   stopped_since = None
   t_busy_until = 0.
+  light = LightCall()
+  osm_m, osm_kind, osm_t, bearing = None, None, 0., 0.
+  p_last, state_t = None, 0.
   while True:
     try:
       if a.replay:
@@ -255,6 +353,29 @@ def main():
           wait = None
           time.sleep(2)
           continue
+        # the signal ahead, twice a second, off GPS; the heading is held while stopped
+        gps = sm['gpsLocationExternal']
+        if t - osm_t > 0.5:
+          osm_t = t
+          if (sm.alive['gpsLocationExternal'] and gps.horizontalAccuracy < GPS_MAX_ACC
+              and not (gps.latitude == 0 and gps.longitude == 0)):
+            if gps.speed > 2.0:
+              bearing = float(gps.bearingDeg)
+            osm_m, osm_kind = signals.ahead(float(gps.latitude), float(gps.longitude), bearing)
+          else:
+            osm_m, osm_kind = None, None
+        if t - state_t > 0.25:
+          state_t = t
+          ws = None
+          if wait is not None:
+            phase = ('fired' if wait.fired is not None else 'finding' if wait.lamps is None
+                     else 'no_light' if not wait.lamps else 'watching')
+            ws = {'phase': phase, 'lamps': len(wait.lamps or []), 'fired': wait.fired,
+                  'p': wait.rows[-1]['p'] if wait.rows else None, 'lit': wait.rows[-1]['lit'] if wait.rows else None}
+          mode = 'standstill' if wait is not None else ('approach' if osm_m is not None and osm_m <= APPROACH_M
+                                                        and st['v'] >= MOVING else 'idle')
+          write_state({'t': t, 'mode': mode, 'osm_m': None if osm_m is None else round(osm_m, 1), 'osm_kind': osm_kind,
+                       'light': light.call, 'p': p_last, 'wait': ws, 'enable': ENABLE.exists()})
 
       quiet = st['v'] < STOPPED and st['en'] and not st['brake'] and st['lead'] > LEAD_NEAR
       if not quiet:
@@ -264,7 +385,20 @@ def main():
         wait = None
         stopped_since = None
         if not a.replay:
-          time.sleep(0.2)
+          if st['v'] >= MOVING and osm_m is not None and osm_m <= APPROACH_M:
+            # coming up to a signal: read the light, report only
+            band = grab()
+            if band is not None:
+              b0 = time.monotonic()
+              p_last = [round(float(x), 3) for x in classify(cls, band)]
+              light.update(p_last, t)
+              if sm['deviceState'].thermalStatus == Thermal.overheated:
+                time.sleep(3 * (time.monotonic() - b0))
+          else:
+            if st['v'] >= MOVING:
+              light.reset()
+              p_last = None
+            time.sleep(0.2)
         continue
       if stopped_since is None:
         stopped_since = t
@@ -281,17 +415,9 @@ def main():
         continue
 
       if not a.replay:
-        if vipc is None or not vipc.is_connected():
-          vipc = VisionIpcClient('camerad', VisionStreamType.VISION_STREAM_NARROW_ROAD, conflate=True)
-          if not vipc.connect(False):
-            vipc = None
-            time.sleep(1)
-            continue
-        buf = vipc.recv()
-        if buf is None:
-          time.sleep(0.05)
+        band = grab()
+        if band is None:
           continue
-        band = yc.nv12_to_band(buf)
         busy0 = time.monotonic()
 
       if wait.lamps is None:
