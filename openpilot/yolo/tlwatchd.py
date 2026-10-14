@@ -11,7 +11,7 @@ driver could with that key. Nothing in the driving stack waits on this process.
 How it decides (2026-10-14, see stop-for-lights-findings in memory for the numbers):
   find   the first FIND_S seconds of a wait run the band detector (c4band1) and keep the places
          it saw red in at least half of its runs. The car is still, so a lamp keeps its pixels.
-         No red lamp found -> do nothing for this wait.
+         No red lamp found -> watch on the classifier alone (below), which never presses GO.
   watch  every cycle: the light classifier (tlcls, none/red/go over the whole band, trained on
          the driver's own waits with the light's real green onset as the label) and, for each
          tracked lamp, how red its pixels still are. GO needs P(go) >= GO_P on GO_RUN cycles in a
@@ -19,6 +19,15 @@ How it decides (2026-10-14, see stop-for-lights-findings in memory for the numbe
          green from releasing the car while ours is still red (it did fool the classifier once).
   Offline on 35 held-out waits (10/11-10/13): 0 releases before the green, 34 after it, median
   0.5 s after the green at 4 frames a second; one wait it never released.
+  classifier alone (no lamp found; 10/14: the detector missed a plain red lamp at the one no-lead
+         wait of that day): GO once P(red) >= 0.7 was seen on CLS_ONLY_RED cycles and then
+         P(go) >= CLS_ONLY_P on CLS_ONLY_RUN cycles in a row. On the same 35 waits at the car's ~0.75 s
+         cycle that is still 1 release 2 s before the green (the pedestrian signal), so it is shadow
+         only: it shows and logs its GO and never presses, ENABLE or not.
+
+Every other standstill (a car in front, the brake held, not engaged) the classifier still reads the
+light each cycle, only for the HUD and the stop log, so every stop of a drive can be checked against
+the video - not just the few with nothing in front.
 
 Moving (2026-10-14): from GPS and the OSM signal list (/data/media/0/osm/tw_signals.npy, every
 highway=traffic_signals and crossing=traffic_signals node in Taiwan) it works out the nearest signal
@@ -69,6 +78,9 @@ RED_FRAC = 0.5       # a lamp is still lit while its redness is above this share
 RED_MIN = 3.0        # a lamp whose lit redness is below this cannot be judged; it does not block
 GO_P = 0.7
 GO_RUN = 2
+CLS_ONLY_RED = 2     # no lamp found: cycles of P(red) >= LIGHT_P needed before a go counts
+CLS_ONLY_P = 0.85   # 0.85 and 0.9 score the same offline (1 early / 29 released of 35); 0.9 missed 10/14 18:39 by 0.007
+CLS_ONLY_RUN = 3
 SIGNALS = '/data/media/0/osm/tw_signals.npy'
 STATE = '/dev/shm/tlwatch.json'
 AHEAD_RANGE = 250.0  # m: how far ahead to look for a signal
@@ -168,14 +180,16 @@ def classify(sess, band):
 class Wait:
   """One standstill: find the lamps, then watch them."""
 
-  def __init__(self, t):
+  def __init__(self, t, tag=''):
     self.t0 = t
+    self.tag = tag          # wall clock (live) or segment+seconds (replay) at the start, to find it in the video
     self.det_runs = 0
     self.reds = []          # (cx, cy, x1, y1, x2, y2, redness) from the find runs
     self.lamps = None       # [{'box', 'ref'}] once found; [] = no light here
     self.run = 0
     self.fired = None
     self.rows = []
+    self.reds_seen = 0      # classifier-only watch: cycles it has called red so far
 
   def find(self, det_sess, band, t):
     dets = yc.detect_band(det_sess, band, conf_thres=DET_CONF)
@@ -207,6 +221,16 @@ class Wait:
     self.run = self.run + 1 if ok else 0
     self.rows.append({'t': round(t - self.t0, 2), 'p': [round(float(v), 3) for v in p], 'lit': lit})
     return self.run >= GO_RUN
+
+  def watch_cls(self, cls_sess, band, t):
+    """No lamp to track: the classifier alone, stricter. Shadow only - the caller never presses on it."""
+    p = classify(cls_sess, band)
+    if p[1] >= LIGHT_P:
+      self.reds_seen += 1
+    ok = self.reds_seen >= CLS_ONLY_RED and p[2] >= CLS_ONLY_P
+    self.run = self.run + 1 if ok else 0
+    self.rows.append({'t': round(t - self.t0, 2), 'p': [round(float(v), 3) for v in p], 'lit': None})
+    return self.run >= CLS_ONLY_RUN
 
 
 def replay_source(pattern, bands=None):
@@ -321,8 +345,11 @@ def main():
         return None
       return yc.nv12_to_band(buf)
 
+  look_log = (out / 'looks.jsonl').open('a', buffering=1)
   wait = None
+  paused = None           # the wait of this standstill while something else (a car in front, the brake) has it
   stopped_since = None
+  look = None            # a standstill it will not act on (car in front / brake / not engaged): read the light anyway
   t_busy_until = 0.
   light = LightCall()
   osm_m, osm_kind, osm_t, bearing = None, None, 0., 0.
@@ -334,7 +361,7 @@ def main():
           tag, t, band, st = next(src)
         except StopIteration:
           break
-        if t < t_busy_until and wait is not None:     # still "computing" the previous cycle
+        if t < t_busy_until and (wait is not None or look is not None):     # still "computing" the previous cycle
           continue
         if a.any_state:
           st['en'] = True
@@ -370,20 +397,61 @@ def main():
           ws = None
           if wait is not None:
             phase = ('fired' if wait.fired is not None else 'finding' if wait.lamps is None
-                     else 'no_light' if not wait.lamps else 'watching')
-            ws = {'phase': phase, 'lamps': len(wait.lamps or []), 'fired': wait.fired,
+                     else 'watching_cls' if not wait.lamps else 'watching')
+            ws = {'phase': phase, 'lamps': len(wait.lamps or []), 'fired': wait.fired, 'cls_only': wait.lamps == [],
                   'p': wait.rows[-1]['p'] if wait.rows else None, 'lit': wait.rows[-1]['lit'] if wait.rows else None}
-          mode = 'standstill' if wait is not None else ('approach' if osm_m is not None and osm_m <= APPROACH_M
-                                                        and st['v'] >= MOVING else 'idle')
+          mode = ('standstill' if wait is not None else 'stopped' if look is not None
+                  else 'approach' if osm_m is not None and osm_m <= APPROACH_M and st['v'] >= MOVING else 'idle')
           write_state({'t': t, 'mode': mode, 'osm_m': None if osm_m is None else round(osm_m, 1), 'osm_kind': osm_kind,
-                       'light': light.call, 'p': p_last, 'wait': ws, 'enable': ENABLE.exists()})
+                       'light': light.call, 'p': p_last, 'wait': ws, 'why': look['why'] if look is not None else None,
+                       'enable': ENABLE.exists()})
 
-      quiet = st['v'] < STOPPED and st['en'] and not st['brake'] and st['lead'] > LEAD_NEAR
+      stopped = st['v'] < STOPPED
+      quiet = stopped and st['en'] and not st['brake'] and st['lead'] > LEAD_NEAR
       if not quiet:
+        # A wait broken while the car stays put (a scooter edging into LEAD_NEAR and out again, a dab of
+        # the brake) is paused, not dropped: the lamps cannot have moved. 10/14 18:39 was cut in three
+        # that way, each piece spent its first 3 s finding again, and the light went green inside that.
         if wait is not None:
-          log.write(json.dumps({'end': tag, 't0': wait.t0, 'dur': round(t - wait.t0, 1), 'det_runs': wait.det_runs,
-                                'lamps': wait.lamps, 'fired': wait.fired, 'rows': wait.rows}) + '\n')
-        wait = None
+          wait.run = 0
+          paused = wait
+          wait = None
+        if paused is not None and not stopped:
+          log.write(json.dumps({'start': paused.tag, 'end': tag, 't0': paused.t0, 'dur': round(t - paused.t0, 1),
+                                'det_runs': paused.det_runs, 'lamps': paused.lamps, 'fired': paused.fired,
+                                'cls_only': paused.lamps == [], 'rows': paused.rows}) + '\n')
+          paused = None
+        if stopped:
+          # A standstill it will not act on. Read the light anyway, for the HUD and the stop log, so the
+          # driver can see at every stop whether it calls the light right.
+          if stopped_since is None:
+            stopped_since = t
+          if t - stopped_since < SETTLE:
+            if not a.replay:
+              time.sleep(0.1)
+            continue
+          why = 'lead' if st['lead'] <= LEAD_NEAR else 'brake' if st['brake'] else 'off'
+          if look is None:
+            look = {'start': tag, 't0': t, 'why': why, 'rows': []}
+          look['why'] = why
+          if not a.replay:
+            band = grab()
+            if band is None:
+              continue
+            busy0 = time.monotonic()
+          p_last = [round(float(x), 3) for x in classify(cls, band)]
+          light.update(p_last, t)
+          look['rows'].append({'t': round(t - look['t0'], 2), 'p': p_last, 'why': why})
+          cost = time.monotonic() - busy0
+          if a.replay:
+            t_busy_until = t + cost
+          elif sm['deviceState'].thermalStatus == Thermal.overheated:
+            time.sleep(3 * cost)
+          continue
+        if look is not None:
+          look_log.write(json.dumps({'start': look['start'], 'end': tag, 'dur': round(t - look['t0'], 1),
+                                     'rows': look['rows']}) + '\n')
+          look = None
         stopped_since = None
         if not a.replay:
           if st['v'] >= MOVING and osm_m is not None and osm_m <= APPROACH_M:
@@ -411,10 +479,15 @@ def main():
         if not a.replay:
           time.sleep(0.1)
         continue
+      if look is not None:
+        look_log.write(json.dumps({'start': look['start'], 'end': tag, 'dur': round(t - look['t0'], 1),
+                                   'rows': look['rows']}) + '\n')
+        look = None
       if wait is None:
-        wait = Wait(t)
-      if wait.fired is not None or wait.lamps == []:
-        # done with this wait (pressed, or there is no light to watch): no frames until the car moves
+        wait = paused if paused is not None else Wait(t, tag)
+        paused = None
+      if wait.fired is not None:
+        # done with this wait: no frames until the car moves
         if not a.replay:
           time.sleep(0.2)
         continue
@@ -429,7 +502,12 @@ def main():
         wait.find(det, band, t)
         if wait.lamps:
           snap(out, band, f'{tag}_found')
-      elif wait.watch(cls, band, t):
+      elif wait.lamps == [] and wait.watch_cls(cls, band, t):
+        # classifier alone: shadow only, never pressed (1 early release in 35 offline, see the top)
+        wait.fired = round(t - wait.t0, 2)
+        snap(out, band, f'{tag}_go_cls')
+        print(f'tlwatchd: {tag} green (classifier only), would GO (shadow, never pressed) after {wait.fired} s stopped', flush=True)
+      elif wait.lamps and wait.watch(cls, band, t):
         if not a.replay:
           # a cycle takes most of a second; the car must still be the car we decided about
           sm.update(0)

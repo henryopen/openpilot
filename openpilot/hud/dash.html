@@ -925,7 +925,9 @@ function showLight(lights){
 
 /* 看燈服務（yolo/tlwatchd.py）的判斷，用同一塊燈牌講出來：
      行進中  前方號誌 85m 紅燈／綠燈／判斷中（OSM 有標、離 160 m 內才判燈色；更遠只報距離）
-     停等中  找燈中 → 紅燈 → 綠燈・起步（觀察模式時加「觀察」：只記錄、不會真的按 GO）
+     停等中  找燈中 → 紅燈 92% → 綠燈 確認中 → GO（觀察模式時加「觀察」：只記錄、不會真的按 GO；
+             沒找到燈改只靠判色，標「只靠判色」，那種 GO 永遠只觀察）
+     停住但它不會下 GO（前有車／踩煞車／未接管）：照樣講燈色和把握，後面標原因
    服務沒在跑（server 1.5 秒沒收到）就整塊收掉，不留舊的判斷。 */
 function renderTL(tl, la){
   const box=document.getElementById('litBox');
@@ -934,20 +936,32 @@ function renderTL(tl, la){
   const act = (la && la.mode) ? ('・'+(la.mode==='slow'?'提早減速':'滑行')+(la.on?'':'（觀察）')) : '';
   if(!tl){ if(Date.now()-tlAt<1500){ box.className='ov lit'; tlAt=0; } return; }
   let cls='', txt='';
-  const obs = tl.enable ? '' : '（觀察）';
+  const pc = v => Math.round((v||0)*100)+'%';
+  // 10/14 使用者：「你要在 HUD 上讓我知道這些判斷，不然我怎知準不準」→ 每次停車都講燈色和把握，
+  // 下 GO 的那一刻講 GO；它不會下 GO 的停車（前有車／踩煞車／沒接管）也照判，後面標原因。
   if(tl.mode==='standstill' && tl.wait){
     const w=tl.wait, p=w.p||[0,0,0];
+    const only = w.cls_only ? '（只靠判色）' : '';
     if(w.phase==='finding'){ cls='off'; txt='停等・找燈中'; }
-    else if(w.phase==='no_light'){ cls='off'; txt='停等・沒看到燈'; }
-    else if(w.phase==='fired'){ cls='green'; txt='綠燈・起步'+obs; }
+    else if(w.phase==='fired'){ cls='green';
+      txt = (tl.enable && !w.cls_only) ? 'GO 已送出・綠燈' : 'GO（觀察）・綠燈'+only; }
     else { const lit=(w.lit||[]).some(x=>x);
-           if(p[2]>=0.7 && !lit){ cls='green'; txt='綠燈 確認中'; }
-           else { cls='red'; txt='停等・紅燈'; } }
+           if(p[2]>=0.7 && !lit){ cls='green'; txt=`綠燈 ${pc(p[2])} 確認中`+only; }
+           else if(p[1]>=0.5){ cls='red'; txt=`停等・紅燈 ${pc(p[1])}`+only; }
+           else { cls='off'; txt=`停等・判斷中 紅${pc(p[1])} 綠${pc(p[2])}`+only; } }
+  } else if(tl.mode==='stopped'){
+    const p=tl.p||[0,0,0];
+    const why = {lead:'前有車', brake:'踩煞車', off:'未接管'}[tl.why] || '';
+    if(!tl.p){ cls='off'; txt='停等・看燈中・'+why; }
+    else if(tl.light==='red'){ cls='red'; txt=`紅燈 ${pc(p[1])}・${why}`; }
+    else if(tl.light==='go'){ cls='green'; txt=`綠燈 ${pc(p[2])}・${why}`; }
+    else { cls='off'; txt=`判斷中 紅${pc(p[1])} 綠${pc(p[2])}・${why}`; }
   } else if(tl.osm_m!=null){
     const what = tl.osm_kind===1 ? '前方行人號誌' : '前方號誌';
     const d = Math.round(tl.osm_m);
-    if(tl.mode==='approach' && tl.light==='red'){ cls='red'; txt=`${what} ${d}m 紅燈`; }
-    else if(tl.mode==='approach' && tl.light==='go'){ cls='green'; txt=`${what} ${d}m 綠燈`; }
+    const p=tl.p||[0,0,0];
+    if(tl.mode==='approach' && tl.light==='red'){ cls='red'; txt=`${what} ${d}m 紅燈 ${pc(p[1])}`; }
+    else if(tl.mode==='approach' && tl.light==='go'){ cls='green'; txt=`${what} ${d}m 綠燈 ${pc(p[2])}`; }
     else if(tl.mode==='approach'){ cls='off'; txt=`${what} ${d}m 判斷中`; }
     else { cls='off'; txt=`${what} ${d}m`; }
   }
