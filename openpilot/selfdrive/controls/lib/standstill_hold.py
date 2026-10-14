@@ -45,6 +45,19 @@ JUMP_M = 2.0           # m
 CRAWL_SPEED = 1.0      # m/s
 CRAWL_GAP = 3.5        # m
 
+# ...and faster than that (2026-10-14 17:10:02). Released behind a car that had crept 1 m in 5.5 s, the
+# car surged (+1.87 for +0.17 asked), the lead stopped again, and from 6.2 m to 2.5 m at 4-5.7 km/h the
+# plan asked -0.3..-0.6, which this car ignores at that pace - shouldStop never came, the crawl arm needs
+# < 1.0 m/s, and the driver braked at 1.9 m. So also hold when, under CLOSE_SPEED, a lead that is stopped
+# (|vLead| - an oncoming or crossing return has a large negative one) would still be closer than CLOSE_GAP
+# after a gentle CLOSE_DECEL stop from here. Replayed over 10/08-10/14 against the shipped hold: 30 more
+# holds - 12 where the driver braked within 3 s and the gap got to 1.2-3.3 m, 12 that come earlier than
+# the crawl arm did (ending 1.5-3.6 m), 4 blips of 0.05-0.25 s, and 2 that would stop the car where it
+# rolled on 2.4-2.7 m past a near-still car.
+CLOSE_SPEED = 2.0      # m/s
+CLOSE_DECEL = 0.8      # m/s^2
+CLOSE_GAP = 3.0        # m
+
 # The pull away after a release. While held, the MPC keeps planning from zero and keeps wanting to
 # close in, so on release its plan went straight out: +0.47-0.72 in the first frames against 0.00 on
 # 09-25, before the hold. The car is about 0.9 s behind and overshoots 3-4x at walking pace - aEgo
@@ -114,7 +127,9 @@ class StandstillHold:
     if not self.active:
       stopped = not self.need_move and v_ego < ARM_SPEED and lead.dRel < ARM_MAX_GAP
       crawling_in = v_ego < CRAWL_SPEED and lead.dRel < CRAWL_GAP
-      if radar_lead and lead.vLead < ARM_LEAD_STILL and (stopped or crawling_in):
+      closing_in = (v_ego < CLOSE_SPEED and abs(lead.vLead) < ARM_LEAD_STILL
+                    and lead.dRel - v_ego ** 2 / (2. * CLOSE_DECEL) < CLOSE_GAP)
+      if radar_lead and lead.vLead < ARM_LEAD_STILL and (stopped or crawling_in or closing_in):
         self.launch_t = None
         self.active = True
         self.d_filter.x = float(lead.dRel)
