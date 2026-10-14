@@ -470,6 +470,15 @@ def _produce():
             data["tlwatch"] = _tl
         except (OSError, ValueError):
           pass
+        # and what the planner does with it (selfdrive/controls/lib/light_ahead.py): coasting or an early
+        # slowdown towards the signal, and whether that is live or only shadowed
+        try:
+          with open("/dev/shm/light_ahead.json") as _f:
+            _la = json.load(_f)
+          if time.monotonic() - float(_la.get("t", 0)) < 2.0:
+            data["lightAhead"] = _la
+        except (OSError, ValueError):
+          pass
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         # what cruise is really working to, which is not the driver's MAX whenever something

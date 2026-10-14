@@ -290,6 +290,7 @@ def main():
     i += 1
   out.mkdir(parents=True)
   log = (out / 'waits.jsonl').open('a', buffering=1)
+  appr_log = (out / 'approach.jsonl').open('a', buffering=1)
   print(f'tlwatchd: {"replay " + a.replay if a.replay else "live"}, logging to {out}', flush=True)
 
   if a.replay:
@@ -392,6 +393,10 @@ def main():
               b0 = time.monotonic()
               p_last = [round(float(x), 3) for x in classify(cls, band)]
               light.update(p_last, t)
+              # the approach as it happened, so the planner's use of it can be replayed afterwards
+              appr_log.write(json.dumps({'t': round(t, 2), 'wall': tag, 'v': round(float(st['v']), 2),
+                                         'osm_m': round(osm_m, 1), 'kind': osm_kind, 'p': p_last, 'call': light.call,
+                                         'lead': round(float(st['lead']), 1), 'en': bool(st['en'])}) + '\n')
               if sm['deviceState'].thermalStatus == Thermal.overheated:
                 time.sleep(3 * (time.monotonic() - b0))
           else:

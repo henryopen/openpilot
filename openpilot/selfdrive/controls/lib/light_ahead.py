@@ -1,0 +1,117 @@
+"""Coming up to a traffic signal with nothing in front: ease off early, and let a known green go.
+
+The driver (2026-10-14): with no car ahead the car brakes too late for a red, and above 60 km/h it does
+not manage at all. Over 8/26-10/13 it stopped itself for a light with nothing in front 22 times against
+156 by the driver; from 40-60 km/h its braking peaked at -2.26 m/s^2 (driver -1.94), from above 60 never.
+The light is only readable from about 40 m (light classifier, median 41 m), and from 50 km/h a stop at
+the driver's 1.5 m/s^2 needs 65 m - so waiting to see the red is always late at speed.
+
+What is known earlier is that a signal is there: the OSM list, through tlwatchd (yolo/tlwatchd.py),
+which writes the metres to the signal ahead and its read of the light to /dev/shm/tlwatch.json. The
+driving model cannot tell red from green, but on the way into a red its own plan slows well before
+the stop - its lowest planned speed under 0.6 x ours at a median 104 m on 40-55 km/h approaches -
+and it does that on the way through only 2 of 129 greens. A signal on the map makes that intent
+believable where on its own it is not (it also slows for nothing in alleys and car parks).
+
+So, with nothing within LEAD_IGNORE in front, no indicator on (a turn is the corner logic's), engaged,
+and the watcher's file fresh:
+  green known        nothing - carry on
+  red known, or the model means to slow (INTENT_FRAC, for INTENT_FRAMES)
+                     slow down evenly towards V_FLOOR by STOP_ZONE short of the signal, no firmer than
+                     A_EARLY_MAX; the stop itself stays with stop_for_lights / the junction handoff
+  otherwise, inside COAST_FROM
+                     no throttle: A_COAST, about what the car does on its own off the pedal (-0.27)
+Simulated on the recorded approaches with the classifier's real calls: 40-55 km/h reds start slowing
+at a median 104 m and need 0.77 m/s^2 instead of braking late; 2 of 129 greens get a needless slowdown.
+
+It is a limit on cruise, like the corner: the planner takes the lower of the two, so it can only ever
+take speed off. Off unless FLAG exists, so it can ride along in shadow while the watcher's calls are
+checked against real drives; `mode` says what it would be doing either way.
+"""
+import json
+import os
+import time
+
+import numpy as np
+
+from openpilot.common.constants import CV
+
+FLAG = '/data/light_ahead_on'
+STATE = '/dev/shm/tlwatch.json'
+OUT = '/dev/shm/light_ahead.json'  # what it is doing, for the HUD: written on a change and once a second
+STALE = 1.0                      # s: an older file means the watcher is not running
+COAST_FROM = 150.0               # m to the signal
+STOP_ZONE = 15.0                 # m: the OSM node is mid-junction, the stop line about this far short
+A_COAST = -0.25                  # m/s^2, off the throttle
+A_EARLY_MAX = -1.2               # firmest early slowdown; anything harder is the stop logic's call
+V_FLOOR = 20 * CV.KPH_TO_MS      # the model's intent alone does not slow below this
+V_FLOOR_RED = 10 * CV.KPH_TO_MS  # a red seen: slow further, the stop logic still makes the stop
+MIN_SPEED = 25 * CV.KPH_TO_MS
+LEAD_IGNORE = 80.0               # m: a car nearer than this sets the pace
+INTENT_FRAC = 0.6
+INTENT_FRAMES = 10               # 0.5 s at 20 Hz
+
+
+class LightAhead:
+  def __init__(self):
+    self.enabled = os.path.exists(FLAG)
+    self.frame = 0
+    self.state = None
+    self.intent_frames = 0
+    self.a_limit = None
+    self.mode = ''               # '', 'coast', 'slow' - what it is (or in shadow would be) doing
+    self.a_shadow = None
+    self._out_mode, self._out_t = None, 0.
+
+  def _read(self):
+    try:
+      with open(STATE) as f:
+        s = json.load(f)
+      return s if time.monotonic() - float(s.get('t', 0)) < STALE else None
+    except (OSError, ValueError, TypeError):
+      return None
+
+  def update(self, md, v_ego, lead, blinker, engaged):
+    self._decide(md, v_ego, lead, blinker, engaged)
+    now = time.monotonic()
+    if self.mode != self._out_mode or now - self._out_t > 1.0:
+      self._out_mode, self._out_t = self.mode, now
+      try:
+        tmp = OUT + '.tmp'
+        with open(tmp, 'w') as f:
+          json.dump({'t': now, 'mode': self.mode, 'on': self.enabled,
+                     'a': None if self.a_shadow is None else round(self.a_shadow, 2)}, f)
+        os.replace(tmp, OUT)
+      except OSError:
+        pass
+
+  def _decide(self, md, v_ego, lead, blinker, engaged):
+    self.frame += 1
+    if self.frame % 20 == 0:
+      self.enabled = os.path.exists(FLAG)
+    if self.frame % 5 == 0:
+      self.state = self._read()
+    self.a_limit, self.mode, self.a_shadow = None, '', None
+
+    vmin = min(md.velocity.x) if len(md.velocity.x) else v_ego
+    self.intent_frames = self.intent_frames + 1 if (v_ego > 1. and vmin < INTENT_FRAC * v_ego) else 0
+
+    s = self.state
+    if (not engaged or s is None or s.get('mode') != 'approach' or s.get('osm_m') is None
+        or blinker or v_ego < MIN_SPEED or (lead.present and float(lead.dRel) < LEAD_IGNORE)):
+      return
+    light = s.get('light')
+    if light == 'go':
+      return
+    d = max(float(s['osm_m']) - STOP_ZONE, 5.)
+    if light == 'red' or self.intent_frames >= INTENT_FRAMES:
+      v_floor = V_FLOOR_RED if light == 'red' else V_FLOOR
+      a = -(v_ego ** 2 - v_floor ** 2) / (2. * d)
+      self.mode, a = 'slow', float(np.clip(a, A_EARLY_MAX, A_COAST))
+    elif float(s['osm_m']) <= COAST_FROM:
+      self.mode, a = 'coast', A_COAST
+    else:
+      return
+    self.a_shadow = a
+    if self.enabled:
+      self.a_limit = a

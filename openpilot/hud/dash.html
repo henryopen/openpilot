@@ -927,9 +927,11 @@ function showLight(lights){
      行進中  前方號誌 85m 紅燈／綠燈／判斷中（OSM 有標、離 160 m 內才判燈色；更遠只報距離）
      停等中  找燈中 → 紅燈 → 綠燈・起步（觀察模式時加「觀察」：只記錄、不會真的按 GO）
    服務沒在跑（server 1.5 秒沒收到）就整塊收掉，不留舊的判斷。 */
-function renderTL(tl){
+function renderTL(tl, la){
   const box=document.getElementById('litBox');
   if(!box) return;
+  // 規劃程式正在（或觀察模式下「會」）怎麼處理這個號誌，接在燈牌後面
+  const act = (la && la.mode) ? ('・'+(la.mode==='slow'?'提早減速':'滑行')+(la.on?'':'（觀察）')) : '';
   if(!tl){ if(Date.now()-tlAt<1500){ box.className='ov lit'; tlAt=0; } return; }
   let cls='', txt='';
   const obs = tl.enable ? '' : '（觀察）';
@@ -952,7 +954,7 @@ function renderTL(tl){
   if(!txt){ if(tlAt){ box.className='ov lit'; tlAt=0; } return; }
   tlAt=Date.now();
   box.className='ov lit on '+cls;
-  document.getElementById('litTxt').textContent=txt;
+  document.getElementById('litTxt').textContent=txt+(tl.mode==='approach'?act:'');
 }
 
 function clearLight(){    // 辨識停了：這時候留著上一顆燈就是騙人
@@ -1025,7 +1027,7 @@ function render(F){
   // 事，但只有後者會在直路上突然出現，所以要看得出是哪一個
   const hf=$('hfBox');
   if(hf) hf.className='ov handoff'+((F.engaged && F.handoff)?' on':'');
-  renderTL(F.tl);
+  renderTL(F.tl, F.la);
   // 實驗模式 —— 駕駛自己設的那個，跟上面的路口交接是兩回事
   const ex=$('exBox');
   if(ex) ex.className='ov expm'+(F.exp?' on':'');
@@ -1361,6 +1363,7 @@ function fromSSE(J){
     dDes:ct.followDistance||0,
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff, exp:!!ss.experimentalMode,
     tl: J.tlwatch||null,   // 看燈服務（tlwatchd）：前方號誌、燈色、停等看燈
+    la: J.lightAhead||null,   // 規劃程式對號誌的處置（light_ahead）：滑行／提早減速，on=false 是觀察
     // ENGAGED＝縱向真的在作用。踩煞車（行進中）／踩油門時 OP 狀態是 overriding：enabled 還是 true，
     // 但縱向已經交給駕駛，放開才接回。09-23 這段一直顯示 ENGAGED，駕駛以為 OP 還在控制，
     // 40 次踩煞車裡 17 次自己按 CANCEL。

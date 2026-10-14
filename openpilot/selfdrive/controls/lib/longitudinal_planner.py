@@ -18,6 +18,7 @@ from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import (get_
 from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_from_plan, should_stop
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
+from openpilot.selfdrive.controls.lib.light_ahead import LightAhead
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
 from openpilot.selfdrive.controls.lib.lead_view import LeadView, is_chase
@@ -414,6 +415,7 @@ class LongitudinalPlanner:
     self.plan_reason = PlanReason.cruise
     self.weak_lead_frames = 0
     self.curve_speed = CurveSpeedControl()
+    self.light_ahead = LightAhead()
     self.deadzone = LongDeadzone(dt)
     self.standstill_hold = StandstillHold(dt)
     self.lead_view = LeadView()
@@ -564,6 +566,17 @@ class LongitudinalPlanner:
     if self.curve_speed.is_active:
       curve_limited = self.curve_speed.a_target < self.a_cruise
       self.a_cruise = min(self.a_cruise, self.curve_speed.a_target)
+
+    # a traffic signal ahead with nothing in front: ease off early - see light_ahead. Off unless its
+    # flag file exists; a fault in it must never cost the plan, so it just stands down.
+    try:
+      _cs = sm['carState']
+      self.light_ahead.update(sm['modelV2'], v_ego, radar.leadOne, _cs.leftBlinker or _cs.rightBlinker,
+                              sm['selfdriveState'].enabled and not reset_state)
+      if self.light_ahead.a_limit is not None:
+        self.a_cruise = min(self.a_cruise, self.light_ahead.a_limit)
+    except Exception:
+      cloudlog.exception("light_ahead failed")
 
     # What cruise is really working to, in the units the dash shows so it can sit beside the
     # driver's MAX. On its own the set speed says nothing the driver cannot already read, so
