@@ -670,8 +670,11 @@ class LongitudinalPlanner:
     # lead asked; a corner, a junction, the model's stop or a planned stop go straight through.
     # v_desired_filter below integrates this output, so the MPC starts its next solve from the
     # speed actually being held rather than the one it had wanted.
+    # Not while light_ahead is easing off for a signal either: its coast (-0.25) sits inside the band,
+    # and on a replay of 10/13 the band held 0 there instead - the coast never happened.
     dz_eligible = (self.plan_reason in (PlanReason.cruise, PlanReason.lead)
-                   and not self.output_should_stop and not self.junction.active and not reset_state)
+                   and not self.output_should_stop and not self.junction.active and not reset_state
+                   and self.light_ahead.a_limit is None)
     output_a_target = self.deadzone.update(output_a_target, v_ego, dz_eligible)
 
     # let braking build up - see BRAKE_ONSET_*
