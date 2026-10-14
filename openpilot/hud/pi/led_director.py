@@ -25,6 +25,7 @@ OP 沒接手（selfdriveState.enabled 為 false）或車機待機：只顯示日
 aTarget／reason 不是車子實際在做的事，照著顯示會亂講話。
 YOLO 沒上、OP 分不出紅燈：「前方停車」「停止中」只講車要停，FORBIDDEN 講燈號。
 """
+from collections import deque
 from dataclasses import dataclass, field
 
 KPH = 1 / 3.6
@@ -43,16 +44,14 @@ STOPPED_V = 0.3         # m/s 以下當作停住
 MOVING_V = 1.0          # m/s 以上才算離開停住
 FOLLOW_STOP_GAP = 15.0  # m：停住時前車在這距離內 = 跟車停等，否則是停止中
 LEAD_LAUNCH_V = 1.0     # m/s：跟車停等中前車開到這速度 = 前車起步
-# 前方塞車（10/12 定；門檻是常理估的，重放驗證見 commit）
-JAM_STOPS = 2                 # 次：這段時間內跟著前車停下這麼多次 = 停停走走
-JAM_STOP_WINDOW = 120.0       # s
-JAM_STOP_MIN_GAP = 10.0       # m：兩次停車之間至少走這麼遠才算新的一次（排隊挪車不算）
-JAM_STOP_PEAK_V = 25 / 3.6    # m/s：而且中間最快沒超過這個（連續紅燈之間會開到 30-50）
-JAM_LEAD_V = 20 / 3.6         # m/s：前車比這慢
-JAM_LEAD_GAP = 40.0           # m：而且在這距離內
-JAM_CRAWL_SECS = 20.0         # s：我們在動、一路跟著這種慢車這麼久 = 車陣蠕行
-JAM_EXIT_V = 40 / 3.6         # m/s：快過這個
-JAM_EXIT_SECS = 30.0          # s：持續這麼久 = 出了車陣
+# 前方塞車（10/12 加；10/14 使用者「太頻繁」改成看最近 3 分鐘的累積，依據寫在 _candidate 的塞車段）
+JAM_WINDOW = 180.0            # s：看最近這麼久
+JAM_SLOW_V = 30 / 3.6         # m/s：在動、但比這慢
+JAM_LEAD_GAP = 40.0           # m：而且前車在這距離內（沒打方向燈）—— 這樣走的秒數累積起來
+JAM_ON_SECS = 120.0           # s：窗內累積到這麼多 = 塞車（3 分鐘裡有 2 分鐘）
+JAM_OFF_SECS = 60.0           # s：掉到這以下 = 車陣散了
+JAM_EXIT_V = 40 / 3.6         # m/s：快過這個不講塞車
+JAM_EXIT_SECS = 15.0          # s：持續這麼久 = 出了車陣，累積從頭算
 LEAD_LAUNCH_GAP = 2.0   # m：或前車比停住時拉開這麼多
 
 # 縱向門檻（m/s²），進入／離開分開做遲滯
@@ -319,12 +318,6 @@ class Director:
     else:
       self.close = False
 
-    # 走了多遠（塞車判斷要看兩次停車之間走了多少）
-    if self.odo_t is not None and 0 < now - self.odo_t < 1.0:
-      self.odo += v * (now - self.odo_t)
-    self.odo_t = now
-    self.peak_v = max(self.peak_v, v)    # 上次停下以來的最高車速
-
     # --- 停住／起步
     if self.stopped_since is None:
       stopped = v < STOPPED_V and (cs.get("standstill", False) or v < 0.1)
@@ -336,28 +329,37 @@ class Director:
         near = present and d_rel is not None and d_rel < FOLLOW_STOP_GAP
         self.stop_kind = "follow" if near else "alone"
         self.stop_d_rel = d_rel if near else None
-        # 停停走走 = 兩次停之間真的走了一段（排隊挪幾公尺不算），但車速一直起不來。10/12 重放 6 趟：
-        # 只看「2 分鐘停 2 次」觸發 14 次、「前方塞車」占顯示 11.8%，多是市區連續兩個紅燈都停在車後面
-        # （中間開到 30-50 km/h）；只加距離門檻也只少 2 次 —— 兩停之間的最高車速才分得開
-        if near and self.odo - self.last_stop_odo >= JAM_STOP_MIN_GAP and self.peak_v < JAM_STOP_PEAK_V:
-          self.follow_stops.append(now)
-        self.last_stop_odo, self.peak_v = self.odo, 0.0
     else:
       self.stopped_since = None
 
-    # --- 塞車（使用者 10/12）：停停走走 = JAM_STOP_WINDOW 內跟著前車停下 JAM_STOPS 次；或一路跟著慢車蠕行
-    # （我們在動、前車 JAM_LEAD_GAP 內、慢過 JAM_LEAD_V）連續 JAM_CRAWL_SECS。只算在動的蠕行，所以
-    # 紅燈前停在一台車後面等久了不算。持續快過 JAM_EXIT_V 達 JAM_EXIT_SECS 才算出了車陣。
-    self.follow_stops = [t for t in self.follow_stops if now - t <= JAM_STOP_WINDOW]
-    crawling = (not stopped) and present and d_rel is not None and d_rel < JAM_LEAD_GAP and v_lead < JAM_LEAD_V
-    self.crawl_since = (self.crawl_since or now) if crawling else None
-    if not self.jam and (len(self.follow_stops) >= JAM_STOPS or
-                         (self.crawl_since is not None and now - self.crawl_since >= JAM_CRAWL_SECS)):
+    # --- 塞車（使用者 10/12 要、10/14 嫌太頻繁）：最近 JAM_WINDOW 秒裡「在動、比 JAM_SLOW_V 慢、前車在
+    # JAM_LEAD_GAP 內、沒打方向燈」累積 JAM_ON_SECS 秒就是塞車，掉到 JAM_OFF_SECS 以下、或快過 JAM_EXIT_V
+    # 達 JAM_EXIT_SECS 秒就散了。停著的時間不算進去（紅燈前停在車後面等再久也不是塞車）。
+    # 10/12 的版本（跟慢車 20 秒、或 2 分鐘內跟車停 2 次就算，快過 40 km/h 連 30 秒才解除）10/08-10/13 重放
+    # 10 小時觸發 20 次、看 qcamera 只有 5 次是真塞車（快速道路／橋上車陣），其他是路口排隊、轉彎前跟車、
+    # 市區連續紅燈、巷子裡跟一台慢車；而且一觸發就一直掛著，出了車陣開 60-87 km/h 還在講。
+    # 改成累積後：真塞車四段窗內最高 146-175 秒，其他地方最高 83 秒 —— 門檻 120 秒放在中間。
+    # 打方向燈時不算：市區轉彎前後跟車慢慢走，不扣掉的話 10/08-10/13 多 1 段假的（9/23-10/07 多 4 段）。
+    dt = now - self.jam_t if self.jam_t is not None and 0 < now - self.jam_t < 1.0 else 0.0
+    self.jam_t = now
+    turning = _g(d, "intent", "turn") in ("left", "right")
+    slow = (not stopped) and v < JAM_SLOW_V and present and d_rel is not None and d_rel < JAM_LEAD_GAP and not turning
+    self.jam_hist.append((now, dt if slow else 0.0))
+    self.jam_slow += dt if slow else 0.0
+    while self.jam_hist and now - self.jam_hist[0][0] > JAM_WINDOW:
+      self.jam_slow -= self.jam_hist.popleft()[1]
+    if not self.jam and self.jam_slow >= JAM_ON_SECS:
       self.jam = True
     if self.jam:
       self.fast_since = (self.fast_since or now) if v > JAM_EXIT_V else None
-      if self.fast_since is not None and now - self.fast_since >= JAM_EXIT_SECS:
-        self.jam, self.fast_since, self.follow_stops = False, None, []
+      fast_out = self.fast_since is not None and now - self.fast_since >= JAM_EXIT_SECS
+      if fast_out or self.jam_slow < JAM_OFF_SECS:
+        self.jam, self.fast_since = False, None
+        if fast_out:                       # 出了車陣：累積清掉，不然一慢下來馬上又是塞車
+          self.jam_hist.clear()
+          self.jam_slow = 0.0
+    # 車陣裡偶爾衝到 40 以上那幾秒照實講（加速、巡航），不講塞車
+    self.jam_show = self.jam and v <= JAM_EXIT_V
     stop_ahead = float(_g(d, "modelV2", "stopAhead", default=0.0) or 0.0)
 
     # --- 速限
@@ -375,7 +377,12 @@ class Director:
       ahead = {"limit": round(a_lim / KPH), "dist": a_dist}
 
     # ============ 依嚴重度從高到低
-    if now < self.alert_until or (a <= HARD_BRAKE and reason.startswith(("lead", "weaklead")) and not stopped):
+    # 前車急煞看的是 planner「想要」的減速（aTarget），所以只在 OP 真的在管縱向時才算數：踩油門（overriding）
+    # 或踩煞車時 planner 還照樣對前面的東西規劃，aTarget 會掉到 -3.5，但車子是駕駛在開。10/14 查大轉彎：
+    # 10/08-10/13 大轉彎裡 48 個彎跳過「前車急煞」，37 次是駕駛在踩油門或煞車（另 5 次 OP 縱向沒在作用），
+    # 觸發它的「前車」近一半是機車停等區、對向等候車、路邊停車等不在路線上的東西。
+    op_long = sd.get("state") != "overriding" and not gas and not brake
+    if now < self.alert_until or (op_long and a <= HARD_BRAKE and reason.startswith(("lead", "weaklead")) and not stopped):
       if now >= self.alert_until:
         self.alert_until = now + ALERT_HOLD
       return Screen("hard_brake")
@@ -425,6 +432,7 @@ class Director:
     if self.in_zone:
       if self.close or (self.decel and reason.startswith("lead") and not brake):
         why = "decel" if not self.close else ("near" if r < CLOSE_OUT else "closing")
+        # 前車減速照 9/24 使用者情境表照講，塞車中也不換（要不要換給使用者決定，10/14）
         return Screen("lead_slow", {"dRel": d_rel, "why": why})
       self.far = r > FAR_IN or (self.far and r > FAR_OUT)
       # 跟車中速限變了也要講（使用者 10/11）：原本跟車畫面先回傳，速限變更在跟車時一次都輪不到
@@ -449,12 +457,15 @@ class Director:
     if now < self.limit_changed_until:
       return Screen("limit_changed", {"limit": self.limit_changed_to})
     if self.accel and max_kph and kph < max_kph - AT_MAX:
-      return Screen("accel", {"ahead": ahead})
-    return Screen("cruise", {"ahead": ahead, "limit": limit_kph})
+      return self._lead_page("accel", {"ahead": ahead})
+    return self._lead_page("cruise", {"ahead": ahead, "limit": limit_kph})
 
   def _lead_page(self, key, params):
-    """跟車、跟車停等、跟上前車：在車陣裡一律講「前方塞車」（前車急煞／停止／減速不受影響，排在前面）。"""
-    return Screen("jam") if self.jam else Screen(key, params)
+    """跟車、跟車停等、跟上前車、省油加速、平穩行駛：在車陣裡一律講「前方塞車」
+    （前車急煞／停止／減速／起步、轉彎、彎道、路口不受影響，排在前面）。
+    10/12 版只換掉前三個，車陣裡前車一拉開就變「省油加速」「平穩行駛」，「前方塞車」一直被切掉又回來：
+    10/13 早上那趟 PiBar led.log 一小時上屏 89 次、中位 3 秒。"""
+    return Screen("jam") if self.jam_show else Screen(key, params)
 
   @staticmethod
   def _curve_dir(d):
@@ -479,10 +490,10 @@ class Director:
     self.alert_until = 0.0
     self.limit_changed_until = 0.0
     self.limit_changed_to = 0
-    self.jam = False
-    self.follow_stops = []
-    self.crawl_since = self.fast_since = None
-    self.odo, self.odo_t, self.last_stop_odo, self.peak_v = 0.0, None, -1e9, 0.0
+    self.jam = self.jam_show = False
+    self.fast_since = self.jam_t = None
+    self.jam_hist = deque()           # (時間, 這格算進「跟著前車慢慢走」的秒數)
+    self.jam_slow = 0.0
 
   # ------------------------------------------------------------ 仲裁
   def update(self, d, now):
