@@ -1,0 +1,23 @@
+[Unit]
+Description=Traffic light watcher: presses the keypad's GO when the light turns green at a standstill
+After=network-online.target
+
+[Service]
+Type=simple
+User=comma
+Environment=PYTHONPATH=/data/openpilot:/data/yolo/pylibs
+# Same footing as yolod: lowest CPU and disk priority, and off the cores the control loop
+# (4: controlsd/card/selfdrived, 5: plannerd/radard) and camerad/modeld (6-7) live on.
+Nice=19
+IOSchedulingClass=idle
+CPUAffinity=0 1 2 3
+# Hard caps on top of the priority: never more than one and a half cores or 600 MB, whatever
+# the code does. Hitting the memory cap kills this process only, and systemd restarts it.
+CPUQuota=150%
+MemoryMax=600M
+ExecStart=/usr/local/venv/bin/python /data/yolo/tlwatchd.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
