@@ -252,6 +252,12 @@ NN2_JERK_HZ = 0.5      # the rate input is filtered this way in training; the ra
 class LatControlTorque(LatControl):
   def __init__(self, CP, CI, dt):
     super().__init__(CP, CI, dt)
+    # Headroom past 1.0 where the car's ceiling sits above its torque scale (the Custin since
+    # 2026-10-15: 450 against 384, see opendbc's hyundai CarControllerParams). 1.0 everywhere else.
+    if CP.brand == "hyundai":
+      from opendbc.car.hyundai.values import CarControllerParams
+      ccp = CarControllerParams(CP)
+      self.steer_max = ccp.STEER_MAX / ccp.STEER_TORQUE_SCALE
     self.torque_params = CP.lateralTuning.torque.as_builder()
     self.torque_from_lateral_accel = CI.torque_from_lateral_accel()
     self.lateral_accel_from_torque = CI.lateral_accel_from_torque()
