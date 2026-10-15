@@ -6,11 +6,11 @@ from openpilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeCont
 LaneChangeState = log.LaneChangeState
 LaneChangeDirection = log.LaneChangeDirection
 
-# openpilot's 30 again (2026-09-28, the driver's call). It was 40 while a blinker under it handed the
-# model a turn desire, since on these roads a blinker at 30-40 was more often a turn; with no turn
-# desire that reason is gone. The turn band below is still tied to it, so junction_handoff's blinker
-# veto and the HUD's "turning" intent now end at 30.
-LANE_CHANGE_SPEED_MIN = 30 * CV.KPH_TO_MS
+# 20 km/h (2026-10-15, the driver's call), with the turn desire back on below it. History: 30 (stock),
+# 40 while a turn desire ran under it, then 30 again with no turn desire (09-28). The turn band below
+# is tied to it, so a blinker under 20 is a turn and over 20 is a lane change; junction_handoff's
+# blinker veto and the HUD's "turning" intent end at 20 too.
+LANE_CHANGE_SPEED_MIN = 20 * CV.KPH_TO_MS
 LANE_CHANGE_TIME_MAX = 10.
 LANE_CHANGE_START_TIME = 0.5
 
@@ -112,7 +112,11 @@ class DesireHelper:
         self.desire = log.Desire.laneChangeLeft
       elif self.lane_change_direction == LaneChangeDirection.right:
         self.desire = log.Desire.laneChangeRight
-    # No turn desire (2026-09-28, the driver's call): which speed makes a blinker a turn rather than
-    # a lane change could not be pinned down, so the model is left to take junctions on its own, as
-    # in stock openpilot. LANE_TURN_SPEED_* stay: junction_handoff and the HUD still read a blinker
-    # in that band as a turn coming.
+    elif lateral_active and one_blinker and LANE_TURN_SPEED_MIN <= v_ego < LANE_TURN_SPEED_MAX:
+      # Turn desire back on (2026-10-15, the driver's call, for the big junction turns), as it ran
+      # before 09-28. A blind spot here is a car alongside in the junction, so hold the desire back
+      # the same way a lane change would be held back
+      if carstate.leftBlinker and not (carstate.leftBlindspot or left_edge_detected):
+        self.desire = log.Desire.turnLeft
+      elif carstate.rightBlinker and not (carstate.rightBlindspot or right_edge_detected):
+        self.desire = log.Desire.turnRight
