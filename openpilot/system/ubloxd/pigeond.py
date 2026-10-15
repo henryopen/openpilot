@@ -146,17 +146,6 @@ class TTYPigeon:
         return True
     return False
 
-def save_almanac(pigeon: TTYPigeon) -> None:
-  # store almanac in flash
-  pigeon.send(b"\xB5\x62\x09\x14\x04\x00\x00\x00\x00\x00\x21\xEC")
-  try:
-    if pigeon.wait_for_ack(ack=UBLOX_SOS_ACK, nack=UBLOX_SOS_NACK):
-      cloudlog.info("Done storing almanac")
-    else:
-      cloudlog.error("Error storing almanac")
-  except TimeoutError:
-    pass
-
 def init_baudrate(pigeon: TTYPigeon):
   # ublox default setting on startup is 9600 baudrate
   pigeon.set_baud(9600)
@@ -249,10 +238,34 @@ def init_pigeon(pigeon: TTYPigeon) -> bool:
     return False
   return True
 
+def save_on_shutdown(pigeon: TTYPigeon, timeout: float = 2.0) -> None:
+  """Keep what the receiver knows (orbits, position) across the power cut: the receiver has no backup
+  battery, so pigeond's power cycle at every start used to begin from nothing (a median 3 minutes to a
+  fix over 10/08-10/14). The receiver restores the backup by itself at the next power-up.
+
+  u-blox M8 receiver description 3.5 (save-on-shutdown): stop GNSS with UBX-CFG-RST 0x08 first, then
+  UBX-UPD-SOS 'create backup'. Asked while running - as save_almanac did every 5 minutes - this receiver
+  (NEO-M8P, HPG 1.40) answers 'not acknowledged' every time (61/61 in the logs); after the stop it answers
+  'acknowledged', and after a power cycle it reports 'restored' (tried on the C4, 2026-10-15)."""
+  # controlled GNSS stop
+  pigeon.send(b"\xB5\x62\x06\x04\x04\x00\x00\x00\x08\x00\x16\x74")
+  time.sleep(0.5)
+  pigeon.receive()   # drop what came out while stopping
+  pigeon.send(b"\xB5\x62\x09\x14\x04\x00\x00\x00\x00\x00\x21\xEC")
+  try:
+    if pigeon.wait_for_ack(ack=UBLOX_SOS_ACK, nack=UBLOX_SOS_NACK, timeout=timeout):
+      cloudlog.warning("almanac backup saved on shutdown")
+    else:
+      cloudlog.error("almanac backup on shutdown not acknowledged")
+  except TimeoutError:
+    cloudlog.error("almanac backup on shutdown: no answer")
+
 def deinitialize_and_exit(pigeon: TTYPigeon | None):
   if pigeon is not None:
-    # controlled GNSS stop
-    pigeon.send(b"\xB5\x62\x06\x04\x04\x00\x00\x00\x08\x00\x16\x74")
+    try:
+      save_on_shutdown(pigeon)
+    except Exception:
+      cloudlog.exception("almanac backup on shutdown failed")
 
   # turn off power and exit cleanly
   set_power(False)
@@ -278,7 +291,6 @@ def run_receiving(duration: int = 0):
   init(pigeon)
 
   start_time = time.monotonic()
-  last_almanac_save = time.monotonic()
   assist_attempted = False
   assist_messages = None
 
@@ -317,11 +329,7 @@ def run_receiving(duration: int = 0):
       msg = messaging.new_message('ubloxRaw', len(dat), valid=True)
       msg.ubloxRaw = dat[:]
       pm.send('ubloxRaw', msg)
-
-      # save almanac every 5 minutes
-      if (time.monotonic() - last_almanac_save) > 60*5:
-        save_almanac(pigeon)
-        last_almanac_save = time.monotonic()
+      # (no periodic backup: it needs GNSS stopped, so it is made once, on shutdown - see save_on_shutdown)
     else:
       # prevent locking up a CPU core if ublox disconnects
       time.sleep(0.001)
