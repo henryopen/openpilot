@@ -38,7 +38,7 @@ WAKE = ("xiao chen xiao chen", "小陳小陳", None)
 WORDS = [
   ("jia su",   "加速",  ("car", "max_up")),        # MAX +10（同左旋鈕：不會接回）
   ("jian su",  "減速",  ("car", "max_down")),      # MAX -10
-  ("lv deng chu fa", "綠燈出發", ("car", "go")),  # 起步（同鍵盤 7）。10/15 「前進」常把加速、減速、謝謝吸走，「走走」被判成停車
+  ("lv deng", "綠燈", ("car", "go")),            # 起步（同鍵盤 7）。10/15 「前進」常把加速、減速、謝謝吸走、「走走」被判成停車；「綠燈出發」→「綠燈」（使用者）
   ("xie xie",  "謝謝",  ("led", "m_thanks")),
   ("bao qian", "抱歉",  ("led", "m_sorry")),       # 字幕「不好意思」
   ("ting che", "停車",  ("led", "m_temp_stop")),   # 字幕「臨時停車」
