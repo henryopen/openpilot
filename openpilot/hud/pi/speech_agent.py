@@ -44,7 +44,7 @@ COMMANDS = [
   ("lv deng", "綠燈", ("car", "go")),            # 起步（同鍵盤 7）。「前進」常把加速、減速、謝謝吸走
   ("xie xie", "謝謝", ("led", "m_thanks")),
   ("bao qian", "抱歉", ("led", "m_sorry")),      # 字幕「不好意思」
-  ("ting che", "停車", ("led", "m_temp_stop")),  # 字幕「臨時停車」
+  ("lin shi", "臨時", ("led", "m_temp_stop")),   # 字幕「臨時停車」。10/15 「停車」(ting che) 都被判成綠燈 (lv deng)
 ]
 WORDS = ([(f"{PREFIX[0]} {py}", PREFIX[1] + text, act) for py, text, act in COMMANDS]
          + [(f"bai {py}", PREFIX[1] + text, act) for py, text, act in COMMANDS])
