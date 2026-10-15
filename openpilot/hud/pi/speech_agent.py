@@ -38,12 +38,17 @@ WAKE = ("xiao chen xiao chen", "小陳小陳", None)
 WORDS = [
   ("jia su",   "加速",  ("car", "max_up")),        # MAX +10（同左旋鈕：不會接回）
   ("jian su",  "減速",  ("car", "max_down")),      # MAX -10
-  ("qian jin", "前進",  ("car", "go")),            # 起步（同鍵盤 7）
+  ("lv deng chu fa", "綠燈出發", ("car", "go")),  # 起步（同鍵盤 7）。10/15 「前進」常把加速、減速、謝謝吸走，「走走」被判成停車
   ("xie xie",  "謝謝",  ("led", "m_thanks")),
   ("bao qian", "抱歉",  ("led", "m_sorry")),       # 字幕「不好意思」
   ("ting che", "停車",  ("led", "m_temp_stop")),   # 字幕「臨時停車」
 ]
-KEYWORDS = [WAKE] + WORDS
+# 垃圾詞：這顆晶片聽到任何聲音都會硬配到清單裡最像的一條，沒有「都不像」。10/15 實測講清單外的「走走」
+# 被判成停車、講話開頭含糊時常被判成前進。清單多放日常用語和語助詞把那些聲音吸走（LD3320 的標準做法），
+# 配到它們什麼都不做。
+FILLERS = ["ni hao", "shen me", "zhe ge", "na ge", "hao de", "dui", "bu shi", "en", "a", "o",
+           "ran hou", "zen me", "mei you", "zhi dao", "ke yi", "xian zai", "wo men", "ta men"]
+KEYWORDS = [WAKE] + WORDS + [(f, f, None) for f in FILLERS]
 
 EVENTS = {0: "", 1: "待命", 2: "按鍵喚醒", 3: "喚醒", 4: "聆聽中", 5: "辨識成功", 6: "逾時"}
 STATE_FILE = "/dev/shm/speech_state.json"
@@ -160,7 +165,9 @@ def main():
           awake = MODE != MODE_AUTO and ev in (2, 3, 4)   # auto mode is always 'recognizing'; nothing to show
           if ev in (3, 6):
             say(f"event {event_name}")
-        if 1 <= r < len(KEYWORDS):
+        if 1 <= r < len(KEYWORDS) and KEYWORDS[r][2] is None:
+          say(f"heard {r} (filler '{KEYWORDS[r][0]}')")
+        elif 1 <= r < len(KEYWORDS):
           _, text, action = KEYWORDS[r]
           seq, last = seq + 1, text
           host, result = act(action, token, host) if token or action[0] == "led" else (host, "no token")
