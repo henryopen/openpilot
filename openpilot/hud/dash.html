@@ -1674,7 +1674,7 @@ if(new URLSearchParams(location.search).has('play')){
       if(!r.ok) throw new Error(r.status);
       const s=await r.json();
       chip.style.display='';
-      chip.textContent = !s.ok ? '語音模組沒回應' : (s.awake ? '🎤 在聽' : '語音・喊小陳小陳');
+      chip.textContent = !s.ok ? '語音模組沒回應' : (s.awake ? '🎤 在聽' : '語音');
       chip.classList.toggle('sleep', !s.ok);
       chip.classList.toggle('low', !!s.awake);
       if(seen===null){ seen=s.seq; }

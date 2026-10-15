@@ -26,7 +26,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from keypad_agent import TOKEN_FILE, car_host, led_manual, send
 
 ADDR = 0x30
-MODE_KEYWORD = 2
+MODE_AUTO, MODE_KEYWORD = 0, 2
+# 2026-10-15 使用者：開車時沒辦法先喊喚醒詞 → 先用自動模式（一直在聽）試辨識率。誤觸風險（聊天、收音機
+# 說到「前進」就送 GO）待實測後再決定 GO 留不留在語音、詞要不要拉長。
+MODE = MODE_AUTO
 TIMEOUT_MS = 10000
 PERIOD = 0.1           # s
 
@@ -99,7 +102,7 @@ class Module:
     self.write([0x02, 1])
     time.sleep(0.05)
     self.wait_idle()
-    self.write([0x03, MODE_KEYWORD])
+    self.write([0x03, MODE])
     self.wait_idle()
     self.write([0x08] + list(struct.pack("<I", TIMEOUT_MS)))
     for i, (pinyin, _, _) in enumerate(KEYWORDS):
@@ -147,14 +150,14 @@ def main():
     try:
       mod = Module(SMBus(1))
       mod.setup()
-      say(f"module ready, {len(KEYWORDS)} keywords, wake word '{WAKE[1]}'")
+      say(f"module ready, {len(KEYWORDS)} keywords, " + ("always listening" if MODE == MODE_AUTO else f"wake word '{WAKE[1]}'"))
       ok_before = True
       while True:
         r = mod.recognize()
         ev = mod.event()
         if ev:
           event_name = EVENTS.get(ev, str(ev))
-          awake = ev in (2, 3, 4)
+          awake = MODE != MODE_AUTO and ev in (2, 3, 4)   # auto mode is always 'recognizing'; nothing to show
           if ev in (3, 6):
             say(f"event {event_name}")
         if 1 <= r < len(KEYWORDS):
@@ -162,7 +165,7 @@ def main():
           seq, last = seq + 1, text
           host, result = act(action, token, host) if token or action[0] == "led" else (host, "no token")
           say(f"heard {r} {text} -> {action[1]}: {result}")
-        elif r == 0:
+        elif r == 0 and MODE != MODE_AUTO:
           awake = True
         write_state({"ok": True, "seq": seq, "text": last, "awake": awake, "event": event_name})
         time.sleep(PERIOD)
