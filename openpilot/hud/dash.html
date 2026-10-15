@@ -1655,7 +1655,7 @@ if(new URLSearchParams(location.search).has('play')){
       if(seen===null){ seen=s.seq; }
       else if(s.seq!==seen){
         seen=s.seq;
-        big.innerHTML='<span class="arw">'+(ARW[s.code]||'?')+'</span>'+(s.letter?s.letter+'　':'')+s.name;
+        big.innerHTML='<span class="arw">'+(ARW[s.code]||'?')+'</span>'+(s.letter?s.letter+'　':'')+s.name+(s.act?'　'+s.act:'');
         big.classList.add('on'); hideAt=Date.now()+2500;
       }
     }catch(e){ chip.style.display='none'; raw.style.display='none'; }
