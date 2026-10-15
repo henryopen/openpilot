@@ -34,15 +34,20 @@ TIMEOUT_MS = 10000
 PERIOD = 0.1           # s
 
 # 序號 → (拼音, 顯示文字, 動作)。動作：("car", 指令) 送車機（同鍵盤）、("led", 字幕) 後窗字幕（同鍵盤 9-F）
-WAKE = ("xiao chen xiao chen", "小陳小陳", None)
-WORDS = [
-  ("jia su",   "加速",  ("car", "max_up")),        # MAX +10（同左旋鈕：不會接回）
-  ("jian su",  "減速",  ("car", "max_down")),      # MAX -10
-  ("lv deng", "綠燈", ("car", "go")),            # 起步（同鍵盤 7）。10/15 「前進」常把加速、減速、謝謝吸走、「走走」被判成停車；「綠燈出發」→「綠燈」（使用者）
-  ("xie xie",  "謝謝",  ("led", "m_thanks")),
-  ("bao qian", "抱歉",  ("led", "m_sorry")),       # 字幕「不好意思」
-  ("ting che", "停車",  ("led", "m_temp_stop")),   # 字幕「臨時停車」
+# 每個指令都要加「小白」開頭（10/15 使用者）：一直在聽的模式下等於不用停頓的喚醒詞，聊天講到「綠燈」「謝謝」
+# 不會誤觸。模組偵測開始講話比較慢、第一個字常被切掉，所以每個指令設兩條：有「小」和沒「小」都配得到。
+PREFIX = ("xiao bai", "小白")
+WAKE = ("xiao bai", "小白", None)       # 只喊「小白」：什麼都不做
+COMMANDS = [
+  ("jia su",  "加速", ("car", "max_up")),        # MAX +10（同左旋鈕：不會接回）
+  ("jian su", "減速", ("car", "max_down")),      # MAX -10
+  ("lv deng", "綠燈", ("car", "go")),            # 起步（同鍵盤 7）。「前進」常把加速、減速、謝謝吸走
+  ("xie xie", "謝謝", ("led", "m_thanks")),
+  ("bao qian", "抱歉", ("led", "m_sorry")),      # 字幕「不好意思」
+  ("ting che", "停車", ("led", "m_temp_stop")),  # 字幕「臨時停車」
 ]
+WORDS = ([(f"{PREFIX[0]} {py}", PREFIX[1] + text, act) for py, text, act in COMMANDS]
+         + [(f"bai {py}", PREFIX[1] + text, act) for py, text, act in COMMANDS])
 # 垃圾詞：這顆晶片聽到任何聲音都會硬配到清單裡最像的一條，沒有「都不像」。10/15 實測講清單外的「走走」
 # 被判成停車、講話開頭含糊時常被判成前進。清單多放日常用語和語助詞把那些聲音吸走（LD3320 的標準做法），
 # 配到它們什麼都不做。
