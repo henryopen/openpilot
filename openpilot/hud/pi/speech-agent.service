@@ -1,0 +1,13 @@
+[Unit]
+Description=LD3320 speech recognizer (I2C 0x30) -> car commands / LED, HUD (speech_state.json)
+After=hud-agent.service
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/bin/python3 /home/pi/hud/speech_agent.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -275,6 +275,7 @@
     <span class="chip wait" id="cSLA" style="display:none"></span>
     <span class="chip kbd" id="cKey" style="display:none">鍵盤</span>
     <span class="chip kbd" id="cGes" style="display:none">手勢</span>
+    <span class="chip kbd" id="cSpk" style="display:none">語音</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1661,6 +1662,34 @@ if(new URLSearchParams(location.search).has('play')){
     if(hideAt && Date.now()>hideAt){ big.classList.remove('on'); hideAt=0; }
   }
   poll(); setInterval(poll, 100);
+})();
+// ---- 語音模組（Pi 本機 speech_agent 寫的 /speech_state.json，同源）。喚醒後 chip 變「🎤 在聽」，
+// 聽到指令在畫面正中間跳 2.5 秒（跟手勢共用那一塊）。
+(()=>{
+  const big=document.getElementById('gesBig'), chip=document.getElementById('cSpk');
+  let seen=null, hideAt=0, listening=false;
+  async function poll(){
+    try{
+      const r=await fetch('/speech_state.json',{cache:'no-store'});
+      if(!r.ok) throw new Error(r.status);
+      const s=await r.json();
+      chip.style.display='';
+      chip.textContent = !s.ok ? '語音模組沒回應' : (s.awake ? '🎤 在聽' : '語音・喊小陳小陳');
+      chip.classList.toggle('sleep', !s.ok);
+      chip.classList.toggle('low', !!s.awake);
+      if(seen===null){ seen=s.seq; }
+      else if(s.seq!==seen){
+        seen=s.seq;
+        big.innerHTML='<span class="arw">🎤</span>'+(s.text||'');
+        big.classList.add('on'); hideAt=Date.now()+2500; listening=false;
+      }
+      // 喚醒後到聽到指令（或逾時）之間，畫面中間掛「在聽」：待機畫面上方那排 chip 是藏起來的
+      if(s.ok && s.awake && !hideAt){ big.innerHTML='<span class="arw">🎤</span>在聽…'; big.classList.add('on'); listening=true; }
+      else if(listening && !s.awake){ big.classList.remove('on'); listening=false; }
+    }catch(e){ chip.style.display='none'; }
+    if(hideAt && Date.now()>hideAt){ big.classList.remove('on'); hideAt=0; }
+  }
+  poll(); setInterval(poll, 150);
 })();
 </script>
 </body>
