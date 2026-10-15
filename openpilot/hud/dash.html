@@ -79,6 +79,13 @@
   .chip.kbd{color:#7fb8c8;border-color:rgba(34,205,242,.3);font-size:15px}
   .chip.kbd.sleep{color:var(--amber);border:1px dashed var(--amber)}
   .chip.kbd.low{color:var(--amber);border-color:var(--amber)}
+  /* 手勢模組（Pi 本機 gesture_agent）：有新手勢在畫面正中間跳 2.5 秒；底下一行原始暫存器值（校正用） */
+  #gesBig{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);display:none;z-index:60;
+    padding:18px 46px;border-radius:18px;background:rgba(8,14,20,.92);border:3px solid var(--cyan);
+    color:#fff;font-size:64px;font-weight:900;letter-spacing:2px;text-align:center;box-shadow:0 0 40px rgba(34,205,242,.35)}
+  #gesBig .arw{font-size:96px;line-height:1;color:var(--cyan);display:block}
+  #gesBig.on{display:block}
+  #gesRaw{position:fixed;left:8px;bottom:4px;z-index:60;font:13px monospace;color:#6f8aa0;display:none}
 
   /* 路口交接（junction_handoff 武裝）。
      2026-09-15 把 openpilot 的實驗模式圖示拿掉了。它原本擺在這裡是因為這個功能做的是
@@ -218,6 +225,7 @@
 </style>
 </head>
 <body>
+<div id="gesBig"></div><div id="gesRaw"></div>
 <div id="standby">
   <div id="clock">--:--</div>
   <div id="standby-msg">連線中…</div>
@@ -266,6 +274,7 @@
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
     <span class="chip kbd" id="cKey" style="display:none">鍵盤</span>
+    <span class="chip kbd" id="cGes" style="display:none">手勢</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1627,6 +1636,31 @@ if(new URLSearchParams(location.search).has('play')){
     finally{ busy=false; }
   }
   poll(); setInterval(poll, 400);
+})();
+// ---- 手勢模組（Pi 本機 gesture_agent 寫的 /gesture_state.json，同源）。2026-10-15 校正方向／感應距離用，
+// 還沒接任何控制：每個新手勢在畫面正中間跳 2.5 秒，箭頭照模組自己的方向（Left/Right/Front/After）。
+(()=>{
+  const big=document.getElementById('gesBig'), raw=document.getElementById('gesRaw'), chip=document.getElementById('cGes');
+  const ARW={1:'→',2:'←',3:'↓',4:'↑',5:'⇡',6:'⇣',7:'✕',8:'✋'};
+  let seen=null, hideAt=0;
+  async function poll(){
+    try{
+      const r=await fetch('/gesture_state.json',{cache:'no-store'});
+      if(!r.ok) throw new Error(r.status);
+      const s=await r.json();
+      chip.style.display=''; chip.textContent = s.ok ? '手勢' : '手勢模組沒回應';
+      chip.classList.toggle('sleep', !s.ok);
+      raw.style.display='block'; raw.textContent = 'GS20 ' + (s.ok ? 'raw ' + (s.raw||[]).join(' ') : 'no answer') + '  last ' + (s.name||'-');
+      if(seen===null){ seen=s.seq; }
+      else if(s.seq!==seen){
+        seen=s.seq;
+        big.innerHTML='<span class="arw">'+(ARW[s.code]||'?')+'</span>'+s.name;
+        big.classList.add('on'); hideAt=Date.now()+2500;
+      }
+    }catch(e){ chip.style.display='none'; raw.style.display='none'; }
+    if(hideAt && Date.now()>hideAt){ big.classList.remove('on'); hideAt=0; }
+  }
+  poll(); setInterval(poll, 100);
 })();
 </script>
 </body>
