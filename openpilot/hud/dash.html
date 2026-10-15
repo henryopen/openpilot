@@ -1650,11 +1650,11 @@ if(new URLSearchParams(location.search).has('play')){
       const s=await r.json();
       chip.style.display=''; chip.textContent = s.ok ? '手勢' : '手勢模組沒回應';
       chip.classList.toggle('sleep', !s.ok);
-      raw.style.display='block'; raw.textContent = 'GS20 ' + (s.ok ? 'raw ' + (s.raw||[]).join(' ') : 'no answer') + '  last ' + (s.name||'-');
+      raw.style.display='block'; raw.textContent = 'GS20 ' + (s.ok ? 'raw ' + (s.raw||[]).join(' ') : 'no answer') + '  last ' + (s.letter||'') + ' ' + (s.name||'-');
       if(seen===null){ seen=s.seq; }
       else if(s.seq!==seen){
         seen=s.seq;
-        big.innerHTML='<span class="arw">'+(ARW[s.code]||'?')+'</span>'+s.name;
+        big.innerHTML='<span class="arw">'+(ARW[s.code]||'?')+'</span>'+(s.letter?s.letter+'　':'')+s.name;
         big.classList.add('on'); hideAt=Date.now()+2500;
       }
     }catch(e){ chip.style.display='none'; raw.style.display='none'; }

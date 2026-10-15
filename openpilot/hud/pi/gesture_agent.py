@@ -26,6 +26,9 @@ STATE_LINK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gesture_s
 LOG = os.path.expanduser("~/hud/gesture.log")
 LOG_MAX = 1_000_000
 NAMES = {1: "右移", 2: "左移", 3: "後移", 4: "前移", 5: "上拉", 6: "下壓", 7: "離開", 8: "懸停"}
+# 每個手勢一個代號字母，跟藍牙鍵盤共用一張「字母 → 功能」表（2026-10-15 使用者要求）。用鍵盤沒用到的字母：
+# 鍵盤 A-F＝後窗 LED 字幕、G/H/I＝左旋鈕、L/M/N＝右旋鈕（沒功能但會送）。
+LETTERS = {1: "J", 2: "K", 3: "P", 4: "O", 5: "Q", 6: "R", 7: "T", 8: "S"}
 
 
 def say(msg):
@@ -67,7 +70,7 @@ def main():
       ok = True
       if g:
         seq, last = seq + 1, g
-        say(f"{g} {NAMES.get(g, '?')}")
+        say(f"{g} {LETTERS.get(g, '?')} {NAMES.get(g, '?')}")
     except OSError:
       if bus is not None:
         try:
@@ -78,7 +81,8 @@ def main():
     if ok != ok_before:
       say("module ok" if ok else "module not answering at 0x39")
       ok_before = ok
-    write_state({"ok": ok, "seq": seq, "code": last, "name": NAMES.get(last, ""), "raw": raw})
+    write_state({"ok": ok, "seq": seq, "code": last, "name": NAMES.get(last, ""),
+                 "letter": LETTERS.get(last, ""), "raw": raw})
     time.sleep(PERIOD if ok else 1.0)
 
 
