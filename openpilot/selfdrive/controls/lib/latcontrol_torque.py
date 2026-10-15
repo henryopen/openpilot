@@ -126,6 +126,17 @@ CURVE_SETPOINT_HALF_S = 0.25
 # to both sets (it reproduces openpilot's 52/36% push/hold and 1.27 s to halfway against the logs, with the
 # controller they were driven with): torque reversals unwinding 1.14 -> 0.95 a second, ripple 10.2 -> 9.3,
 # corner error unchanged. Not pushing at all as well cut bursts 0.78 -> 0.66 but erred 6% more at 30-50 km/h.
+# And while unwinding, the torque sent no longer pushes the wheel back toward centre (2026-10-15, the driver's call:
+# smoother over following the model's unwind exactly). The driver: the stepping is on the way back, and that is not
+# a linear output. On 10-08..10-14 (with the curve above) openpilot still stepped 0.98-1.04 times a second unwinding
+# against the driver's 0.39-0.79. Frame by frame over 35 of those steps at 20-35 km/h: held at 62, P pushing -17 to
+# -38 because the request unwinds faster than the stuck wheel, the net hold falls to zero, the wheel breaks loose to
+# 35 deg/s, P flips to +24 and holds it again at 44 - a cycle a second, 56 counts each way. The driver only ever holds
+# it back and lets the rack return it. So the push share of the output is scaled out by the unwind weight. Closed
+# loop: unwinding bursts 0.77 -> 0.66 a second at junction speeds (30 turns), 0.61 -> 0.48 over 36 corners; corner
+# error 0.060 / 0.067 / 0.073 -> 0.062 / 0.072 / 0.080, past centre by >5 deg unchanged, halfway back 1.73 -> 1.85 s.
+# Taking only P's push out instead (or all of P) cut the same and erred twice as much.
+UNWIND_NO_PUSH = True
 CURVE_UNWIND_HZ = 1.0
 UNWIND_JERK_FULL = 0.3      # m/s^3
 UNWIND_CURV_RATE_FULL = 0.004  # 1/m/s
@@ -482,6 +493,9 @@ class LatControlTorque(LatControl):
           self.unwind_torque = output_torque
         self.unwind_torque += (output_torque - self.unwind_torque) * min(self.dt * 2 * np.pi * CURVE_UNWIND_HZ, 1.0)
         output_torque = output_torque + w_unwind * (self.unwind_torque - output_torque)
+        # see UNWIND_NO_PUSH: output_torque carries the setpoint's sign when holding the corner
+        if UNWIND_NO_PUSH and output_torque * setpoint < 0.:
+          output_torque *= (1.0 - w_unwind)
         output_lataccel = feedback_lataccel
 
       pid_log.active = True
