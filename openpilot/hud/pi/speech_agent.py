@@ -46,7 +46,9 @@ WORDS = [
 # 垃圾詞：這顆晶片聽到任何聲音都會硬配到清單裡最像的一條，沒有「都不像」。10/15 實測講清單外的「走走」
 # 被判成停車、講話開頭含糊時常被判成前進。清單多放日常用語和語助詞把那些聲音吸走（LD3320 的標準做法），
 # 配到它們什麼都不做。
-FILLERS = ["ni hao", "shen me", "zhe ge", "na ge", "hao de", "dui", "bu shi", "en", "a", "o",
+# 只用兩個音節以上的：10/15 15:21-15:27 單音節的 en（嗯）6 分鐘吸走 22 次、a 3 次，把每句開頭都吃掉了，
+# 指令只剩 3 次 —— 看起來像「每句要說兩次」。
+FILLERS = ["ni hao", "shen me", "zhe ge", "na ge", "hao de", "bu shi",
            "ran hou", "zen me", "mei you", "zhi dao", "ke yi", "xian zai", "wo men", "ta men"]
 KEYWORDS = [WAKE] + WORDS + [(f, f, None) for f in FILLERS]
 
