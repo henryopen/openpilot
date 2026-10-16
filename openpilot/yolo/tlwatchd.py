@@ -104,6 +104,30 @@ def redness(band, box):
   return float(np.percentile(np.clip(p[..., 0] - np.maximum(p[..., 1], p[..., 2]), 0, None), 90))
 
 
+# A yellow lamp lit on one of our heads: no GO (2026-10-16). The classifier has no yellow - it read the
+# yellow after a red + right-arrow phase as go (0.90-0.95) with the red lamp already dark, GO went out,
+# and the car pulled into the junction on the red countdown that followed. Amber pixels in the head:
+# that yellow showed 65-87 (rgb ~150,86,40), a red ball's overexposed core shows as many - but then the
+# red is still lit, which already blocks - and a green ball or arrow none. Vehicle heads only (landscape,
+# or a tall vertical one): a pedestrian signal's orange figure and countdown read 13-21 at its green.
+# Offline over the 35 held-out waits: releases, timing and false releases unchanged, 0 frames vetoed.
+AMBER_MIN = 12
+
+
+def amber(band, box, pad=2):
+  x1, y1, x2, y2 = box
+  p = band[max(y1 - pad, 0):min(y2 + pad, band.shape[0]), max(x1 - pad, 0):min(x2 + pad, band.shape[1])].astype(np.float32)
+  if p.size == 0:
+    return 0
+  r, g, b = p[..., 0], p[..., 1], p[..., 2]
+  return int(((r > 120) & (g > 0.35 * r) & (g < 0.80 * r) & (b < 0.45 * r) & (r - b > 70)).sum())
+
+
+def vehicle_head(box):
+  w, h = box[2] - box[0], box[3] - box[1]
+  return w >= 1.5 * h or h >= 2.2 * w
+
+
 class Signals:
   """The OSM traffic signals of Taiwan, and which one is ahead of us."""
 
@@ -219,9 +243,10 @@ class Wait:
   def watch(self, cls_sess, band, t):
     p = classify(cls_sess, band)
     lit = [redness(band, L['box']) > RED_FRAC * L['ref'] for L in self.lamps if L['ref'] > RED_MIN]
-    ok = p[2] >= GO_P and not any(lit)
+    amb = [amber(band, L['box']) for L in self.lamps if vehicle_head(L['box'])]
+    ok = p[2] >= GO_P and not any(lit) and not any(a >= AMBER_MIN for a in amb)
     self.run = self.run + 1 if ok else 0
-    self.rows.append({'t': round(t - self.t0, 2), 'p': [round(float(v), 3) for v in p], 'lit': lit})
+    self.rows.append({'t': round(t - self.t0, 2), 'p': [round(float(v), 3) for v in p], 'lit': lit, 'amber': amb})
     return self.run >= GO_RUN
 
   def watch_cls(self, cls_sess, band, t):
