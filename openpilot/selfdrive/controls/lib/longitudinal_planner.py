@@ -273,6 +273,27 @@ BRAKE_ONSET_MIN_V = 10 * CV.KPH_TO_MS
 # nearer, both 12 m or more away. 30 s added one 0.7 m nearer at 7 m for 0.01 a minute less.
 COAST_TTC = 15.0             # s, 0 = off
 COAST_CLOSING = 0.3          # m/s
+# A new lead after the old one moves out of the lane (2026-10-17). The driver: the car in front moves over,
+# we speed up to close on the next one, it turns out slower, and we brake straight away. Over 10-08..10-17
+# the lead's range jumped by more than 6 m (a different car) 1074 times while following; 174 of them were
+# followed within 8 s by speeding up past +0.2 and then braking past -0.3. In those the new car was 45 m
+# off, two in three times seen by vision only, its range jumping again a median 9 times in the next 6 s,
+# and it read 1-3 km/h faster than us at first and 1 km/h slower 5 s on: its speed is not known yet, and
+# the planner closes a 45 m gap on a guess. So for CUT_S after such a jump acceleration is held to CUT_A -
+# unless the new car is plainly leaving: the radar's test (is_chase), or the range itself opening by more
+# than CUT_AWAY a second since the jump, which vision measures far better than speed. It only ever takes
+# acceleration away. Closed loop (follow_sim3, 259 such jumps, 116 hard-braking leads, 50 stops): speed up
+# then brake after the jump 85% -> 40% of those that did it and 15% -> 9% of the rest; 12 s on the gap is
+# 2 m longer and the mean speed 1-2 km/h lower; a new car that was leaving 67.8 -> 70.7 m (without the range
+# test 76.7); the 116 hard-braking leads none nearer, closest 1.54 -> 2.26 m; stops unchanged.
+# /data/cut_gentle_off turns it off.
+CUT_JUMP_M = 6.0             # m: the lead's range growing by more than this in a frame = a new car
+CUT_S = 5.0                  # s
+CUT_A = 0.2                  # m/s^2
+CUT_AWAY = 1.0               # m/s the range opens by on average since the jump: the new car is leaving
+CUT_AWAY_MIN_S = 0.5         # s of range before that is believed
+CUT_MIN_V = 10 * CV.KPH_TO_MS
+CUT_GENTLE_OFF_FLAG = '/data/cut_gentle_off'
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
 # that swing while leaving any steady-state offset under 1 km/h.
@@ -438,7 +459,12 @@ class LongitudinalPlanner:
     self.standstill_hold = StandstillHold(dt)
     self.lead_view = LeadView()
     self.launch_chase_old = os.path.exists(LAUNCH_CHASE_OFF_FLAG)
+    self.cut_gentle_off = os.path.exists(CUT_GENTLE_OFF_FLAG)
     self.flag_frame = 0
+    self.cut_frames = 0       # frames left of the hold after the lead became a different car - see CUT_*
+    self.cut_d0 = 0.
+    self.cut_since = 0
+    self.cut_prev_d = -1.
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -464,6 +490,7 @@ class LongitudinalPlanner:
     self.flag_frame += 1
     if self.flag_frame % 20 == 0:
       self.launch_chase_old = os.path.exists(LAUNCH_CHASE_OFF_FLAG)
+      self.cut_gentle_off = os.path.exists(CUT_GENTLE_OFF_FLAG)
     # the lead believed slowing at once and pulling away slowly - see lead_view
     radar = self.lead_view.update(sm['radarState'])
     if len(sm['carControl'].orientationNED) == 3:
@@ -696,6 +723,21 @@ class LongitudinalPlanner:
     # speed actually being held rather than the one it had wanted.
     # Not while light_ahead is easing off for a signal either: its coast (-0.25) sits inside the band,
     # and on a replay of 10/13 the band held 0 there instead - the coast never happened.
+    # a different car ahead: do not close on it before its speed is known - see CUT_*
+    lead = radar.leadOne
+    d_now = float(lead.dRel) if lead.present else -1.
+    if lead.present and self.cut_prev_d > 0. and d_now - self.cut_prev_d > CUT_JUMP_M:
+      self.cut_frames, self.cut_d0, self.cut_since = int(CUT_S / self.dt), d_now, 0
+    else:
+      self.cut_frames = max(self.cut_frames - 1, 0)
+      self.cut_since += 1
+    self.cut_prev_d = d_now
+    if self.cut_frames > 0 and not self.cut_gentle_off and not reset_state and v_ego > CUT_MIN_V and output_a_target > CUT_A:
+      away = (lead.present and self.cut_since * self.dt >= CUT_AWAY_MIN_S
+              and (d_now - self.cut_d0) / (self.cut_since * self.dt) > CUT_AWAY)
+      if not away and not (lead.present and is_chase(sm['radarState'].leadOne)):
+        output_a_target = CUT_A
+
     dz_eligible = (self.plan_reason in (PlanReason.cruise, PlanReason.lead)
                    and not self.output_should_stop and not self.junction.active and not reset_state
                    and self.light_ahead.a_limit is None)
