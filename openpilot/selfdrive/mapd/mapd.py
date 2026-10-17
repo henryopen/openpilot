@@ -24,6 +24,7 @@ MAPD_ROOT = "/data/media/0/osm"
 MAPD_PATH = os.path.join(MAPD_ROOT, "mapd")
 
 MIN_ACCURACY = 25.0     # metres; past this the fix is too loose to place us on a road
+MIN_HEADING_SPEED = 3.0  # m/s
 
 
 def main():
@@ -42,6 +43,7 @@ def main():
   fixes = load_fixes()
   cloudlog.info("mapd: %d speed limit corrections", len(fixes))
   pos = None              # last good (lat, lon)
+  bearing = None          # last heading while moving (deg), for the direction-dependent sign stretches
   fix_off = os.path.exists(OFF_FLAG)
   logged_fix = False
   frame = 0
@@ -60,6 +62,8 @@ def main():
         "bearing": float(gps.bearingDeg),
       }))
       pos = (float(gps.latitude), float(gps.longitude))
+      if gps.speed > MIN_HEADING_SPEED:   # the GPS heading means nothing standing still: keep the last moving one
+        bearing = float(gps.bearingDeg)
       if not logged_fix:
         cloudlog.info("mapd: first fix at %.5f,%.5f (%.1f m)",
                       gps.latitude, gps.longitude, gps.horizontalAccuracy)
@@ -68,7 +72,7 @@ def main():
     # the limit to act on: the official one where the map is known to be wrong - see speed_limit
     osm = float(mem_params.get("MapSpeedLimit") or 0.)
     road = mem_params.get("RoadName") or ""
-    hit = None if (fix_off or pos is None) else lookup(fixes, road, *pos)
+    hit = None if (fix_off or pos is None) else lookup(fixes, road, *pos, bearing)
     mem_params.put("MapSpeedLimitFixed", {"limit": hit[0] * KPH_TO_MS if hit else osm, "osm": osm, "road": road,
                                           "fix": hit[1] if hit else -1, "t": time.monotonic()})
 

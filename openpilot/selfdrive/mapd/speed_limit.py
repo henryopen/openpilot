@@ -8,7 +8,11 @@ seven of the limits it does have. On that drive OSM had the viaduct southbound a
 the expressway in pieces of 60 and 70; the cameras there say 60 for both.
 
 speed_limit_fixes.json holds the corrections: an OSM road name and where it applies (the whole road's box,
-or a radius round a camera that disagreed), with the official limit. mapd_bridge, which alone has the GPS
+or a radius round a camera that disagreed), with the official limit. After those come the posted limit signs
+of the national, expressway and provincial roads (TDX road signs, 20735 of them): each sign's stretch, in its
+direction of travel, along the OSM road up to the next sign (at most 5 km) - a polyline with the OSM names on
+it, matched only within LINE_HALF_WIDTH of it and with our heading along it. The cameras come first: where
+the two official sources disagree (12% of the cameras near a sign stretch), the enforced one wins. mapd_bridge, which alone has the GPS
 position, writes MapSpeedLimitFixed twice a second - the official limit when the road the map has us on is
 in the table, the map's own otherwise - and everything that acts on or shows the limit reads that.
 /data/speed_limit_fix_off goes back to the map alone.
@@ -22,14 +26,46 @@ FIX_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "speed_limit
 OFF_FLAG = "/data/speed_limit_fix_off"
 FRESH_S = 3.0          # an older MapSpeedLimitFixed means mapd_bridge is not running: use the map's
 KPH_TO_MS = 1 / 3.6
+LINE_HALF_WIDTH = 25.0  # m either side of a sign stretch's centre line
+LINE_HEADING = 50.0     # deg between our heading and the stretch's direction
+M_PER_DEG_LAT = 110540.
+M_PER_DEG_LON = 111320.
 
 
 def load_fixes(path=FIX_FILE):
   try:
     with open(path, encoding="utf-8") as f:
-      return json.load(f).get("fixes", [])
+      fixes = json.load(f).get("fixes", [])
   except (OSError, ValueError):
     return []
+  for fix in fixes:
+    if "line" in fix:
+      pts = fix["line"]
+      fix["_names"] = set(fix["name"])
+      m = LINE_HALF_WIDTH / M_PER_DEG_LAT * 1.5
+      fix["_bb"] = (min(p[0] for p in pts) - m, min(p[1] for p in pts) - m, max(p[0] for p in pts) + m, max(p[1] for p in pts) + m)
+  return fixes
+
+
+def _on_line(fix, lat, lon, bearing):
+  la1, lo1, la2, lo2 = fix["_bb"]
+  if not (la1 <= lat <= la2 and lo1 <= lon <= lo2):
+    return False
+  kx = M_PER_DEG_LON * math.cos(math.radians(lat))
+  best, heading = LINE_HALF_WIDTH * LINE_HALF_WIDTH, None
+  pts = fix["line"]
+  for (a_lat, a_lon), (b_lat, b_lon) in zip(pts, pts[1:], strict=False):
+    ax, ay = (a_lon - lon) * kx, (a_lat - lat) * M_PER_DEG_LAT
+    dx, dy = (b_lon - a_lon) * kx, (b_lat - a_lat) * M_PER_DEG_LAT
+    ll = dx * dx + dy * dy
+    t = 0. if ll == 0 else min(1., max(0., -(ax * dx + ay * dy) / ll))
+    ex, ey = ax + t * dx, ay + t * dy
+    d2 = ex * ex + ey * ey
+    if d2 <= best and ll > 0:
+      best, heading = d2, math.degrees(math.atan2(dx, dy))
+  if heading is None:
+    return False
+  return abs((bearing - heading + 180.) % 360. - 180.) <= LINE_HEADING
 
 
 def _inside(fix, lat, lon):
@@ -44,12 +80,15 @@ def _inside(fix, lat, lon):
   return False
 
 
-def lookup(fixes, road, lat, lon):
-  """(official limit in km/h, index) for this road here, or None."""
+def lookup(fixes, road, lat, lon, bearing=None):
+  """(official limit in km/h, index) for this road here, or None. The sign stretches need our heading (deg)."""
   if not road:
     return None
   for i, fix in enumerate(fixes):
-    if fix.get("name") == road and _inside(fix, lat, lon):
+    if "line" in fix:
+      if bearing is not None and road in fix["_names"] and _on_line(fix, lat, lon, bearing):
+        return fix["limit"], i
+    elif fix.get("name") == road and _inside(fix, lat, lon):
       return fix["limit"], i
   return None
 
