@@ -12,11 +12,13 @@ road needs.
 """
 import json
 import os
+import time
 
 from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.mapd.speed_limit import KPH_TO_MS, OFF_FLAG, load_fixes, lookup
 
 MAPD_ROOT = "/data/media/0/osm"
 MAPD_PATH = os.path.join(MAPD_ROOT, "mapd")
@@ -37,9 +39,17 @@ def main():
   if mem_params.get("LastGPSPosition") is None:
     mem_params.put("LastGPSPosition", "{}")
 
+  fixes = load_fixes()
+  cloudlog.info("mapd: %d speed limit corrections", len(fixes))
+  pos = None              # last good (lat, lon)
+  fix_off = os.path.exists(OFF_FLAG)
   logged_fix = False
+  frame = 0
   while True:
     sm.update(0)
+    frame += 1
+    if frame % 20 == 0:
+      fix_off = os.path.exists(OFF_FLAG)
 
     gps = sm['gpsLocationExternal']
     if sm.updated['gpsLocationExternal'] and gps.horizontalAccuracy < MIN_ACCURACY and \
@@ -49,10 +59,18 @@ def main():
         "longitude": float(gps.longitude),
         "bearing": float(gps.bearingDeg),
       }))
+      pos = (float(gps.latitude), float(gps.longitude))
       if not logged_fix:
         cloudlog.info("mapd: first fix at %.5f,%.5f (%.1f m)",
                       gps.latitude, gps.longitude, gps.horizontalAccuracy)
         logged_fix = True
+
+    # the limit to act on: the official one where the map is known to be wrong - see speed_limit
+    osm = float(mem_params.get("MapSpeedLimit") or 0.)
+    road = mem_params.get("RoadName") or ""
+    hit = None if (fix_off or pos is None) else lookup(fixes, road, *pos)
+    mem_params.put("MapSpeedLimitFixed", {"limit": hit[0] * KPH_TO_MS if hit else osm, "osm": osm, "road": road,
+                                          "fix": hit[1] if hit else -1, "t": time.monotonic()})
 
     rk.keep_time()
 

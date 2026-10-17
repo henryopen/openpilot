@@ -6,6 +6,7 @@ import numpy as np
 from opendbc.car.structs import car
 from openpilot.common.constants import CV
 from openpilot.common.params import Params
+from openpilot.selfdrive.mapd.speed_limit import effective_limit
 
 
 # WARNING: this value was determined based on the model's training distribution,
@@ -150,7 +151,7 @@ class VCruiseHelper:
       return
     self.speed_limit_offset = self.params.get("SpeedLimitValueOffset", return_default=True)
 
-    limit_kph = round((self.mem_params.get("MapSpeedLimit") or 0.) * CV.MS_TO_KPH)
+    limit_kph = round(effective_limit(self.mem_params) * CV.MS_TO_KPH)   # official where OSM is known wrong
     if not SPEED_LIMIT_MIN_KPH <= limit_kph <= SPEED_LIMIT_MAX_KPH:
       return
 

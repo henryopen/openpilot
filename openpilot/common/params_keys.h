@@ -73,6 +73,7 @@ inline static std::unordered_map<std::string, ParamKeyAttributes> keys = {
     {"JoystickDebugMode", {CLEAR_ON_MANAGER_START | CLEAR_ON_OFFROAD_TRANSITION, BOOL}},
     {"LanguageSetting", {PERSISTENT, STRING, "en"}},
     {"MapSpeedLimit", {CLEAR_ON_ONROAD_TRANSITION, FLOAT, "0.0"}},
+    {"MapSpeedLimitFixed", {CLEAR_ON_ONROAD_TRANSITION, JSON}},
     {"SmartCruiseControlVision", {PERSISTENT, BOOL, "1"}},
     {"StopForTrafficLights", {PERSISTENT, BOOL, "1"}},
     {"SpeedLimitMode", {PERSISTENT, INT, "3"}},

@@ -31,6 +31,7 @@ from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
+from openpilot.selfdrive.mapd.speed_limit import effective_limit
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.hud.radar_tracker import TargetTracker, relevant
 from openpilot.hud.fuel_tracker import FuelTracker
@@ -308,7 +309,7 @@ def _sp_shapes(params, mem_params, cs, cc, ss, frame, gps_ok):
     _settings["mode"] = params.get("SpeedLimitMode", return_default=True)
     _settings["aol"] = params.get_bool("AlwaysOnLateral")
   if frame % _MAP_EVERY == 0:
-    _map["limit"] = float(mem_params.get("MapSpeedLimit") or 0.)
+    _map["limit"] = effective_limit(mem_params)   # official where OSM is known wrong - selfdrive/mapd/speed_limit
     _map["road"] = mem_params.get("RoadName") or ""
     _map["ahead"], _map["ahead_dist"] = _next_speed_limit(mem_params)
     _assist["limit"], _assist["target"], _assist["t"] = _assist_set(mem_params)
