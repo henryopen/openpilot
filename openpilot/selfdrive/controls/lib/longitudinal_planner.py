@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import math
+import os
 import numpy as np
 
 import openpilot.cereal.messaging as messaging
@@ -188,8 +189,22 @@ FREE_LEAD_MARGIN = 1.2
 CHASE_ON = True
 CHASE_NEED_LEAVING = True
 CHASE_DV = 0.5               # m/s
-CHASE_BP = [0., 5., 10., 15., 20., 25., 40.]
-CHASE_VALS = [0.72, 0.78, 0.85, 0.80, 0.70, 0.64, 0.50]
+# ... and off the line too (2026-10-17). The driver: when the car ahead pulls away fast from a stop, the gap
+# opens so wide the car behind thinks we are not moving. Over 10-08..10-16, the third of launches behind a
+# lead with the quickest lead (its first 5 s at 0.9-1.1 m/s^2), ours was 0.52-0.55: at +5 s it was at
+# 18-22 km/h and we at 9-10, 20-23 m further off after 8 s (P75 29-34) - the driver himself 13-18 m. Up to
+# 18 km/h the chase ceiling was the launch curve (0.72-0.80), so leaving or not made no difference there.
+# Now a lead that is leaving (same test as above: radar, faster by CHASE_DV and accelerating) is followed
+# off the line at up to 1.2. Closed loop (follow_sim3, body refitted 10-08..10-16 by speed band; 10-14/16
+# launches, following, 116 hard-braking leads, 50 stops): those launches +8 s 17.7 -> 16.3 m (P75 29.4 ->
+# 26.9), +5 s 10.7 -> 11.8 km/h; following, stops and accelerate-then-brake unchanged; of the 116 leads
+# braking hard 6 came nearer by 0.5-3 m, the nearest of them still 9.4 m off (closest overall 1.54 m both).
+# 1.0 did about half as much. /data/launch_chase_off brings back the curve as it was.
+CHASE_BP = [0., 2.5, 5., 10., 15., 20., 25., 40.]
+CHASE_VALS = [1.2, 1.2, 1.14, 0.85, 0.80, 0.70, 0.64, 0.50]
+CHASE_BP_OLD = [0., 5., 10., 15., 20., 25., 40.]
+CHASE_VALS_OLD = [0.72, 0.78, 0.85, 0.80, 0.70, 0.64, 0.50]
+LAUNCH_CHASE_OFF_FLAG = '/data/launch_chase_off'
 # Jerk keeps its own breakpoints. It shares the acceleration curve's in stock, and adding
 # points there would silently make the two arrays different lengths.
 J_CRUISE_BP = [0., 10.0, 25., 40.]
@@ -360,10 +375,11 @@ def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
-                     lead_free=False, chase=False):
+                     lead_free=False, chase=False, chase_old=False):
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego, lead_free)
   if chase and not e2e:
-    max_accel = max(max_accel, float(np.interp(v_ego, CHASE_BP, CHASE_VALS)))
+    bp, vals = (CHASE_BP_OLD, CHASE_VALS_OLD) if chase_old else (CHASE_BP, CHASE_VALS)
+    max_accel = max(max_accel, float(np.interp(v_ego, bp, vals)))
   # Which of the four things below ended up being the ceiling. The number on its own does
   # not say - the driver asked to see it because a car sitting on its ceiling looks the
   # same whichever one put it there, and the answer decides what to go and change.
@@ -421,6 +437,8 @@ class LongitudinalPlanner:
     self.deadzone = LongDeadzone(dt)
     self.standstill_hold = StandstillHold(dt)
     self.lead_view = LeadView()
+    self.launch_chase_old = os.path.exists(LAUNCH_CHASE_OFF_FLAG)
+    self.flag_frame = 0
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -443,6 +461,9 @@ class LongitudinalPlanner:
     self.j_desired_trajectory = np.zeros(CONTROL_N)
 
   def update(self, sm):
+    self.flag_frame += 1
+    if self.flag_frame % 20 == 0:
+      self.launch_chase_old = os.path.exists(LAUNCH_CHASE_OFF_FLAG)
     # the lead believed slowing at once and pulling away slowly - see lead_view
     radar = self.lead_view.update(sm['radarState'])
     if len(sm['carControl'].orientationNED) == 3:
@@ -560,7 +581,8 @@ class LongitudinalPlanner:
       accel_coast, self.allow_throttle, lead_free,
       chase=(CHASE_ON and lead_one.present and float(lead_one.vLead) > v_ego + CHASE_DV
              and float(lead_one.dRel) >= self.follow_distance
-             and (not CHASE_NEED_LEAVING or is_chase(sm['radarState'].leadOne))))
+             and (not CHASE_NEED_LEAVING or is_chase(sm['radarState'].leadOne))),
+      chase_old=self.launch_chase_old)
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)
