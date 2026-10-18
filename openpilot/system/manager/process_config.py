@@ -119,6 +119,8 @@ procs = [
   PythonProcess("mapd_bridge", "openpilot.selfdrive.mapd.mapd", mapd_ready),
   # TDX live road conditions for the HUD / rear LED, display only; parked it refreshes its caches
   PythonProcess("tdx_traffic", "openpilot.selfdrive.mapd.tdx_traffic", always_run),
+  # C3 (second device on the USB link, c3link/) calibrates itself against carState and reads lights; display only
+  PythonProcess("c3_relay", "openpilot.c3link.c3_relay", only_onroad),
   PythonProcess("hardwared", "openpilot.system.hardware.hardwared", always_run),
   PythonProcess("modem", "openpilot.common.hardware.comma.modem", always_run, enabled=COMMA_HARDWARE),
   PythonProcess("tombstoned", "openpilot.system.tombstoned", always_run, enabled=not PC),

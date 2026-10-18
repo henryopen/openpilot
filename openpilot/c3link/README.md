@@ -28,3 +28,15 @@ C3 pulls C4's `/data/media/0/realdata` into `/data/media/0/c4_archive/realdata` 
 link is up (rsync over ssh with `/data/c3link/c4key`; C4 runs nothing new). C4's side is nice 19 / idle IO; onroad the
 pull is capped at 3 MB/s (recording ~1.4 MB/s). The segment being recorded is skipped. Nothing is deleted on C4; on C3
 the oldest drives go above 90%. Log: `journalctl -t c4_archive`. First full copy 10/18: ~18 MB/s parked.
+
+## C3 calibrates itself every drive (`c3calib.py` on C3, `c3_relay.py` on C4) - display only
+
+C3 sits wherever it fits that day, so it works out where its camera points by itself: "up" from its accelerometer
+(gravity), "forward" from how its accelerometer follows C4's carState.aEgo (sent over the link by `c3_relay`, a
+managed process on C4, onroad), leaving out turns (C3's gyro). Offline check on C4's own drives: 1-1.5 deg after
+10-15 minutes of driving; until then the previous drive's result is used, marked "標定中". If C3 gets knocked
+(gravity moves > 4 deg for 20 s) it starts over. The light boxes from `c3detect` (C3's own service) become car-frame
+azimuth / elevation; below the horizon is dropped (dashboard). C4's HUD shows the strongest light within 12 deg of
+straight ahead. State: C3 `/dev/shm/c3calib.json`, C4 `/dev/shm/c3lights.json`.
+
+C3 services: `c3-sensord.service` (sensord standalone, like `c3-camerad`), `c3calib.service`.

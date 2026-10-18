@@ -1,0 +1,18 @@
+[Unit]
+Description=C3 standalone sensord (gyro / accelerometer for c3calib, no openpilot)
+After=local-fs.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/openpilot/system/sensord
+ExecStart=/data/openpilot/system/sensord/sensord
+Restart=always
+RestartSec=5
+LimitRTPRIO=99
+LimitNICE=-20
+AmbientCapabilities=CAP_SYS_NICE
+
+[Install]
+WantedBy=multi-user.target

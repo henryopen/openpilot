@@ -138,6 +138,13 @@
   .traf.warn .dot{background:#ffbe00;box-shadow:0 0 14px #ffbe00} .traf.warn .txt{color:#ffbe00}
   .traf.slow .dot{background:#ff7a1a;box-shadow:0 0 14px #ff7a1a} .traf.slow .txt{color:#ff9a4d}
   .traf.ok .dot{background:#00d977} .traf.ok .txt{color:#b9c7d3}
+  /* C3（USB 連線的第二台）自己標定後看到的燈：只顯示 */
+  .c3l{top:220px;right:196px;display:none;align-items:center;gap:9px;
+    padding:5px 12px 5px 9px;border-radius:8px;background:rgba(8,12,16,.82);
+    border:1px solid rgba(255,255,255,.10)}
+  .c3l.on{display:flex}
+  .c3l .txt{font-size:17px;font-weight:700;letter-spacing:.4px;white-space:nowrap;color:#8b9bab}
+  .c3l.red .txt{color:#ff5c5c} .c3l.green .txt{color:#00d977} .c3l.amber .txt{color:#ffbe00}
 
   /* 停止標誌 */
   .stop{top:18px;right:212px;display:none;flex-direction:column;align-items:center}
@@ -299,6 +306,7 @@
 
   <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
   <div class="ov traf" id="trafBox"><span class="dot"></span><span class="txt" id="trafTxt">—</span></div>
+  <div class="ov c3l" id="c3Box"><span class="txt" id="c3Txt">—</span></div>
 
   <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
 
@@ -1016,6 +1024,26 @@ function renderTraffic(tx){
   document.getElementById('trafTxt').textContent=txt;
 }
 
+/* C3 看到的燈：取正前方（方位 ±12° 內、地平線以上）把握最高的一顆。C3 每趟自己標定（c3link/c3calib.py），
+   還沒標定好時沿用上一趟、標「標定中」；連上一趟都沒有就只講狀態。 */
+function renderC3(c3){
+  const box=document.getElementById('c3Box');
+  if(!box) return;
+  if(!c3){ box.className='ov c3l'; return; }
+  const tag = c3.cal==='ok' ? '' : (c3.using ? '（標定中）' : '');
+  const L=(c3.lights||[]).filter(l=>Math.abs(l.az)<=12).sort((a,b)=>(b.conf||0)-(a.conf||0));
+  let cls='', txt='';
+  if(!c3.using){ txt='C3 標定中'; }
+  else if(L.length){
+    const l=L[0], z=String(l.zh||l.cls||'');
+    cls = /紅|red/i.test(z) ? 'red' : /綠|green/i.test(z) ? 'green' : /黃|yellow|amber/i.test(z) ? 'amber' : '';
+    const side = Math.abs(l.az)<1 ? '正前' : (l.az>0?'右':'左')+Math.abs(l.az).toFixed(0)+'°';
+    txt=`C3 ${z} ${Math.round((l.conf||0)*100)}%・${side}${tag}`;
+  } else { txt='C3 前方無燈'+tag; }
+  box.className='ov c3l on '+cls;
+  document.getElementById('c3Txt').textContent=txt;
+}
+
 function clearLight(){    // 辨識停了：這時候留著上一顆燈就是騙人
   litHold=null; litAt=0;
   // 燈牌現在歸看燈服務（renderTL）管。yolod 停用後這裡每一格都會被叫到（YOLO 永遠不是 live），
@@ -1091,6 +1119,7 @@ function render(F){
   if(hf) hf.className='ov handoff'+((F.engaged && F.handoff)?' on':'');
   renderTL(F.tl, F.la);
   renderTraffic(F.tx);
+  renderC3(F.c3);
   // 實驗模式 —— 駕駛自己設的那個，跟上面的路口交接是兩回事
   const ex=$('exBox');
   if(ex) ex.className='ov expm'+(F.exp?' on':'');
@@ -1426,6 +1455,7 @@ function fromSSE(J){
     dDes:ct.followDistance||0,
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff, exp:!!ss.experimentalMode,
     tl: J.tlwatch||null,   // 看燈服務（tlwatchd）：前方號誌、燈色、停等看燈
+    c3: J.c3||null,   // C3（USB 線上的第二台）：自己的標定狀態、看到的燈（車身座標方位）—— 只顯示
     tx: J.tdxTraffic||null,   // TDX 即時路況（tdx_traffic）：前方事件、路段車速、國道車道車速 —— 只顯示
     la: J.lightAhead||null,   // 規劃程式對號誌的處置（light_ahead）：滑行／提早減速，on=false 是觀察
     // ENGAGED＝縱向真的在作用。踩煞車（行進中）／踩油門時 OP 狀態是 overriding：enabled 還是 true，

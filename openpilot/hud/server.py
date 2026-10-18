@@ -489,6 +489,15 @@ def _produce():
             data["tdxTraffic"] = _tx
         except (OSError, ValueError):
           pass
+        # C3 over the USB link (c3link/c3calib.py via c3_relay): its self-calibration and the lights it sees,
+        # as car-frame directions. Display only. Sent twice a second; older than 3 s means C3 is not there.
+        try:
+          with open("/dev/shm/c3lights.json") as _f:
+            _c3 = json.load(_f)
+          if time.monotonic() - float(_c3.get("t", 0)) < 3.0:
+            data["c3"] = _c3
+        except (OSError, ValueError):
+          pass
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         # what cruise is really working to, which is not the driver's MAX whenever something
