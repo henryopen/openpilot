@@ -42,6 +42,7 @@ from common.transformations.orientation import euler_from_rot
 LISTEN = ("0.0.0.0", 4410)
 C4 = ("10.44.0.2", 4411)
 DET = "/dev/shm/c3det/det.json"
+VOICE = "/dev/shm/c3voice.json"   # c3voice.py: what C3's mic heard (display only)
 STATE = "/dev/shm/c3calib.json"
 CALIB_FILE = "/data/c3link/calib.json"
 
@@ -335,6 +336,14 @@ def main():
             last_lights = (seen, below, now)
       except (OSError, ValueError):
         msg["det_err"] = "c3detect 沒有輸出"
+      try:
+        with open(VOICE) as f:
+          v = json.load(f)
+        msg["voice"] = {"ok": bool(v.get("ok")) and now - float(v.get("t", 0)) < 3., "n": v.get("n", 0),
+                        "last": v.get("last", ""),
+                        "ago": round(now - float(v["last_t"]), 1) if v.get("last_t") else None}
+      except (OSError, ValueError, TypeError):
+        msg["voice"] = {"ok": False}
       if last_lights is not None and now - last_lights[2] < 1.5:   # detector runs ~2.5/s, sends go out 2/s
         msg["lights"], msg["below"] = last_lights[0], last_lights[1]
       try:

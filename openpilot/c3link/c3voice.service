@@ -1,0 +1,15 @@
+[Unit]
+Description=C3 voice commands (keyword spotting on C3's mic) -> C4's HUD (display only)
+After=sound.target
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/c3link
+ExecStart=/usr/local/pyenv/versions/3.11.4/bin/python /data/c3link/c3voice.py
+Restart=always
+RestartSec=5
+Nice=5
+
+[Install]
+WantedBy=multi-user.target

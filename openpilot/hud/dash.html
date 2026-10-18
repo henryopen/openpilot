@@ -300,6 +300,7 @@
     <span class="chip kbd" id="cKey" style="display:none">鍵盤</span>
     <span class="chip kbd" id="cGes" style="display:none">手勢</span>
     <span class="chip kbd" id="cSpk" style="display:none">語音</span>
+    <span class="chip kbd" id="cC3v" style="display:none">C3 語音</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -1058,10 +1059,35 @@ function renderC3(c3){
       const side = Math.abs(l.az)<1 ? '正前' : (l.az>0?'右':'左')+Math.abs(l.az).toFixed(0)+'°';
       txt=`C3 ${z} ${Math.round((l.conf||0)*100)}%・${side}${tag}`;
     } else { txt='C3 前方無燈'+tag; }
+    if(c3.voice && !c3.voice.ok) txt+='・語音沒在聽';
     if((c3.temp||0)>=85){ cls='hot'; txt+=`・C3 ${Math.round(c3.temp)}°C`; }
   }
   box.className='ov c3l on '+cls;
   document.getElementById('c3Txt').textContent=txt;
+}
+
+/* C3 語音（c3link/c3voice.py，10/18）：只顯示、不送車 —— 車上誤判率還沒量。聽到的指令在畫面正中間跳 2.5 秒
+   （跟手勢／Pi 語音共用 gesBig），chip 講語音有沒有在聽。n 是 C3 那邊累計聽到的次數，變了才跳。 */
+let c3vSeen=null, c3vHide=0;
+function renderC3Voice(c3){
+  const chip=document.getElementById('cC3v'), big=document.getElementById('gesBig');
+  if(!chip || !big) return;
+  const v = c3 && !c3.missing ? c3.voice : null;
+  if(!v){ chip.style.display='none'; }
+  else {
+    chip.style.display=''; chip.textContent = v.ok ? 'C3 語音' : 'C3 語音沒在聽';
+    chip.classList.toggle('sleep', !v.ok);
+    if(c3vSeen===null){ c3vSeen=v.n; }
+    else if(v.n!==c3vSeen){
+      c3vSeen=v.n;
+      if(v.ago!=null && v.ago<5){
+        big.innerHTML='<span class="arw">🎤</span>'+String(v.last||'').replace(/[<>&]/g,'')+
+          '<div style="font-size:26px;font-weight:700;color:#8b9bab">C3 聽到・只顯示</div>';
+        big.classList.add('on'); c3vHide=Date.now()+2500;
+      }
+    }
+  }
+  if(c3vHide && Date.now()>c3vHide){ big.classList.remove('on'); c3vHide=0; }
 }
 
 function clearLight(){    // 辨識停了：這時候留著上一顆燈就是騙人
@@ -1141,6 +1167,7 @@ function render(F){
   renderTL(F.tl, F.la);
   renderTraffic(F.tx);
   renderC3(F.c3);
+  renderC3Voice(F.c3);
   // 實驗模式 —— 駕駛自己設的那個，跟上面的路口交接是兩回事
   const ex=$('exBox');
   if(ex) ex.className='ov expm'+(F.exp?' on':'');
