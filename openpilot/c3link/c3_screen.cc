@@ -154,6 +154,32 @@ int main(int argc, char *argv[]) {
   QLabel *foot = mk("SSH  comma@—  -p 8022", "foot");
   root->addWidget(foot);
 
+  // test prompts (e.g. the words to say for a voice test): /dev/shm/c3prompt.json {"text", "sub"} written by the
+  // test script, shown full screen over everything while the file is fresh (< 3 s old)
+  QLabel *prompt = new QLabel(&win);
+  prompt->setGeometry(0, 0, SCREEN_SIZE.width(), SCREEN_SIZE.height());
+  prompt->setAlignment(Qt::AlignCenter);
+  prompt->setWordWrap(true);
+  prompt->setTextFormat(Qt::RichText);
+  prompt->setStyleSheet("background: #05080c; color: #ffffff;");
+  prompt->hide();
+  auto tickPrompt = [=]() {
+    const QFileInfo fi("/dev/shm/c3prompt.json");
+    if (!fi.exists() || fi.lastModified().msecsTo(QDateTime::currentDateTime()) > 3000) {
+      prompt->hide();
+      return;
+    }
+    const QJsonObject o = readJson("/dev/shm/c3prompt.json");
+    prompt->setText(QString("<div style='font-size:200px; font-weight:700;'>%1</div>"
+                            "<div style='font-size:56px; color:#6b7a8c;'>%2</div>")
+                        .arg(o.value("text").toString().toHtmlEscaped(), o.value("sub").toString().toHtmlEscaped()));
+    prompt->show();
+    prompt->raise();
+  };
+  QTimer *tp = new QTimer(&win);
+  QObject::connect(tp, &QTimer::timeout, tickPrompt);
+  tp->start(200);
+
   // ---------- every second: files only (cheap) ----------
   auto tick = [=]() {
     clock->setText(QDateTime::currentDateTime().toString("HH:mm:ss"));
