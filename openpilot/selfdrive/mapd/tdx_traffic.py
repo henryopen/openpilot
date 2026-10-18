@@ -579,11 +579,14 @@ class TrafficAhead:
     return self.sections.get(auth)
 
   def prefetch(self):
-    """Parked: keep the freeway / provincial road sections, the detectors and the county outlines fresh."""
+    """Parked: keep the freeway / provincial road sections, the detectors and the county outlines fresh.
+    True once they are all there (and not stale)."""
     if self.cities is None or cache_load(CITY_SPEC[0], CITY_SPEC[3])[1]:
       self.cities = self._static(CITY_SPEC, True)[0]
     for auth in ("Freeway", "Highway"):
       self.ensure(auth, True)
+    specs = [CITY_SPEC] + static_specs("Freeway") + static_specs("Highway")
+    return all(not cache_load(s[0], s[3])[1] for s in specs)
 
   # --- where we are
   def where(self, x, y, hd, city):
@@ -698,7 +701,7 @@ def main():
   mem_params = Params("/dev/shm/params")
   ta = TrafficAhead()
   pos, hd, gps_t = None, None, -1e9
-  last_write, last_prefetch = -1e9, -1e9
+  last_write, last_prefetch, cached = -1e9, -1e9, False
   city, city_at = None, None
   cloudlog.info("tdx_traffic: start (display only)")
   while True:
@@ -725,8 +728,8 @@ def main():
       continue
 
     if not driving:
-      if now - last_prefetch > 300.:
-        ta.prefetch()
+      if now - last_prefetch > (300. if cached else 60.):   # until the caches are complete, every minute
+        cached = ta.prefetch()
         last_prefetch = now
       if now - last_write > WRITE_EVERY:
         write_state({"status": "nogps", "online": ta.online})
