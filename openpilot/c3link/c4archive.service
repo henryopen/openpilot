@@ -1,0 +1,11 @@
+[Unit]
+Description=C3: copy C4's drives to the NVMe over the USB link
+After=c3link.service
+
+[Service]
+ExecStart=/bin/bash /data/c3link/c4_archive.sh
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target

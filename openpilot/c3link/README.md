@@ -21,3 +21,10 @@ Install (rootfs read-only on both): `sudo mount -o remount,rw /`, copy the unit 
 `sudo systemctl restart NetworkManager`, `sudo systemctl start <unit>`.
 
 Undo: `sudo systemctl disable --now <unit>`, remove the unit and the NM conf.
+
+## C4 drives archived on C3 (`c4_archive.sh`, `c4archive.service`, C3 only)
+
+C3 pulls C4's `/data/media/0/realdata` into `/data/media/0/c4_archive/realdata` on its NVMe every minute while the
+link is up (rsync over ssh with `/data/c3link/c4key`; C4 runs nothing new). C4's side is nice 19 / idle IO; onroad the
+pull is capped at 3 MB/s (recording ~1.4 MB/s). The segment being recorded is skipped. Nothing is deleted on C4; on C3
+the oldest drives go above 90%. Log: `journalctl -t c4_archive`. First full copy 10/18: ~18 MB/s parked.
