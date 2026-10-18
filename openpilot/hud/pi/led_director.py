@@ -53,6 +53,9 @@ JAM_OFF_SECS = 60.0           # s：掉到這以下 = 車陣散了
 JAM_EXIT_V = 40 / 3.6         # m/s：快過這個不講塞車
 JAM_EXIT_SECS = 15.0          # s：持續這麼久 = 出了車陣，累積從頭算
 LEAD_LAUNCH_GAP = 2.0   # m：或前車比停住時拉開這麼多
+# TDX 即時路況（10/18 使用者要；只顯示不控制）：平穩行駛／省油加速／跟車／前方塞車多輪一頁
+ROAD_EVENT_MAX = 2000.  # m：同方向前方的事故、施工、壅塞事件在這以內才講
+ROAD_SLOW_MAX = 3000.   # m：前方慢路段（tdx_traffic 判的 slow）在這以內才講
 
 # 縱向門檻（m/s²），進入／離開分開做遲滯
 DECEL_IN, DECEL_OUT = -0.5, -0.3
@@ -164,6 +167,32 @@ def _ahead_page(p):
   return [Page("limit", "前方速限", f"{round(a['dist'])} M 後變 {a['limit']}", WHITE, arg=a["limit"])]
 
 
+def _road_page(p):
+  """TDX 前方路況一頁：大字講什麼事、小字只講多遠（細節在 HUD，後車讀不完）。"""
+  r = p.get("road")
+  if not r:
+    return []
+  d = r["d"]
+  dist = f"{d / 1000:.1f} 公里後" if d >= 1000 else f"{round(d, -1):.0f} M 後"
+  if r["kind"] == "slow":
+    return [Page("car", "前方壅塞", f"{dist} 時速 {r['speed']}", YELLOW)]
+  return [Page("chev_down", f"前方{r['kind']}", dist, YELLOW)]
+
+
+def road_info(d):
+  """hud/server 轉來的 tdxTraffic → 要講的那一件（事件優先），沒有就 None。"""
+  tx = d.get("tdxTraffic") or {}
+  if tx.get("status") != "ok":
+    return None
+  ev = next((e for e in tx.get("events") or [] if e.get("d", 1e9) <= ROAD_EVENT_MAX), None)
+  if ev:
+    return {"kind": ev.get("kind", "狀況"), "d": ev["d"]}
+  sl = tx.get("slow")
+  if sl and sl.get("d", 1e9) <= ROAD_SLOW_MAX:
+    return {"kind": "slow", "speed": sl.get("speed", 0), "d": sl["d"]}
+  return None
+
+
 def pages(s):
   k, p = s.key, s.params
   if k == "clock":
@@ -209,17 +238,17 @@ def pages(s):
   if k == "stopped":
     return [Page("octagon", "停止中", f"請稍候 {p.get('secs', 0)} 秒", RED)]
   if k == "follow":
-    return [Page("car", f"跟車 {round(p.get('dRel', 0))}M", f"前車時速 {p.get('lead_kph', 0)}", WHITE)]
+    return [Page("car", f"跟車 {round(p.get('dRel', 0))}M", f"前車時速 {p.get('lead_kph', 0)}", WHITE)] + _road_page(p)
   if k == "accel":
-    return [Page("chev_up", "省油加速", "請稍候", GREEN)] + _ahead_page(p)
+    return [Page("chev_up", "省油加速", "請稍候", GREEN)] + _ahead_page(p) + _road_page(p)
   if k == "cruise":
     # 平穩行駛是最常出現的畫面（9/24-10/12 行車 21.7%），使用者 10/12 覺得單調：知道速限時多輪一頁
     # 本路段速限（只講路的速限，不講自己的車速 —— 9/24「免得別人說我們超速」）
     lim = p.get("limit") or 0
     lim_page = [Page("limit", "本路段速限", f"{lim} 公里", WHITE, arg=lim)] if lim else []
-    return [Page("road", "平穩行駛", "請保持車距", WHITE)] + lim_page + _ahead_page(p)
+    return [Page("road", "平穩行駛", "請保持車距", WHITE)] + lim_page + _ahead_page(p) + _road_page(p)
   if k == "jam":
-    return [Page("car", "前方塞車", "請保持距離", YELLOW)]
+    return [Page("car", "前方塞車", "請保持距離", YELLOW)] + _road_page(p)
   if k in MANUAL:
     icon, big, small, color, _sticky = MANUAL[k]
     return [Page(icon, big, small, color)]
@@ -375,6 +404,7 @@ class Director:
     a_lim, a_dist = float(lm.get("speedLimitAhead", 0.0) or 0.0), float(lm.get("speedLimitAheadDistance", 0.0) or 0.0)
     if lm.get("speedLimitAheadValid") and 0 < a_dist < LIMIT_AHEAD_MAX and abs(a_lim - limit) > 1.0:
       ahead = {"limit": round(a_lim / KPH), "dist": a_dist}
+    road = road_info(d)
 
     # ============ 依嚴重度從高到低
     # 前車急煞看的是 planner「想要」的減速（aTarget），所以只在 OP 真的在管縱向時才算數：踩油門（overriding）
@@ -440,7 +470,7 @@ class Director:
         return Screen("limit_changed", {"limit": self.limit_changed_to})
       if self.far and self.accel and v_rel > PULLING_AWAY:
         return self._lead_page("catch_up", {"lead_kph": dash_kph(v_lead)})
-      return self._lead_page("follow", {"dRel": d_rel, "lead_kph": dash_kph(v_lead)})
+      return self._lead_page("follow", {"dRel": d_rel, "lead_kph": dash_kph(v_lead), "road": road})
     self.far = False
     # 前車拉開到跟車距離外、我們在追
     if self.lead_shown and r < CATCH_UP_MAX and self.accel and v_rel >= 0 and now >= self.limit_changed_until:
@@ -457,15 +487,15 @@ class Director:
     if now < self.limit_changed_until:
       return Screen("limit_changed", {"limit": self.limit_changed_to})
     if self.accel and max_kph and kph < max_kph - AT_MAX:
-      return self._lead_page("accel", {"ahead": ahead})
-    return self._lead_page("cruise", {"ahead": ahead, "limit": limit_kph})
+      return self._lead_page("accel", {"ahead": ahead, "road": road})
+    return self._lead_page("cruise", {"ahead": ahead, "limit": limit_kph, "road": road})
 
   def _lead_page(self, key, params):
     """跟車、跟車停等、跟上前車、省油加速、平穩行駛：在車陣裡一律講「前方塞車」
     （前車急煞／停止／減速／起步、轉彎、彎道、路口不受影響，排在前面）。
     10/12 版只換掉前三個，車陣裡前車一拉開就變「省油加速」「平穩行駛」，「前方塞車」一直被切掉又回來：
     10/13 早上那趟 PiBar led.log 一小時上屏 89 次、中位 3 秒。"""
-    return Screen("jam") if self.jam_show else Screen(key, params)
+    return Screen("jam", {"road": params.get("road")}) if self.jam_show else Screen(key, params)
 
   @staticmethod
   def _curve_dir(d):

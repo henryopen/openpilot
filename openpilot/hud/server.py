@@ -480,6 +480,15 @@ def _produce():
             data["lightAhead"] = _la
         except (OSError, ValueError):
           pass
+        # TDX live road conditions ahead (selfdrive/mapd/tdx_traffic.py): events, section speeds, the freeway
+        # detectors' lanes. Display only. Written every 2 s; older than 10 s means it is not running.
+        try:
+          with open("/dev/shm/tdx_traffic.json") as _f:
+            _tx = json.load(_f)
+          if time.monotonic() - float(_tx.get("t", 0)) < 10.0:
+            data["tdxTraffic"] = _tx
+        except (OSError, ValueError):
+          pass
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         # what cruise is really working to, which is not the driver's MAX whenever something

@@ -128,6 +128,17 @@
   .lit.ped .dot{background:#7fb3ff} .lit.ped .txt{color:#7fb3ff}
   .lit.off .dot{background:#55636f} .lit.off .txt{color:#8b9bab}
 
+  /* TDX 即時路況（selfdrive/mapd/tdx_traffic.py）：只顯示，不控制。接在號誌燈牌下面 */
+  .traf{top:176px;right:196px;display:none;align-items:center;gap:9px;
+    padding:6px 13px 6px 9px;border-radius:8px;background:rgba(8,12,16,.82);
+    border:1px solid rgba(255,255,255,.10)}
+  .traf.on{display:flex}
+  .traf .dot{width:15px;height:15px;border-radius:3px;flex:0 0 auto;background:#55636f}
+  .traf .txt{font-size:18px;font-weight:800;letter-spacing:.5px;white-space:nowrap;color:#8b9bab}
+  .traf.warn .dot{background:#ffbe00;box-shadow:0 0 14px #ffbe00} .traf.warn .txt{color:#ffbe00}
+  .traf.slow .dot{background:#ff7a1a;box-shadow:0 0 14px #ff7a1a} .traf.slow .txt{color:#ff9a4d}
+  .traf.ok .dot{background:#00d977} .traf.ok .txt{color:#b9c7d3}
+
   /* 停止標誌 */
   .stop{top:18px;right:212px;display:none;flex-direction:column;align-items:center}
   .stop.on{display:flex}
@@ -287,6 +298,7 @@
   <div class="ov handoff" id="hfBox"><span class="hflbl">路口交接</span></div>
 
   <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
+  <div class="ov traf" id="trafBox"><span class="dot"></span><span class="txt" id="trafTxt">—</span></div>
 
   <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
 
@@ -986,6 +998,24 @@ function renderTL(tl, la){
   document.getElementById('litTxt').textContent=txt+(tl.mode==='approach'?act:'');
 }
 
+/* TDX 即時路況：前方 3 km 內的事故／施工（同方向）最優先，其次前方慢路段，再來是本段車速。
+   沒網路、沒定位、不在 TDX 有資料的路上就不顯示。10/18 使用者：只能顯示、不能控制。 */
+function renderTraffic(tx){
+  const box=document.getElementById('trafBox');
+  if(!box) return;
+  if(!tx || tx.status!=='ok'){ box.className='ov traf'; return; }
+  const km = d => d>=1000 ? (d/1000).toFixed(1)+' km' : (Math.round(d/10)*10)+' m';
+  const ev=(tx.events||[])[0], vd=tx.vd;
+  let cls='', txt='';
+  if(ev){ cls='warn'; txt=`前方 ${km(ev.d)} ${ev.kind}`+(ev.text?'・'+ev.text:''); }
+  else if(tx.slow){ cls='slow'; txt=`前方 ${km(tx.slow.d)} 車速 ${tx.slow.speed}`; }
+  else if(vd && Math.min(...vd.lanes)<40){ cls='slow'; txt=`前方 ${km(vd.d)} 車道 ${vd.lanes.join('/')}`; }
+  else if(tx.speed){ cls='ok'; txt=`路況 本段 ${tx.speed}`+(vd?`・前方車道 ${vd.lanes.join('/')}`:''); }
+  if(!txt){ box.className='ov traf'; return; }
+  box.className='ov traf on '+cls;
+  document.getElementById('trafTxt').textContent=txt;
+}
+
 function clearLight(){    // 辨識停了：這時候留著上一顆燈就是騙人
   litHold=null; litAt=0;
   // 燈牌現在歸看燈服務（renderTL）管。yolod 停用後這裡每一格都會被叫到（YOLO 永遠不是 live），
@@ -1060,6 +1090,7 @@ function render(F){
   const hf=$('hfBox');
   if(hf) hf.className='ov handoff'+((F.engaged && F.handoff)?' on':'');
   renderTL(F.tl, F.la);
+  renderTraffic(F.tx);
   // 實驗模式 —— 駕駛自己設的那個，跟上面的路口交接是兩回事
   const ex=$('exBox');
   if(ex) ex.className='ov expm'+(F.exp?' on':'');
@@ -1395,6 +1426,7 @@ function fromSSE(J){
     dDes:ct.followDistance||0,
     vEgo:kph(v), vCruise:kph(cs.cruiseSpeed), vTgt:kph(ct.vCruiseTarget), handoff:!!ct.modelHandoff, exp:!!ss.experimentalMode,
     tl: J.tlwatch||null,   // 看燈服務（tlwatchd）：前方號誌、燈色、停等看燈
+    tx: J.tdxTraffic||null,   // TDX 即時路況（tdx_traffic）：前方事件、路段車速、國道車道車速 —— 只顯示
     la: J.lightAhead||null,   // 規劃程式對號誌的處置（light_ahead）：滑行／提早減速，on=false 是觀察
     // ENGAGED＝縱向真的在作用。踩煞車（行進中）／踩油門時 OP 狀態是 overriding：enabled 還是 true，
     // 但縱向已經交給駕駛，放開才接回。09-23 這段一直顯示 ENGAGED，駕駛以為 OP 還在控制，
