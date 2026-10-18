@@ -7,11 +7,15 @@ C4 reads a band of rows (1344x352, unscaled) because its lights are ~20 px tall 
 cost them (9/4: red recall 0.376 whole-frame vs 0.555 band). C3's narrow camera has 2.32x the focal length, so at
 HALF resolution (964x604, f=1324) its lights are ~23 px - about what the band models were trained on. So: half
 resolution, the rows from BAND_ABOVE above the horizon (from c3calib, else the image centre) down to BAND_BELOW
-below it, centred in a 1344x352 canvas (C3 is 964 wide; the sides are black), then
-  c4band1   the band detector: lamps and their colour (conf DET_CONF, like tlwatchd's find step)
-  tlcls_v2  the band classifier: P(none, red, go) for the whole band
-Not validated on C3 frames yet: C3 sees 40 deg where C4 sees 61, so the classifier's input is narrower than
-what it learnt on. It is shown on the HUD, never acted on.
+below it, centred in a 1344x352 canvas (C3 is 964 wide; the sides are black), through c4band1, the band detector.
+
+Checked 10/18 on 355 frames from C3's own Taiwan drives (F:/realdata), every box looked at by eye: 48 real lights
+and 34 not (tail lights, lanterns, LED signs, lane-control signals) at conf 0.25, against the old c4light13's 33
+and 9 - half as many lights again, yellow ones included (0 before). c3calib drops boxes under 3 deg above the
+horizon (keeps 46 of the 48, half the false ones go) and wants a colour twice in a row. tlwatchd's band classifier
+(tlcls_v2) is NOT run: on C3's frames it called "red" 0.86-0.97 on queues of brake lights with no signal in sight
+and "go" 0.91-0.98 on empty roads - it reads the traffic, which tlwatchd gets away with only because it asks near
+an OSM signal.
 
 Only while C4 is sending carState over the USB link (c3calib's "driving"); parked it idles (it ran at ~80 degC
 before). Output /dev/shm/c3det/det.json, boxes in half-resolution coordinates, for c3calib.
@@ -29,20 +33,17 @@ import yolo_core as yc  # copied next to this file from openpilot/yolo/ on deplo
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 MODEL_DET = os.environ.get('C3_DET', os.path.join(HERE, 'models/c4band1_1344x352.int8v2.onnx'))
-MODEL_CLS = os.environ.get('C3_CLS', os.path.join(HERE, 'models/tlcls_v2_1344x352.onnx'))
 THREADS = int(os.environ.get('C3_THREADS', '4'))
 ALWAYS = os.environ.get('C3_ALWAYS', '0') == '1'      # testing: run whether or not the car is driving
 OUT_DIR = '/dev/shm/c3det'
 CALIB = '/dev/shm/c3calib.json'
 DISP_W, DISP_H = 964, 604          # half resolution of the 1928x1208 ar0231
-DET_CONF = 0.15                     # tlwatchd's find threshold
+DET_CONF = 0.25                     # detect_band's own default; the 10/18 check was done at this
 BAND_ABOVE = 322                    # rows above the horizon (~13.7 deg at f=1324)
 BAND_BELOW = yc.BAND_H - BAND_ABOVE
 PAD_X = (yc.BAND_W - DISP_W) // 2
 ZH = {'light_red': '紅燈', 'light_green': '綠燈', 'light_yellow': '黃燈', 'light_off': '熄燈',
       'light_pedestrian': '行人號誌', 'light_green_arrow': '綠箭頭'}
-MEAN = np.array([0.485, 0.456, 0.406], np.float32).reshape(3, 1, 1)
-STD = np.array([0.229, 0.224, 0.225], np.float32).reshape(3, 1, 1)
 
 
 def band_half(buf, y0, y1):
@@ -91,8 +92,7 @@ def write(state):
 def main():
   os.makedirs(OUT_DIR, exist_ok=True)
   det = yc.make_session(MODEL_DET, threads=THREADS)
-  cls = yc.make_session(MODEL_CLS, threads=THREADS)
-  label = os.path.basename(MODEL_DET) + ' + ' + os.path.basename(MODEL_CLS)
+  label = os.path.basename(MODEL_DET)
   client = VisionIpcClient('camerad', VisionStreamType.VISION_STREAM_ROAD, False)
   state = {'model': label, 'dets': [], 'n': 0, 'err': 'starting', 'idle': True, 'w': DISP_W, 'h': DISP_H}
   write(state)
@@ -104,7 +104,7 @@ def main():
       last_check = now
       driving, horizon = calib_state()
     if not (driving or ALWAYS):
-      state.update({'dets': [], 'n': 0, 'cls_p': None, 'err': '', 'idle': True, 'temp': round(cpu_temp(), 1),
+      state.update({'dets': [], 'n': 0, 'err': '', 'idle': True, 'temp': round(cpu_temp(), 1),
                     'ts': round(now, 2)})
       write(state)
       time.sleep(1.)
@@ -129,9 +129,6 @@ def main():
     t0 = time.perf_counter()
     lamps = yc.detect_band(det, canvas, conf_thres=DET_CONF)
     t1 = time.perf_counter()
-    x = ((canvas.astype(np.float32) / 255.).transpose(2, 0, 1) - MEAN) / STD
-    p = cls.run(None, {'img': x[None]})[0][0]
-    t2 = time.perf_counter()
 
     dets = []
     for d in lamps:
@@ -145,8 +142,7 @@ def main():
     t_last = t_end
     if dt > 0:
       fps = 1. / dt if fps == 0 else fps * 0.8 + 0.2 / dt
-    state.update({'dets': dets, 'n': len(dets), 'cls_p': [round(float(v), 3) for v in p],
-                  'det_ms': round((t1 - t0) * 1000), 'cls_ms': round((t2 - t1) * 1000), 'fps': round(fps, 1),
+    state.update({'dets': dets, 'n': len(dets), 'det_ms': round((t1 - t0) * 1000), 'fps': round(fps, 1),
                   'band_y0': y0, 'temp': round(cpu_temp(), 1), 'err': '', 'idle': False, 'ts': round(now, 2)})
     write(state)
 

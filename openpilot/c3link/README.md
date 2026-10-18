@@ -37,13 +37,14 @@ managed process on C4, onroad), leaving out turns (C3's gyro). Offline check on 
 10-15 minutes of driving; until then the previous drive's result is used, marked "標定中". If C3 gets knocked
 (gravity moves > 4 deg for 20 s) it starts over. The light boxes from `c3detect` (C3's own service) become car-frame
 azimuth / elevation; below the horizon is dropped (dashboard). C4's HUD shows the strongest light within 12 deg of
-straight ahead, else the band classifier's call when it is >= 0.7.
+straight ahead (at least 3 deg above the horizon, seen twice in a row).
 
 ## C3's light reader (`c3lights.py`, `c3-lights.service`) - replaces the old c3detect / c3-screen
 
-C4's tlwatchd models and code (`yolo/yolo_core.py`, copied next to it): `c4band1_1344x352.int8v2` detector and
-`tlcls_v2_1344x352` classifier, in `/data/c3link/models/`. C3's narrow camera has 2.32x C4's focal length, so at half
+C4's tlwatchd detector and code (`yolo/yolo_core.py`, copied next to it): `c4band1_1344x352.int8v2`, in
+`/data/c3link/models/`. Not tlwatchd's classifier: on C3's frames it reads brake-light queues as red, empty roads as go. C3's narrow camera has 2.32x C4's focal length, so at half
 resolution its lights are ~23 px - about what the band models learnt on (~20 px): the half-resolution rows from 322
-above the horizon (c3calib) are centred in the 1344x352 band. Only while driving. ~570 ms a frame on C3. State: C3 `/dev/shm/c3calib.json`, C4 `/dev/shm/c3lights.json`.
+above the horizon (c3calib) are centred in the 1344x352 band. Only while driving. ~240 ms a frame on C3.
+10/18 check on 355 frames of C3's own drives: 48 real lights / 34 false at conf 0.25 (old c4light13: 33 / 9). State: C3 `/dev/shm/c3calib.json`, C4 `/dev/shm/c3lights.json`.
 
 C3 services: `c3-sensord.service` (sensord standalone, like `c3-camerad`), `c3calib.service`.

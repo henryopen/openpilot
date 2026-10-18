@@ -22,7 +22,7 @@ average for MOVED_S, C3 has been moved: start over. The last good result is kept
 (marked "prev") until this drive's is ready.
 
 Lights: c3lights (C4's band models) writes its boxes to /dev/shm/c3det/det.json at half resolution (964x604,
-ar0231 f=2648 at full res), and the band classifier's P(none, red, go), passed on as is. Each box centre becomes
+ar0231 f=2648 at full res), Each box centre becomes
 azimuth (+ right) / elevation (+ up) in the car frame; anything below the horizon (ELEV_MIN_DEG) is dropped -
 on the dashboard that is where the dashboard and its reflections are, and lights are above it anyway.
 Sent to C4 (10.44.0.2:4411) twice a second; state in /dev/shm/c3calib.json.
@@ -63,7 +63,10 @@ MOVED_S = 20.
 LAGS_S = np.arange(-0.6, 0.61, 0.05)
 
 FOCAL, CX, CY = 2648. / 2, 1928. / 4, 1208. / 4   # c3detect's half-resolution frame
-ELEV_MIN_DEG = -2.0       # below the horizon (with ~1.5 deg of calibration error to spare)
+ELEV_MIN_DEG = 3.0        # 10/18, 82 boxes on C3's own drives judged by eye: lights sat 2.4-11.9 deg up (one at
+                          # -0.5), tail lights / scooters / the dashboard around the horizon. >= 3 deg keeps 46 of
+                          # 48 real lights and drops 17 of 34 false ones; raising the confidence instead cost lights
+REPEAT_AZ_DEG = 2.0       # a light is passed on once seen twice in a row: same colour, within this
 # camera (x right, y down, z forward) from device (x forward, y right, z down)
 VIEW_FROM_DEVICE = np.array([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])
 
@@ -259,6 +262,7 @@ def main():
   last_c4 = -1e9
   det_ts = None
   last_lights = None
+  prev_frame = []
   while True:
     sm.update(50)
     if sm.updated["accelerometer"]:
@@ -318,11 +322,16 @@ def main():
         with open(DET) as f:
           det = json.load(f)
         msg.update({"temp": det.get("temp"), "fps": det.get("fps"), "idle": det.get("idle", False),
-                    "det_err": det.get("err", ""), "cls_p": det.get("cls_p")})
+                    "det_err": det.get("err", "")})
         if det.get("ts") != det_ts:
           det_ts = det.get("ts")
           if basis is not None and not det.get("idle"):
-            last_lights = light_dirs(det, basis) + (now,)
+            lights, below = light_dirs(det, basis)
+            # twice in a row (yolod's rule on C4): same colour, same direction as in the previous frame
+            seen = [lt for lt in lights if any(p["zh"] == lt["zh"] and abs(p["az"] - lt["az"]) <= REPEAT_AZ_DEG
+                                               and abs(p["el"] - lt["el"]) <= REPEAT_AZ_DEG for p in prev_frame)]
+            prev_frame = lights
+            last_lights = (seen, below, now)
       except (OSError, ValueError):
         msg["det_err"] = "c3detect 沒有輸出"
       if last_lights is not None and now - last_lights[2] < 1.5:   # detector runs ~2.5/s, sends go out 2/s
