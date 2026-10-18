@@ -1,0 +1,11 @@
+[Unit]
+Description=C3 <-> C4 USB link, C3 (host) side
+After=network.target
+
+[Service]
+ExecStart=/bin/bash /data/c3link/c3_host.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

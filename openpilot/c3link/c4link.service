@@ -1,0 +1,11 @@
+[Unit]
+Description=C3 <-> C4 USB link, C4 (USB network card) side
+After=network.target
+
+[Service]
+ExecStart=/bin/bash /data/openpilot/openpilot/c3link/c4_gadget.sh
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
