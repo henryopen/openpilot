@@ -240,7 +240,7 @@ def main():
             driving, crop = calib_state()
         if not (driving or ALWAYS):
             state.update({'dets': [], 'counts': {}, 'n': 0, 'err': '', 'idle': True,
-                          'temp': round(cpu_temp(), 1), 'ts': round(time.time(), 2)})
+                          'temp': round(cpu_temp(), 1), 'ts': round(time.monotonic(), 2)})
             atomic_write(os.path.join(OUT_DIR, 'det.json'), json.dumps(state, ensure_ascii=False), binary=False)
             time.sleep(1.0)
             continue
@@ -304,7 +304,7 @@ def main():
         state.update({'fps': round(fps_ema, 1), 'infer_ms': round(infer_ms, 1),
                       'depth_ms': round(depth_ms, 1),
                       'temp': round(cpu_temp(), 1), 'dets': dets, 'counts': counts,
-                      'n': len(dets), 'err': '', 'ts': round(time.time(), 2)})
+                      'n': len(dets), 'err': '', 'ts': round(time.monotonic(), 2)})
         atomic_write(os.path.join(OUT_DIR, 'det.json'), json.dumps(state, ensure_ascii=False), binary=False)
 
 
