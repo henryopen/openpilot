@@ -307,7 +307,8 @@ def main():
     # every second: whether C4 is sending carState (= driving) - c3detect only runs while it is
     if now - last_state >= 1.:
       last_state = now
-      write_json(STATE, dict(cal.state, driving=now - last_c4 < 5, t=now))
+      fresh = last_lights is not None and now - last_lights[2] < 1.5
+      write_json(STATE, dict(cal.state, driving=now - last_c4 < 5, t=now, lights=last_lights[0] if fresh else []))
 
     if now - last_send >= 0.5:
       last_send = now

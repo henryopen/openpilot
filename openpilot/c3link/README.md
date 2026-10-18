@@ -48,3 +48,11 @@ above the horizon (c3calib) are centred in the 1344x352 band. Only while driving
 10/18 check on 355 frames of C3's own drives: 48 real lights / 34 false at conf 0.25 (old c4light13: 33 / 9). State: C3 `/dev/shm/c3calib.json`, C4 `/dev/shm/c3lights.json`.
 
 C3 services: `c3-sensord.service` (sensord standalone, like `c3-camerad`), `c3calib.service`.
+
+## C3's screen (`c3_screen.cc`, `c3-screen.service`)
+
+A status page, no camera picture: temperature (hottest cpu/gpu/kryo zone - the lmh-dcvs zones are limits, 75000
+always), WiFi IP and name, the USB link (usb0 carrier) and whether C4 is sending carState, calibration
+(`/dev/shm/c3calib.json`), lights (`/dev/shm/c3det/det.json` + the lights c3calib passes to C4), the archive (drive
+count, NVMe use, last copy from `journalctl -t c4_archive`). Built on C3 (`g++` line at the top of the source) into
+`/data/c3link/c3_screen`; `QT_QPA_PLATFORM=offscreen ./c3_screen --shot x.png` renders it without the panel.
