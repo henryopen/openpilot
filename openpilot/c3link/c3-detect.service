@@ -1,0 +1,23 @@
+[Unit]
+Description=C3 live YOLO detector (VisionIPC -> /dev/shm/c3det)
+After=c3-camerad.service
+Wants=c3-camerad.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/c3det
+Environment=PYTHONPATH=/data/openpilot
+Environment=C3DET_MODEL=/data/c3det/models/c4light13_960x544.onnx
+Environment=C3DET_THREADS=4
+Environment=C3DET_CONF=0.35
+Environment=C3DET_DEPTH=
+ExecStart=/usr/local/pyenv/versions/3.11.4/bin/python /data/c3link/c3detect.py
+Restart=always
+RestartSec=5
+StandardOutput=append:/data/c3det/log/detect.log
+StandardError=append:/data/c3det/log/detect.log
+
+[Install]
+WantedBy=multi-user.target

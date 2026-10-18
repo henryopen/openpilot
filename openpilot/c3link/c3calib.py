@@ -254,7 +254,7 @@ def main():
   rx.setblocking(False)
   tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
   cal = Calibrator()
-  last_solve = last_send = 0.
+  last_solve = last_send = last_state = 0.
   last_c4 = -1e9
   det_ts = None
   while True:
@@ -298,7 +298,10 @@ def main():
       if basis is not None:
         r["horizon_row"] = horizon_row(basis)
       cal.state = r
-      write_json(STATE, dict(r, t=now))
+    # every second: whether C4 is sending carState (= driving) - c3detect only runs while it is
+    if now - last_state >= 1.:
+      last_state = now
+      write_json(STATE, dict(cal.state, driving=now - last_c4 < 5, t=now))
 
     if now - last_send >= 0.5:
       last_send = now
