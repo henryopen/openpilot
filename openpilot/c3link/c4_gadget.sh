@@ -20,8 +20,7 @@ setup() {
   echo comma > strings/0x409/manufacturer
   echo "C4 link" > strings/0x409/product
   echo ncm > configs/c.1/strings/0x409/configuration
-  echo 02:c4:00:00:00:02 > functions/ncm.usb0/dev_addr     # C4's end
-  echo 02:c3:00:00:00:01 > functions/ncm.usb0/host_addr    # what C3 sees
+  # (fixed MACs via dev_addr/host_addr: this kernel answers ENODEV - C3 goes by the cdc_ncm driver, not the MAC)
   ln -s functions/ncm.usb0 configs/c.1/
   logger -t c4link "gadget created"
 }
