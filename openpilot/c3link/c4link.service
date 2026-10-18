@@ -1,9 +1,9 @@
 [Unit]
-Description=C3 <-> C4 USB link, C4 (USB network card) side
+Description=C3 <-> C4 USB link (C4, 10.44.0.2)
 After=network.target
 
 [Service]
-ExecStart=/bin/bash /data/openpilot/openpilot/c3link/c4_gadget.sh
+ExecStart=/bin/bash /data/openpilot/openpilot/c3link/usb_link.sh 10.44.0.2
 Restart=always
 RestartSec=5
 

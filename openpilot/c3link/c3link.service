@@ -1,9 +1,9 @@
 [Unit]
-Description=C3 <-> C4 USB link, C3 (host) side
+Description=C3 <-> C4 USB link (C3, 10.44.0.1)
 After=network.target
 
 [Service]
-ExecStart=/bin/bash /data/c3link/c3_host.sh
+ExecStart=/bin/bash /data/c3link/usb_link.sh 10.44.0.1
 Restart=always
 RestartSec=5
 

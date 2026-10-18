@@ -1,22 +1,23 @@
 # C3 <-> C4 USB link
 
-A wired network between the two devices over their second USB-C ports (2026-10-18). Both have the
-dual-role controller `a600000` there (the main port, with panda and the modem, is the host-only
-`a800000`). C3 is the host, C4 presents a USB NCM network card:
+A wired network between the two devices over their second USB-C ports (2026-10-18), with one USB-C cable.
+Same script on both, `usb_link.sh <address>`: C3 is 10.44.0.1, C4 10.44.0.2.
 
-| | role | address | files |
-|---|---|---|---|
-| C3 | host (`a600000.ssusb/mode` = host), sees `cdc_ncm` | 10.44.0.1/24 | `c3_host.sh`, `c3link.service`, `c3link-nm.conf` |
-| C4 | peripheral, configfs NCM gadget `usb0` | 10.44.0.2/24 | `c4_gadget.sh`, `c4link.service`, `c4link-nm.conf` |
+- The second port is on the dual-role controller `a600000`; its Type-C side is the PMI8998 charger (checked
+  with a phone on each port: CC, orientation and PD seen). Both ends are dual power role, so Type-C makes
+  exactly one of them the 5 V source - never both.
+- Which one becomes the source changes between plug-ins and cannot be pinned on this kernel, so the data role
+  follows it: the source is the USB host (sees a `cdc_ncm` card), the sink presents the card (configfs NCM
+  gadget `c3link`). Read the state: `/sys/class/power_supply/usb/typec_mode`, `journalctl -t usb_link`.
+- Tested 10/18 (C3 source): SuperSpeed, ping ~2.2 ms, C4 -> C3 TCP 246 Mbit/s.
 
-Install (rootfs is read-only on both):
+| | unit | script runs from |
+|---|---|---|
+| C3 (port 8022) | `c3link.service` | `/data/c3link/usb_link.sh` (copied there) |
+| C4 | `c4link.service` | the repo, `/data/openpilot/openpilot/c3link/usb_link.sh` |
 
-C3 (port 8022): copy the three C3 files to `/data/c3link/`, then
-`sudo mount -o remount,rw / && sudo cp /data/c3link/c3link.service /etc/systemd/system/ &&
-sudo cp /data/c3link/c3link-nm.conf /etc/NetworkManager/conf.d/ && sudo systemctl enable c3link &&
-sudo mount -o remount,ro / && sudo systemctl restart NetworkManager && sudo systemctl start c3link`
+Install (rootfs read-only on both): `sudo mount -o remount,rw /`, copy the unit to `/etc/systemd/system/` and
+`usb_link-nm.conf` to `/etc/NetworkManager/conf.d/`, `sudo systemctl enable <unit>`, `sudo mount -o remount,ro /`,
+`sudo systemctl restart NetworkManager`, `sudo systemctl start <unit>`.
 
-C4: the script runs from the repo; install the unit and NM config the same way from
-`/data/openpilot/openpilot/c3link/`, unit `c4link`.
-
-Undo: `systemctl disable --now c3link` / `c4link`, remove the unit and the NM conf.
+Undo: `sudo systemctl disable --now <unit>`, remove the unit and the NM conf.
