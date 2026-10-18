@@ -1,0 +1,18 @@
+[Unit]
+Description=C3 traffic lights, C4's band models (c4band1 + tlcls_v2) -> /dev/shm/c3det (display only)
+After=c3-camerad.service c3calib.service
+Wants=c3-camerad.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/c3link
+Environment=PYTHONPATH=/data/openpilot
+Environment=C3_THREADS=4
+ExecStart=/usr/local/pyenv/versions/3.11.4/bin/python /data/c3link/c3lights.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

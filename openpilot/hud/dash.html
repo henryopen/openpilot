@@ -1057,7 +1057,9 @@ function renderC3(c3){
       cls = /紅|red/i.test(z) ? 'red' : /綠|green/i.test(z) ? 'green' : /黃|yellow|amber/i.test(z) ? 'amber' : '';
       const side = Math.abs(l.az)<1 ? '正前' : (l.az>0?'右':'左')+Math.abs(l.az).toFixed(0)+'°';
       txt=`C3 ${z} ${Math.round((l.conf||0)*100)}%・${side}${tag}`;
-    } else { txt='C3 前方無燈'+tag; }
+    } else if(c3.cls_p && c3.cls_p[1]>=0.7){ cls='red'; txt=`C3 判讀 紅燈 ${Math.round(c3.cls_p[1]*100)}%`+tag; }
+    else if(c3.cls_p && c3.cls_p[2]>=0.7){ cls='green'; txt=`C3 判讀 可行 ${Math.round(c3.cls_p[2]*100)}%`+tag; }
+    else { txt='C3 前方無燈'+tag; }
     if((c3.temp||0)>=85){ cls='hot'; txt+=`・C3 ${Math.round(c3.temp)}°C`; }
   }
   box.className='ov c3l on '+cls;

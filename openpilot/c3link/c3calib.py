@@ -21,10 +21,11 @@ and two halves of the drive agree within MAX_SPLIT_DEG. If gravity swings by mor
 average for MOVED_S, C3 has been moved: start over. The last good result is kept in CALIB_FILE and used
 (marked "prev") until this drive's is ready.
 
-Lights: c3detect writes its boxes to /dev/shm/c3det/det.json at half resolution (964x604, ar0231 f=2648 at full
-res). Each box centre becomes azimuth (+ right) / elevation (+ up) in the car frame; anything below the horizon
-(ELEV_MIN_DEG) is dropped - on the dashboard that is where the dashboard and its reflections are, and lights
-are above it anyway. Sent to C4 (10.44.0.2:4411) twice a second; state in /dev/shm/c3calib.json.
+Lights: c3lights (C4's band models) writes its boxes to /dev/shm/c3det/det.json at half resolution (964x604,
+ar0231 f=2648 at full res), and the band classifier's P(none, red, go), passed on as is. Each box centre becomes
+azimuth (+ right) / elevation (+ up) in the car frame; anything below the horizon (ELEV_MIN_DEG) is dropped -
+on the dashboard that is where the dashboard and its reflections are, and lights are above it anyway.
+Sent to C4 (10.44.0.2:4411) twice a second; state in /dev/shm/c3calib.json.
 """
 import json
 import math
@@ -317,7 +318,7 @@ def main():
         with open(DET) as f:
           det = json.load(f)
         msg.update({"temp": det.get("temp"), "fps": det.get("fps"), "idle": det.get("idle", False),
-                    "det_err": det.get("err", "")})
+                    "det_err": det.get("err", ""), "cls_p": det.get("cls_p")})
         if det.get("ts") != det_ts:
           det_ts = det.get("ts")
           if basis is not None and not det.get("idle"):
