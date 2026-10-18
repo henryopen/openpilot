@@ -98,11 +98,21 @@ class SelfdriveD:
     self.gps_packets = [self.gps_location_service]
     self.sensor_packets = ["accelerometer", "gyroscope"]
     self.camera_packets = ["narrowRoadCameraState", "cabinCameraState", "wideRoadCameraState"]
+    # DM off (DisableDriverMonitoring, read once per drive): the cabin camera and the DM daemons drive nothing, so their
+    # failing - a dead dmonitoringmodeld/dmonitoringd, a slow driverMonitoringState, a cabin camera dropping frames -
+    # must not soft-disable either. The road cameras and everything else stay checked. With the DM state missing its
+    # readers get the defaults: no forced decel (controlsd), no lockout, left-hand drive (modeld).
+    self.dm_disabled = self.params.get_bool("DisableDriverMonitoring")
+    self.dm_processes = {"dmonitoringmodeld", "dmonitoringd"} if self.dm_disabled else set()
+    if self.dm_disabled:
+      self.camera_packets = [p for p in self.camera_packets if p != "cabinCameraState"]
 
     # TODO: de-couple selfdrived with card/conflate on carState without introducing controls mismatches
     self.car_state_sock = messaging.sub_sock('carState', timeout=20)
 
     ignore = self.sensor_packets + self.gps_packets + ['alertDebug', 'lateralManeuverPlan']
+    if self.dm_disabled:
+      ignore += ['driverMonitoringState', 'cabinCameraState']
     if SIMULATION:
       ignore += ['cabinCameraState', 'managerState']
     if REPLAY:
@@ -113,7 +123,8 @@ class SelfdriveD:
                                    'managerState', 'vehicleParameters', 'radarState', 'lateralTorqueParameters',
                                    'controlsState', 'carControl', 'driverAssistance', 'alertDebug', 'userBookmark',
                                    'lateralManeuverPlan'] + \
-                                   self.camera_packets + self.sensor_packets + self.gps_packets,
+                                   self.camera_packets + (['cabinCameraState'] if self.dm_disabled else []) +
+                                   self.sensor_packets + self.gps_packets,
                                   ignore_alive=ignore, ignore_avg_freq=ignore,
                                   ignore_valid=ignore, frequency=int(1/DT_CTRL))
 
@@ -392,7 +403,7 @@ class SelfdriveD:
     if self.big_model_active and big_failed:
       self.events.add(EventName.bigModelFailed)
 
-    not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning}
+    not_running = {p.name for p in self.sm['managerState'].processes if not p.running and p.shouldBeRunning} - self.dm_processes
     if self.sm.recv_frame['managerState'] and len(not_running):
       if not_running != self.not_running_prev:
         cloudlog.event("process_not_running", not_running=not_running, error=True)
