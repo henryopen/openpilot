@@ -298,7 +298,7 @@ def _assist_set(mem_params):
 _SETTINGS_EVERY = 100   # 5 s at 20 Hz
 _MAP_EVERY = 10         # 0.5 s, matching how often mapd writes
 _settings = {"offset": 0., "mode": 0, "aol": False}
-_map = {"limit": 0., "road": "", "ahead": 0., "ahead_dist": 0.}
+_map = {"limit": 0., "road": "", "ahead": 0., "ahead_dist": 0., "official": False}
 _assist = {"limit": 0., "target": 0., "t": 0.}
 
 
@@ -310,6 +310,10 @@ def _sp_shapes(params, mem_params, cs, cc, ss, frame, gps_ok):
     _settings["aol"] = params.get_bool("AlwaysOnLateral")
   if frame % _MAP_EVERY == 0:
     _map["limit"] = effective_limit(mem_params)   # official where OSM is known wrong - selfdrive/mapd/speed_limit
+    # and whether that is what it is: the HUD marks the sign when the correction table supplied the number
+    _fx = mem_params.get("MapSpeedLimitFixed")
+    _map["official"] = (isinstance(_fx, dict) and int(_fx.get("fix", -1)) >= 0
+                        and time.monotonic() - float(_fx.get("t", 0.)) < 3.)
     _map["road"] = mem_params.get("RoadName") or ""
     _map["ahead"], _map["ahead_dist"] = _next_speed_limit(mem_params)
     _assist["limit"], _assist["target"], _assist["t"] = _assist_set(mem_params)
@@ -330,6 +334,7 @@ def _sp_shapes(params, mem_params, cs, cc, ss, frame, gps_ok):
       "gpsValid": gps_ok,
       "speedLimitValid": speed_limit > 0.,
       "speedLimit": speed_limit,
+      "speedLimitOfficial": bool(_map["official"]),
       "speedLimitAheadValid": ahead > 0. and ahead_dist > 0.,
       "speedLimitAhead": ahead,
       "speedLimitAheadDistance": ahead_dist,
@@ -489,6 +494,7 @@ def _produce():
             data["tdxTraffic"] = _tx
         except (OSError, ValueError):
           pass
+        data.setdefault("tdxTraffic", {"status": "missing"})
         # C3 over the USB link (c3link/c3calib.py via c3_relay): its self-calibration and the lights it sees,
         # as car-frame directions. Display only. Sent twice a second; older than 3 s means C3 is not there.
         try:
@@ -498,6 +504,8 @@ def _produce():
             data["c3"] = _c3
         except (OSError, ValueError):
           pass
+        # the driver looks only at the HUD while driving (10/18): no C3 data has to say so, not just vanish
+        data.setdefault("c3", {"missing": True})
         data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
         data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
         # what cruise is really working to, which is not the driver's MAX whenever something

@@ -257,6 +257,7 @@ def main():
   last_solve = last_send = last_state = 0.
   last_c4 = -1e9
   det_ts = None
+  last_lights = None
   while True:
     sm.update(50)
     if sm.updated["accelerometer"]:
@@ -306,18 +307,25 @@ def main():
     if now - last_send >= 0.5:
       last_send = now
       basis = cal.result if cal.result is not None else cal.prev
-      msg = {"cal": getattr(cal, "state", {}).get("status", "collecting"),
+      st = cal.state
+      # what the driver sees on C4's HUD (he looks at nothing else while driving): calibration progress,
+      # C3's temperature, whether the detector runs, and the lights
+      msg = {"cal": st.get("status", "collecting"), "why": st.get("why", ""),
+             "prog": st.get("moving_s", 0), "need": MIN_MOVING_S,
              "using": "this drive" if cal.result is not None else ("previous drive" if cal.prev is not None else None)}
       try:
         with open(DET) as f:
           det = json.load(f)
+        msg.update({"temp": det.get("temp"), "fps": det.get("fps"), "idle": det.get("idle", False),
+                    "det_err": det.get("err", "")})
         if det.get("ts") != det_ts:
           det_ts = det.get("ts")
-          msg["fps"] = det.get("fps")
-          if basis is not None:
-            msg["lights"], msg["below"] = light_dirs(det, basis)
+          if basis is not None and not det.get("idle"):
+            last_lights = light_dirs(det, basis) + (now,)
       except (OSError, ValueError):
-        pass
+        msg["det_err"] = "c3detect 沒有輸出"
+      if last_lights is not None and now - last_lights[2] < 1.5:   # detector runs ~2.5/s, sends go out 2/s
+        msg["lights"], msg["below"] = last_lights[0], last_lights[1]
       try:
         tx.sendto(json.dumps(msg, ensure_ascii=False).encode(), C4)
       except OSError:

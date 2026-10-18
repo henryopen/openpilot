@@ -55,6 +55,10 @@
   .sl.off{filter:grayscale(1) brightness(.4)}
   .sl.txt{font-size:20px;letter-spacing:-.5px;filter:grayscale(1) brightness(.72)}
   .slside{display:flex;flex-direction:column;gap:4px;font-weight:700;align-items:flex-end}
+  /* 速限是修正表（警政署測速點／TDX 速限牌）給的，不是 OSM 原值 */
+  .slsrc{display:none;font-size:14px;font-weight:800;letter-spacing:1px;color:#00d977;
+    padding:1px 6px;border:1px solid rgba(0,217,119,.5);border-radius:5px}
+  .slsrc.on{display:block}
   .slofs{font-size:19px;color:var(--dim2);letter-spacing:.3px}
   .slnx{display:none;flex-direction:column;align-items:center;gap:2px;font-size:22px;color:var(--amber)}
   .slnx.on{display:flex}
@@ -145,6 +149,7 @@
   .c3l.on{display:flex}
   .c3l .txt{font-size:17px;font-weight:700;letter-spacing:.4px;white-space:nowrap;color:#8b9bab}
   .c3l.red .txt{color:#ff5c5c} .c3l.green .txt{color:#00d977} .c3l.amber .txt{color:#ffbe00}
+  .c3l.hot{border-color:#ff7a1a} .c3l.hot .txt{color:#ff9a4d}
 
   /* 停止標誌 */
   .stop{top:18px;right:212px;display:none;flex-direction:column;align-items:center}
@@ -282,6 +287,7 @@
   <div class="ov slbox">
     <div class="sl" id="sl">--</div>
     <div class="slside">
+      <div class="slsrc" id="slSrc">官方</div>
       <div class="slnx" id="slNx"><span class="nxt">接著</span><span class="v" id="slNxV">--</span><span id="slNxD">--</span></div>
     </div>
   </div>
@@ -1011,7 +1017,14 @@ function renderTL(tl, la){
 function renderTraffic(tx){
   const box=document.getElementById('trafBox');
   if(!box) return;
-  if(!tx || tx.status!=='ok'){ box.className='ov traf'; return; }
+  if(!tx){ box.className='ov traf'; return; }
+  // 開車時只看 HUD（10/18）：抓不到、沒資料也要講出來，不是整塊藏起來
+  const ST={offline:'路況 無網路', nocred:'路況 無金鑰', off:'路況 已關閉', nogps:'路況 等定位', missing:'路況 程式未執行'};
+  if(tx.status!=='ok'){
+    box.className='ov traf on';
+    document.getElementById('trafTxt').textContent=ST[tx.status]||('路況 '+(tx.status||'—'));
+    return;
+  }
   const km = d => d>=1000 ? (d/1000).toFixed(1)+' km' : (Math.round(d/10)*10)+' m';
   const ev=(tx.events||[])[0], vd=tx.vd;
   let cls='', txt='';
@@ -1019,27 +1032,34 @@ function renderTraffic(tx){
   else if(tx.slow){ cls='slow'; txt=`前方 ${km(tx.slow.d)} 車速 ${tx.slow.speed}`; }
   else if(vd && Math.min(...vd.lanes)<40){ cls='slow'; txt=`前方 ${km(vd.d)} 車道 ${vd.lanes.join('/')}`; }
   else if(tx.speed){ cls='ok'; txt=`路況 本段 ${tx.speed}`+(vd?`・前方車道 ${vd.lanes.join('/')}`:''); }
-  if(!txt){ box.className='ov traf'; return; }
+  if(!txt){ cls=''; txt='路況 此路段無資料'; }
   box.className='ov traf on '+cls;
   document.getElementById('trafTxt').textContent=txt;
 }
 
-/* C3 看到的燈：取正前方（方位 ±12° 內、地平線以上）把握最高的一顆。C3 每趟自己標定（c3link/c3calib.py），
-   還沒標定好時沿用上一趟、標「標定中」；連上一趟都沒有就只講狀態。 */
+/* C3（USB 線上的第二台）：開車時駕駛只看得到 HUD（10/18），所以它的狀態都要講出來 ——
+   未連線、標定進度（可用直線行駛秒數／需要秒數）、看到的燈（正前方 ±12° 內把握最高的一顆）、過熱。
+   C3 每趟自己標定（c3link/c3calib.py）；還沒標好時沿用上一趟、標「標定中」。 */
 function renderC3(c3){
   const box=document.getElementById('c3Box');
   if(!box) return;
   if(!c3){ box.className='ov c3l'; return; }
-  const tag = c3.cal==='ok' ? '' : (c3.using ? '（標定中）' : '');
-  const L=(c3.lights||[]).filter(l=>Math.abs(l.az)<=12).sort((a,b)=>(b.conf||0)-(a.conf||0));
   let cls='', txt='';
-  if(!c3.using){ txt='C3 標定中'; }
-  else if(L.length){
-    const l=L[0], z=String(l.zh||l.cls||'');
-    cls = /紅|red/i.test(z) ? 'red' : /綠|green/i.test(z) ? 'green' : /黃|yellow|amber/i.test(z) ? 'amber' : '';
-    const side = Math.abs(l.az)<1 ? '正前' : (l.az>0?'右':'左')+Math.abs(l.az).toFixed(0)+'°';
-    txt=`C3 ${z} ${Math.round((l.conf||0)*100)}%・${side}${tag}`;
-  } else { txt='C3 前方無燈'+tag; }
+  if(c3.missing){ cls='off'; txt='C3 未連線'; }
+  else {
+    const prog = `${Math.floor((c3.prog||0)/60)}/${Math.round((c3.need||240)/60)} 分`;
+    const tag = c3.cal==='ok' ? '' : `（標定中 ${prog}）`;
+    const L=(c3.lights||[]).filter(l=>Math.abs(l.az)<=12).sort((a,b)=>(b.conf||0)-(a.conf||0));
+    if(!c3.using){ txt=`C3 標定中 ${prog}`; }
+    else if(c3.det_err){ txt='C3 辨識停止'+tag; cls='hot'; }
+    else if(L.length){
+      const l=L[0], z=String(l.zh||l.cls||'');
+      cls = /紅|red/i.test(z) ? 'red' : /綠|green/i.test(z) ? 'green' : /黃|yellow|amber/i.test(z) ? 'amber' : '';
+      const side = Math.abs(l.az)<1 ? '正前' : (l.az>0?'右':'左')+Math.abs(l.az).toFixed(0)+'°';
+      txt=`C3 ${z} ${Math.round((l.conf||0)*100)}%・${side}${tag}`;
+    } else { txt='C3 前方無燈'+tag; }
+    if((c3.temp||0)>=85){ cls='hot'; txt+=`・C3 ${Math.round(c3.temp)}°C`; }
+  }
   box.className='ov c3l on '+cls;
   document.getElementById('c3Txt').textContent=txt;
 }
@@ -1088,6 +1108,7 @@ function render(F){
   const slText = slRaw>0 ? slRaw : (F.slState==='nofix' ? '無定位' : F.slState==='nodata' ? '無圖資' : '--');
   sl.textContent = slText;
   sl.className = 'sl' + (slRaw>0 ? '' : (typeof slText==='string' && slText.length>2 ? ' off txt' : ' off'));
+  const ss=$('slSrc'); if(ss) ss.className = 'slsrc' + ((F.slOff && slRaw>0) ? ' on' : '');
   const nx=$('slNx');
   if(F.slNext>0){
     nx.className='slnx on'; set('slNxV', F.slNext);
@@ -1470,6 +1491,7 @@ function fromSSE(J){
     slRaw: rv.speedLimitValid ? kph(rv.speedLimit) : (lm.speedLimitValid ? kph(lm.speedLimit) : 0),
     slOfs: kph(rv.speedLimitOffset),
     slNext: lm.speedLimitAheadValid ? kph(lm.speedLimitAhead) : 0,
+    slOff: !!lm.speedLimitOfficial,   // 速限來自修正表（官方值），不是 OSM
     slNextD: lm.speedLimitAheadDistance||0,
     // 沒有速限時，分得出來是這條路沒標（nodata）還是根本沒定位（nofix）。
     // 舊版 server 不送 gpsValid，那就什麼都別斷言，維持原本的 --
