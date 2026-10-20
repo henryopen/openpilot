@@ -227,11 +227,21 @@ def discover_loop():
       # straight away when there is already a connection, so at home this costs nothing.
       if not read_ssid():
         net_reconnect()
-      else:
+      elif own_ip():
         # We have wifi but the car is not on it. If the car is broadcasting its own AP,
         # that is where it is - NetworkManager will not make that move on its own.
+        # (Not while this network is still coming up with no address yet: a scan for the car's
+        # AP there costs 2-12 s and the car is usually about to show up on this network.)
         join_car_wifi()
-      time.sleep(15)
+      # Wait up to 15 s, but look again the moment the network or this Pi's address changes.
+      # 10/20 on the phone's hotspot the first look came before the Pi had an address (nothing
+      # to scan), then this sat out the whole 15 s and the car turned up at the next scan,
+      # 1-2 s of work: ~30 s of empty HUD after a network change, most of it this sleep.
+      before = (read_ssid(), own_ip())
+      for _ in range(15):
+        time.sleep(1)
+        if (read_ssid(), own_ip()) != before:
+          break
 
 
 _last_car_scan = 0.0
