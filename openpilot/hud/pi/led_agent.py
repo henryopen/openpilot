@@ -25,7 +25,7 @@ import urllib.request
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import led_render as R
 from led_card import Led
-from led_director import MANUAL_FILE, Director
+from led_director import MANUAL_FILE, NAV_FILE, Director
 
 HOST_JSON = "http://127.0.0.1:8080/host.json"
 STREAM_PORT = 8902
@@ -134,6 +134,19 @@ class ManualKeys:
     if now - float(m.get("t", 0.0)) <= self.MAX_AGE:
       director.manual_press(m.get("key"), now)
       say(f"manual {m.get('key')} -> {director.manual or 'off'}")
+
+
+def nav_poll(director, now):
+  """導航：hud_agent 每秒把 D531 NavDash 的 /nav 寫到 NAV_FILE（mono = 讀到的那一刻，同一台機器的
+  monotonic）。讀不到檔（hud_agent 沒在跑）就當作沒在導航。"""
+  try:
+    with open(NAV_FILE, encoding="utf-8") as f:
+      n = json.load(f)
+    age = now - float(n["mono"])
+    nav = n.get("nav")
+  except (OSError, ValueError, KeyError, TypeError):
+    nav, age = None, None
+  director.nav_update(nav, age, now)
 
 
 def relay_diag(led):
@@ -257,6 +270,7 @@ def main():
     fresh = tick - stream.latest_t < STREAM_STALE
     d: dict = stream.latest if fresh else {"standby": True}
     manual.poll(director, tick)
+    nav_poll(director, tick)
     if tick >= power_next:
       power_next = tick + 10.0
       p = throttled()

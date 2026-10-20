@@ -140,6 +140,53 @@ MANUAL = {
 }                                            # 最後一欄：True = 常駐到再按一次
 SEV.update(dict.fromkeys(MANUAL, 2))   # 只在到期後的交接用得到；顯示中不走嚴重度比較
 
+# 導航字幕（2026-10-20 使用者：「LED 字幕只要導航指示有變化或是快到時也顯示個 5 秒」）。
+# 資料是車機 D531 上 NavDash（Google 導航）的結果，hud_agent 每秒讀一次寫到 NAV_FILE，跟 C4 無關。
+# 跟「速限變更」一樣：上屏後顯示 NAV_SECS 秒，只讓更嚴重的畫面（減速、彎道、前車、急煞…）插隊；
+# 被擋住時最多等 NAV_WAIT 秒，等不到就算了（那時講的多半已經過了）。手動字幕照樣優先。
+# OP 沒接手也顯示：導航是駕駛要去哪，不是 OP 在做什麼。
+# 「快到」= 離這個轉彎 NAV_NEAR_SECS 秒內或 NAV_NEAR_M 公尺內，每個轉彎只講一次 —— 門檻是我（Claude）
+# 定的常理值，沒量過：讓後車在我們開始為轉彎減速前看到。出發／直行／改名這種沒有轉向的指示不講。
+NAV_FILE = "/dev/shm/nav.json"
+NAV_SECS = 5.0
+NAV_WAIT = 5.0
+NAV_NEAR_SECS = 10.0
+NAV_NEAR_M = 100.0
+NAV_STALE = 10.0         # s：hud_agent 這麼久沒讀到 D531 就先不講（10/20 辦公室實測讀取偶爾慢到 6 秒）
+SEV["nav"] = 2
+
+
+def nav_params(step):
+  """NavDash 的 step → LED 要講的（圖示、大字、顏色、距離）；沒有轉向的指示回 None。"""
+  if not isinstance(step, dict):
+    return None
+  m, mod = step.get("maneuver", ""), step.get("modifier", "")
+  left = "left" in mod
+  side = "左" if left else "右"
+  if m in ("depart", "continue", "ferry") or (m == "turn" and mod in ("straight", "")):
+    return None
+  if m == "arrive":
+    icon, big, color = "road", "即將抵達", GREEN
+  elif m == "turn" and mod == "uturn":
+    icon, big, color = "turn_l", "前方迴轉", AMBER
+  elif m == "turn" and mod.startswith("slight"):
+    icon, big, color = ("lane_l" if left else "lane_r"), f"前方靠{side}", CYAN
+  elif m == "turn":
+    icon, big, color = ("turn_l" if left else "turn_r"), f"前方{side}轉", AMBER
+  elif m == "off_ramp":
+    icon, big, color = ("lane_l" if left else "lane_r"), "準備下匝道", CYAN
+  elif m == "on_ramp":
+    icon, big, color = ("lane_l" if left else "lane_r"), "準備上匝道", CYAN
+  elif m == "fork":
+    icon, big, color = ("lane_l" if left else "lane_r"), f"前方靠{side}", CYAN
+  elif m == "merge":
+    icon, big, color = ("lane_l" if left else "lane_r"), "前方匯入", CYAN
+  elif m == "roundabout":
+    icon, big, color = "turn_r", "前方圓環", AMBER
+  else:
+    return None
+  return {"icon": icon, "big": big, "color": color, "dist": float(step.get("dist", 0) or 0)}
+
 
 @dataclass
 class Screen:
@@ -252,6 +299,10 @@ def pages(s):
   if k in MANUAL:
     icon, big, small, color, _sticky = MANUAL[k]
     return [Page(icon, big, small, color)]
+  if k == "nav":
+    dist = p.get("dist", 0.0)
+    small = "" if dist <= 0 else (f"{dist / 1000:.1f} 公里後" if dist >= 1000 else f"{max(10, round(dist, -1)):.0f} M 後")
+    return [Page(p.get("icon", "road"), p.get("big", ""), small, p.get("color", WHITE))]
   raise KeyError(k)
 
 
@@ -279,6 +330,56 @@ class Director:
     self.manual = None              # 手動字幕：不跟著 _reset_drive 清（停車、沒接管時也要能顯示）
     self.manual_until = 0.0
     self.yield_since = None         # 常駐字幕：重要自動畫面從何時開始要插隊
+    # 導航字幕：也不跟著 _reset_drive 清（OP 沒接手時一樣要講）
+    self.nav_step = None            # 目前這一步（轉向種類、方向、路名）—— 換了就是「指示有變化」
+    self.nav_near_done = False      # 這一步「快到了」講過沒
+    self.nav = None                 # 目前這一步要講的（nav_params），None = 沒在導航或這步不用講
+    self.nav_until = 0.0            # 顯示中：到這時候結束
+    self.nav_want_until = 0.0       # 觸發了還沒上屏：等到這時候為止
+
+  def nav_update(self, nav, age, now):
+    """led_agent 每格餵 hud_agent 寫的導航狀態（nav = NavDash /nav 的內容，age = 幾秒前讀到的）。"""
+    if not isinstance(nav, dict) or nav.get("state") not in ("navigating", "rerouting"):
+      self.nav_step, self.nav, self.nav_want_until = None, None, 0.0     # 沒在導航（或 hud_agent 沒在跑）
+      return
+    if age is None or age > NAV_STALE:
+      # 資料太舊：先不講，但記得講到哪一步 —— 10/20 實測讀取慢一下（6 秒）就忘掉的話，
+      # 資料回來時會當成「指示換了」把同一句再講一次
+      self.nav = None
+      return
+    step = nav.get("step") or {}
+    key = (step.get("maneuver"), step.get("modifier"), step.get("road"), step.get("sdkManeuver"))
+    self.nav = nav_params(step)
+    if self.nav is None:
+      self.nav_step = key
+      return
+    dist, secs = self.nav["dist"], float(step.get("time", 0) or 0)
+    near = 0 < dist <= NAV_NEAR_M or 0 < secs <= NAV_NEAR_SECS
+    if dist <= 0:
+      # 已經到這個轉彎（Google 過了點距離是負的）：不講 —— 10/20 實測 led_agent 重開時第一眼看到的是
+      # 正在過的迴轉（-7 m），照樣講了一次「前方迴轉」
+      self.nav_step, self.nav_near_done = key, True
+      self.nav = None
+      return
+    if key != self.nav_step:
+      self.nav_step, self.nav_near_done = key, near   # 一換就已經很近：這次就當「快到」一起講了
+      self._nav_trigger(now)
+    elif near and not self.nav_near_done:
+      self.nav_near_done = True
+      self._nav_trigger(now)
+
+  def _nav_trigger(self, now):
+    if self.cur.key == "nav":
+      self.nav_until = now + NAV_SECS               # 正在顯示：從現在重新算 5 秒（講的已經換成新的）
+    else:
+      self.nav_want_until = now + NAV_WAIT
+
+  def _nav_active(self, now):
+    if self.nav is None:
+      return False
+    if self.cur.key == "nav":
+      return now < self.nav_until
+    return now < self.nav_want_until
 
   def manual_press(self, key, now):
     """鍵盤按了一顆字幕鍵：同一顆在顯示中 = 取消，否則換成它、重算 MANUAL_SECS。"""
@@ -529,6 +630,8 @@ class Director:
   def update(self, d, now):
     """回傳 (Screen, 這個畫面已經顯示幾秒)。now 用單調時鐘（離線重放傳 log 的時間）。"""
     want = self._candidate(d, now)          # 每格都算，遲滯旗標才會跟著走
+    if self._nav_active(now) and want.sev <= SEV["nav"]:
+      want = Screen("nav", dict(self.nav or {}))  # 導航字幕：只蓋過比它輕微的自動畫面（含日期時間）
     if self.manual and now >= self.manual_until:
       self.manual = None
     if self.manual and want.key not in URGENT:
@@ -563,8 +666,14 @@ class Director:
       # 使用者定 5 秒（10/11 再提：只看得到 2 秒）。原本 5 秒從速限一變就開始算、上屏後又只受 MIN_SHOW 保護，
       # 9/24-10/10 led.log 80 次裡 27 次 ≤2 秒就被跟車／加速畫面換掉。上屏後 5 秒內只讓更嚴重的畫面插隊。
       min_show = LIMIT_CHANGED_HOLD
+    if self.cur.key == "nav":
+      min_show = float("inf")                        # 5 秒內只讓更嚴重的插隊（下面 sev 比較那條）
     if want.key in URGENT or (self.cur.key, want.key) in FLOW:
       self._switch(want, now)
+    elif self.cur.key == "nav" and now >= self.nav_until:
+      self._switch(want, now)                        # 導航字幕播滿 5 秒：直接交回，不再等 DEBOUNCE
+    elif want.key == "nav" and self.cur.sev <= SEV["nav"]:
+      self._switch(want, now)                        # 導航字幕一觸發就上，不等 ENTER（後車要早點知道）
     elif want.sev > self.cur.sev:
       if held >= ENTER:
         self._switch(want, now)
@@ -577,3 +686,5 @@ class Director:
     self.pending_key = None
     if s.key == "limit_changed":
       self.limit_changed_until = now + LIMIT_CHANGED_HOLD   # 從上屏那一刻起算，不是從速限變的那一刻
+    if s.key == "nav":
+      self.nav_until, self.nav_want_until = now + NAV_SECS, 0.0   # 一樣從上屏那一刻起算 5 秒

@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import time
+import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -365,6 +366,12 @@ class Handler(SimpleHTTPRequestHandler):
       finally:
         _reconnect_lock.release()
       return
+    if self.path.startswith("/nav.json"):
+      # 給 HUD 的導航卡：age = 距離上次讀到 D531 幾秒（HUD 用它判斷資料是不是還新）
+      last = _nav_last
+      age = round(time.monotonic() - last["mono"], 1) if last.get("mono") else None
+      self._json({"found": bool(last.get("ip")), "age": age, "nav": last.get("nav")})
+      return
     if self.path.startswith("/host.json"):
       with _lock:
         found = _found
@@ -393,8 +400,114 @@ class Handler(SimpleHTTPRequestHandler):
     super().end_headers()
 
 
+# ---------------------------------------------------------------- 導航（車機 D531 上的 NavDash）
+# 2026-10-20 使用者：用 NavDash 設定目的地、Google 導航；Pi 讀結果上 HUD 和後窗 LED，不控制車子。
+# D531 和 Pi 在同一個網段（手機熱點）時才讀得到；D531 的位址是 DHCP 給的，所以跟找 C4 一樣掃網段，
+# 認 /health 回 server=NavDash-D531 的那一台。沒開導航時 NavDash 只回 state=idle，這裡照寫，
+# HUD/LED 看 state 決定顯不顯示 —— 沒導航時兩邊的行為跟以前完全一樣。
+NAV_PORT = 5002
+NAV_FILE = Path("/dev/shm/nav.json")          # {"mono", "ip", "nav"}；led_agent 讀
+NAV_ROUTE_FILE = Path("/dev/shm/nav_route.json")
+NAV_POLL = 1.0           # s：讀 /nav 的間隔（NavDash 每秒更新一次）
+NAV_SCAN_EVERY = 20.0    # s：還沒找到 D531 時多久掃一次網段
+NAV_LOST_AFTER = 5       # 連續讀不到幾次就當作 D531 不在了，回去掃
+_nav_ip: str | None = None
+_nav_last: dict = {}
+
+
+def _http_json(url: str, timeout: float):
+  with urllib.request.urlopen(url, timeout=timeout) as r:
+    return json.loads(r.read().decode("utf-8"))
+
+
+def _nav_port_open(ip: str) -> bool:
+  s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+  s.settimeout(0.3)
+  try:
+    return s.connect_ex((ip, NAV_PORT)) == 0
+  except OSError:
+    return False
+  finally:
+    s.close()
+
+
+def _is_navdash(ip: str) -> bool:
+  try:
+    return _http_json(f"http://{ip}:{NAV_PORT}/health", 1.5).get("server") == "NavDash-D531"
+  except Exception:
+    return False
+
+
+def nav_scan() -> str | None:
+  for net in local_networks():
+    hosts = [str(h) for h in net.hosts()]
+    with ThreadPoolExecutor(max_workers=64) as pool:
+      opened = [ip for ip, ok in zip(hosts, pool.map(_nav_port_open, hosts), strict=True) if ok]
+    for ip in opened:
+      if _is_navdash(ip):
+        return ip
+  return None
+
+
+def _write_json(path: Path, obj) -> None:
+  tmp = path.with_suffix(".tmp")
+  try:
+    tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+    tmp.replace(path)
+  except OSError:
+    pass
+
+
+NAV_RETRY_LAST = 3.0     # s：掉線後先每這麼久敲一次上次的位址（WiFi 閃一下多半還是同一個位址）
+
+
+def nav_loop():
+  global _nav_ip, _nav_last
+  fails, route_ver, said, last_ip = 0, None, None, None
+  while True:
+    if _nav_ip is None:
+      ip = nav_scan()
+      if ip is None:
+        if said != "none":
+          net_log("navdash NOT found")
+          said = "none"
+        # 等下一次整段掃描之前，每 NAV_RETRY_LAST 秒敲一下上次的位址 —— 10/20 辦公室實測斷一下之後
+        # 只靠 20 秒一次的整段掃描，過了一分鐘才接回。不更新 _nav_last：HUD 照舊顯示「連線中斷 N 秒」
+        until = time.monotonic() + NAV_SCAN_EVERY
+        while time.monotonic() < until and ip is None:
+          time.sleep(NAV_RETRY_LAST)
+          if last_ip and _is_navdash(last_ip):
+            ip = last_ip
+        if ip is None:
+          continue
+      _nav_ip, last_ip, fails, route_ver = ip, ip, 0, None
+      net_log(f"navdash found {ip}")
+      said = "found"
+    t0 = time.monotonic()
+    try:
+      nav = _http_json(f"http://{_nav_ip}:{NAV_PORT}/nav", 1.5)
+      fails = 0
+      _nav_last = {"mono": time.monotonic(), "ip": _nav_ip, "nav": nav}
+      _write_json(NAV_FILE, _nav_last)
+      rv = nav.get("routeVer")
+      if rv != route_ver:
+        try:
+          _write_json(NAV_ROUTE_FILE, _http_json(f"http://{_nav_ip}:{NAV_PORT}/route", 5.0))
+          route_ver = rv
+        except Exception:
+          pass                          # 下一輪再拿
+    except Exception:
+      fails += 1
+      if fails >= NAV_LOST_AFTER:
+        net_log(f"navdash lost {_nav_ip}")
+        _nav_ip = None
+        continue
+    time.sleep(max(0.0, NAV_POLL - (time.monotonic() - t0)))
+
+
 def main():
   threading.Thread(target=discover_loop, daemon=True).start()
+  threading.Thread(target=nav_loop, daemon=True).start()
   server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
   server.daemon_threads = True
   server.serve_forever()

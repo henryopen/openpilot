@@ -245,6 +245,39 @@
   /* 手動字幕（鍵盤第 3、4 排）顯示中：標籤變青色並倒數，鏡像加青框 —— 駕駛知道屏上是自己按的字 */
   .ledtag.man{color:var(--cyan);font-size:14px}
   .ledm.man{border:2px solid var(--cyan)}
+
+  /* 導航卡（2026-10-20）：車機 D531 上 NavDash（Google 導航）的結果，Pi 的 hud_agent 每秒讀一次給 /nav.json。
+     左上角、設定速度右邊（原本時鐘的位置，導航中時鐘先收起來）：不碰中央警示框、LED 鏡像、右側車速／速限／燈牌。
+     第一行固定「目的地・幾點到・剩幾公里」（使用者 10/20：「目的地預計抵達時間都要」）；
+     剩 NAV_NEAR_M 內外框亮起來；有車道資料就畫車道（建議的車道亮）；快到時預告下一個轉彎。 */
+  .nav{position:absolute;z-index:3;left:176px;top:10px;width:232px;display:none;flex-direction:column;gap:4px;
+    padding:6px 11px 7px 8px;border-radius:10px;background:rgba(6,14,20,.88);
+    border:1.5px solid rgba(34,205,242,.40);text-shadow:var(--sh)}
+  .nav.on{display:flex}
+  .nav.near{border-color:var(--cyan);box-shadow:0 0 22px rgba(34,205,242,.38)}
+  .nav.stale{opacity:.55;border-color:var(--amber)}
+  .nav .hd{display:flex;align-items:baseline;gap:6px;font-size:15px;font-weight:700;color:#cfe3f2;white-space:nowrap}
+  .nav .hd .dst{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto}
+  .nav .hd .eta{flex:0 0 auto;color:var(--txt);font-variant-numeric:tabular-nums}
+  .nav .hd .eta small{font-size:12px;color:var(--dim2);margin-left:2px}
+  .nav .hd .km{flex:0 0 auto;font-size:13px;color:var(--dim2);font-variant-numeric:tabular-nums}
+  .nav.stale .hd .eta{color:var(--amber)}
+  .nav .r1{display:flex;align-items:center;gap:8px}
+  .nav svg.arw{width:48px;height:48px;flex:0 0 auto}
+  .nav .d{font-size:32px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+  .nav .d small{font-size:16px;font-weight:700;margin-left:3px;color:var(--dim2)}
+  .nav .rd{font-size:17px;font-weight:700;color:#cfe3f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:158px;margin-top:2px}
+  .nav .r2{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:24px}
+  .nav .r2:empty{display:none}
+  .nav .lanes{display:flex;gap:3px}
+  .nav .ln{width:24px;height:24px;border-radius:4px;border:1.5px solid #2a3a48;background:rgba(255,255,255,.03);
+    display:flex;align-items:center;justify-content:center}
+  .nav .ln.rec{border-color:var(--cyan);background:rgba(34,205,242,.16)}
+  .nav .ln svg{width:17px;height:17px}
+  .nav .nx{font-size:14px;color:var(--dim2);font-weight:700;white-space:nowrap}
+  .nav .nx b{color:#cfe3f2}
+  .nav .nx svg{width:15px;height:15px;vertical-align:-2px}
+  body.navon #clk{display:none}
 </style>
 </head>
 <body>
@@ -276,6 +309,7 @@
 
   <div class="ov clk" id="clk">--:--:--</div>
   <img class="ov ledm" id="ledMir" alt="">
+  <div class="nav" id="navCard"></div>
   <div class="ov ledtag" id="ledTag">後窗 LED</div>
 
   <div class="ov cnr cnrR" id="paneR">
@@ -1801,6 +1835,78 @@ if(new URLSearchParams(location.search).has('play')){
     if(hideAt && Date.now()>hideAt){ big.classList.remove('on'); hideAt=0; }
   }
   poll(); setInterval(poll, 150);
+})();
+// ---- 導航卡（Pi 本機 hud_agent 讀車機 D531 NavDash 給的 /nav.json，同源）。沒在導航時整張收起來、時鐘回來。
+(()=>{
+  const card=document.getElementById('navCard');
+  const NAV_NEAR_M=300;      // m：這距離內外框亮起來、預告下一個轉彎
+  const STALE=10, GONE=60;   // s：資料這麼舊標「連線中斷」（10/20 實測讀取偶爾慢到 6 秒）；再更舊就收起來
+  const esc=s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+  function arrow(kind, color, sw){
+    const s=`stroke="${color}" stroke-width="${sw}" fill="none" stroke-linecap="round" stroke-linejoin="round"`;
+    const P={
+      right:`<path d="M18 50 V28 Q18 20 26 20 H44" ${s}/><path d="M36 11 L45 20 L36 29" ${s}/>`,
+      left:`<path d="M38 50 V28 Q38 20 30 20 H12" ${s}/><path d="M20 11 L11 20 L20 29" ${s}/>`,
+      slight_right:`<path d="M22 50 V34 L40 16" ${s}/><path d="M29 15 H41 V27" ${s}/>`,
+      slight_left:`<path d="M34 50 V34 L16 16" ${s}/><path d="M27 15 H15 V27" ${s}/>`,
+      uturn:`<path d="M38 50 V24 Q38 12 27 12 Q16 12 16 24 V34" ${s}/><path d="M8 27 L16 36 L24 27" ${s}/>`,
+      straight:`<path d="M28 50 V10" ${s}/><path d="M19 19 L28 10 L37 19" ${s}/>`,
+      arrive:`<path d="M28 50 C28 50 12 34 12 24 A16 16 0 0 1 44 24 C44 34 28 50 28 50 Z" ${s}/><circle cx="28" cy="24" r="5" ${s}/>`,
+    };
+    return `<svg viewBox="0 0 56 56">${P[kind]||P.straight}</svg>`;
+  }
+  // NavDash 的 maneuver / modifier → 箭頭（車道的 shape 也走同一張表）
+  function kindOf(m, mod){
+    if(m==='arrive') return 'arrive';
+    if(mod==='uturn' || mod==='uturn_left' || mod==='uturn_right') return 'uturn';
+    if(mod && mod.startsWith('slight')) return mod;
+    if(mod==='sharp_right') return 'right';
+    if(mod==='sharp_left') return 'left';
+    if((m==='fork'||m==='off_ramp'||m==='on_ramp'||m==='merge') && (mod==='left'||mod==='right')) return 'slight_'+mod;
+    return mod==='left'||mod==='right' ? mod : 'straight';
+  }
+  function dist(m){
+    m=Math.max(0, m||0);
+    if(m>=1000) return [(m/1000).toFixed(1), 'km'];
+    return [String(Math.max(10, Math.round(m/10)*10)), 'm'];
+  }
+  function km(m){ return m>0 ? (m>=10000 ? Math.round(m/1000) : (m/1000).toFixed(1))+' km' : ''; }
+  function render(j){
+    const n=j && j.nav;
+    const navOn = n && (n.state==='navigating' || n.state==='rerouting');
+    const age = j && typeof j.age==='number' ? j.age : null;
+    if(!navOn || age===null || age>GONE){ card.className='nav'; document.body.classList.remove('navon'); return; }
+    const st=n.step||{}, rm=n.remain||{}, dest=(n.dest&&n.dest.name)||'';
+    const stale = age>STALE;
+    const near = !stale && (st.dist||0) <= NAV_NEAR_M;
+    // 出發那一步：Google 給的距離過了起點就是負的，不顯示數字
+    const [dv, du] = st.maneuver==='depart' ? ['出發', ''] : dist(st.dist);
+    const lanes=(st.lanes||[]).map(l=>{
+      const dirs=l.dirs||[]; const rec=dirs.some(d=>d.rec);
+      const d=dirs.find(x=>x.rec)||dirs[0]||{shape:'straight'};
+      return `<div class="ln${rec?' rec':''}">${arrow(kindOf('', d.shape), rec?'#eef4fa':'#56687a', 6)}</div>`;
+    }).join('');
+    const nx0=(n.next||[])[0];
+    const nx = (near && nx0) ? `<span class="nx">接著 ${arrow(kindOf(nx0.maneuver, nx0.modifier), '#93a8bb', 7)} <b>${dist(nx0.distFromPrev)[0]} ${dist(nx0.distFromPrev)[1]}</b></span>` : '';
+    const road = n.state==='rerouting' ? '重新規劃路線中…' : (st.road || st.instruction || '');
+    const eta = stale ? `連線中斷 ${Math.round(age)} 秒` : `${esc(rm.eta||'--:--')}<small>到</small>`;
+    card.innerHTML =
+      `<div class="hd"><span class="dst">${esc(dest)}</span><span class="eta">${eta}</span><span class="km">${stale?'':km(rm.dist)}</span></div>`+
+      `<div class="r1">${arrow(kindOf(st.maneuver, st.modifier), near?'#22cdf2':'#5ec8e8', 7).replace('<svg ','<svg class="arw" ')}`+
+      `<div><div class="d">${dv}<small>${du}</small></div><div class="rd">${esc(road)}</div></div></div>`+
+      `<div class="r2">${(lanes||nx) ? `<div class="lanes">${lanes}</div>${nx}` : ''}</div>`;
+    card.className='nav on'+(near?' near':'')+(stale?' stale':'');
+    document.body.classList.add('navon');
+  }
+  window.__navRender=render;       // 離線驗證用（Playwright 直接餵 /nav.json 的內容）
+  async function poll(){
+    try{
+      const r=await fetch('/nav.json',{cache:'no-store'});
+      if(!r.ok) throw new Error(r.status);
+      render(await r.json());
+    }catch(e){ render(null); }
+  }
+  poll(); setInterval(poll, 1000);
 })();
 </script>
 </body>
