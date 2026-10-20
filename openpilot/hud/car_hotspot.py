@@ -28,6 +28,18 @@ import time
 
 HOTSPOT = "Hotspot"
 HOTSPOT_IP = "192.168.43.1"   # pinned in the profile (ipv4.addresses, method shared)
+# The phone's own hotspot, which the car's head unit (D531) is on for internet. 2026-10-20 the user:
+# in the car everything goes on the phone's hotspot - C4, Pi and D531 on one network is what lets
+# the Pi read the D531's navigation - and "if that cannot connect, it MUST go back to the C4
+# hotspot, or the Pi and the car cannot reach each other". So driving, the phone comes first and
+# this car's own AP is the fallback, never the other way round.
+PHONE_SSID = "MotowayapC"
+PHONE_SCAN_EVERY = 30.0   # s: while hosting and driving, how often to look for the phone again
+PHONE_RETRY_AFTER = 300.0  # s: after a failed move to the phone, how long before trying again
+# Tested 2026-10-20 in the office: with the Hotspot up, `nmcli dev wifi rescan` keeps the AP
+# serving (still 192.168.43.1, state connected) and does see a network that appeared after the AP
+# came up (a test AP raised on the Pi 12 s later showed at signal 80). So the car can watch for
+# the phone by itself while it hosts.
 GRACE = 75.0          # seconds from boot before giving up on a known network
 POLL = 20.0
 RETRY_HOME = 300.0    # while parked on the hotspot, how often to look for home again
@@ -97,6 +109,28 @@ def known_stations():
   return names
 
 
+def phone_profile() -> str | None:
+  """The saved profile for PHONE_SSID (openpilot names them "openpilot connection <ssid>")."""
+  for name in known_stations():
+    ok, ssid = nmcli("-g", "802-11-wireless.ssid", "con", "show", name, timeout=10)
+    if ok and ssid == PHONE_SSID:
+      return name
+  return None
+
+
+def phone_visible() -> bool:
+  """Fresh scan, then is the phone's SSID in it. Safe while hosting (see PHONE_SSID)."""
+  nmcli("dev", "wifi", "rescan", "ifname", "wlan0", timeout=15)
+  time.sleep(5)
+  ok, out = nmcli("-t", "-f", "SSID", "dev", "wifi", "list", "ifname", "wlan0", timeout=15)
+  return ok and PHONE_SSID in [s.strip() for s in out.splitlines()]
+
+
+def to_phone() -> bool:
+  name = phone_profile()
+  return name is not None and nmcli("con", "up", name, timeout=45)[0]
+
+
 def offroad():
   try:
     with open(OFFROAD, "rb") as f:
@@ -138,36 +172,68 @@ def say(state: str, ip: str) -> None:
 
 def main():
   last_home_try = 0.0
+  last_phone_scan = 0.0
+  phone_fail_at = -PHONE_RETRY_AFTER
+  phone_seen = 0          # consecutive scans, while hosting and driving, that saw the phone
   said = None
   while True:
     station, hotspot, ip = active_wifi()
+    phone = phone_profile()
 
-    if station is not None:
+    if station is not None and station == phone:
+      # On the phone's hotspot: stay, driving or not. Everything (C4, Pi, D531) is on this one.
+      if hotspot:
+        nmcli("con", "down", HOTSPOT)
+      state = f"on the phone hotspot {station}"
+    elif station is not None:
       if not offroad():
-        # Driving: the known network is only going to get further away, and the Pi has no
-        # way to reach the car except the hotspot. Waiting for home wifi to drop first cost
-        # the Pi its whole first scan - the car was still on home wifi when the Pi went
-        # looking, so the Pi found nothing, and NetworkManager's retry backoff then held it
-        # off the hotspot for minutes. Switch as soon as openpilot says we are onroad.
-        # Nothing is lost by leaving home wifi here: the car is moving away from it anyway,
-        # and RETRY_HOME below brings it back once parked.
-        state = "driving, moving to the hotspot"
-        nmcli("con", "up", HOTSPOT, timeout=60)
+        # Driving on home/office wifi: it is only going to get further away. Phone first; if
+        # it is not here or will not connect, the car's own AP as before. Waiting for home
+        # wifi to drop first cost the Pi its whole first scan - the car was still on home wifi
+        # when the Pi went looking, so the Pi found nothing, and NetworkManager's retry backoff
+        # then held it off the hotspot for minutes. So switch as soon as openpilot says onroad.
+        # RETRY_HOME below brings it back to home wifi once parked.
+        if phone_visible() and to_phone():
+          state = "driving, moved to the phone hotspot"
+        else:
+          state = "driving, moving to the hotspot"
+          nmcli("con", "up", HOTSPOT, timeout=60)
       else:
         if hotspot:                                 # both up: the hotspot is the odd one out
           nmcli("con", "down", HOTSPOT)
         state = f"on {station}"
     elif hotspot:
       state = "on the hotspot"
-      if offroad() and time.monotonic() - last_home_try > RETRY_HOME:
-        last_home_try = time.monotonic()
-        for name in known_stations():
-          if nmcli("con", "up", name, timeout=60)[0]:
-            break
-        else:
-          nmcli("con", "up", HOTSPOT, timeout=60)   # none of them are here, carry on hosting
+      if offroad():
+        phone_seen = 0
+        if time.monotonic() - last_home_try > RETRY_HOME:
+          last_home_try = time.monotonic()
+          for name in known_stations():
+            if nmcli("con", "up", name, timeout=60)[0]:
+              break
+          else:
+            nmcli("con", "up", HOTSPOT, timeout=60)   # none of them are here, carry on hosting
+      elif time.monotonic() - last_phone_scan > PHONE_SCAN_EVERY and \
+           time.monotonic() - phone_fail_at > PHONE_RETRY_AFTER:
+        # Driving on our own AP: watch for the phone coming back. Two scans in a row before
+        # moving, because every move drops the Pi off this AP for a while; and a failed move
+        # is not tried again for PHONE_RETRY_AFTER, for the same reason.
+        last_phone_scan = time.monotonic()
+        phone_seen = phone_seen + 1 if phone_visible() else 0
+        if phone_seen >= 2:
+          phone_seen = 0
+          if to_phone():
+            state = "driving, the phone is back, moved to it"
+          else:
+            phone_fail_at = time.monotonic()
+            state = "driving, the phone would not connect, back to the hotspot"
+            nmcli("con", "up", HOTSPOT, timeout=60)
     elif uptime() < GRACE:
       state = "waiting for a known network"
+    elif not offroad() and phone_visible() and to_phone():
+      # Nothing up while driving (the phone's hotspot just dropped, say): the phone if it is
+      # there, otherwise - always - our own AP, so the Pi has something to reach the car on.
+      state = "no network, moved to the phone hotspot"
     else:
       state = "no known network, starting the hotspot"
       nmcli("con", "up", HOTSPOT, timeout=60)

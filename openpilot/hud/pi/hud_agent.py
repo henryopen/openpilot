@@ -42,9 +42,14 @@ _ssid: str = ""
 _lock = threading.Lock()
 _reconnect_lock = threading.Lock()
 
-# C4 熱點 > 手機熱點 > 家/辦公室；密碼都已存在 NM keyfile，這裡只負責叫起來
-KNOWN_WIFI = ["weedle-94cc", "MotowayapC", "Motowayap"]
-CAR_WIFI = KNOWN_WIFI[0]      # the car's own AP; the only way to reach it on the road
+# 沒有網路時依序試：手機熱點 > C4 熱點 > 家/辦公室；密碼都已存在 NM keyfile，這裡只負責叫起來。
+# 2026-10-20 使用者：車上全部連手機熱點（D531 在上面，Pi 要讀它的導航），手機熱點連不上才用 C4 熱點。
+# C4（car_hotspot.py）同一套規則：開車時先上手機熱點，沒有才開自己的熱點，手機熱點回來再換回去 ——
+# 所以 C4 熱點一消失，多半是 C4 去了手機熱點，Pi 斷線後先試手機熱點正好跟過去。
+# 只在「沒有網路」時照這個順序；有網路但找不到 C4 時只會往 C4 熱點跳（join_car_wifi），
+# 所以停在辦公室時不會因為手機熱點開著就跳過去。
+KNOWN_WIFI = ["MotowayapC", "weedle-94cc", "Motowayap"]
+CAR_WIFI = "weedle-94cc"      # the car's own AP; the way to reach it when the phone's hotspot is not there
 CAR_RESCAN = 45.0             # seconds between forced scans while hunting for it
 
 
