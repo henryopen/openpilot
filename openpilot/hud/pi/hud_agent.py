@@ -42,15 +42,18 @@ _ssid: str = ""
 _lock = threading.Lock()
 _reconnect_lock = threading.Lock()
 
-# 沒有網路時依序試：手機熱點 > C4 熱點 > 家/辦公室；密碼都已存在 NM keyfile，這裡只負責叫起來。
-# 2026-10-20 使用者：車上全部連手機熱點（D531 在上面，Pi 要讀它的導航），手機熱點連不上才用 C4 熱點。
-# C4（car_hotspot.py）同一套規則：開車時先上手機熱點，沒有才開自己的熱點，手機熱點回來再換回去 ——
-# 所以 C4 熱點一消失，多半是 C4 去了手機熱點，Pi 斷線後先試手機熱點正好跟過去。
-# 只在「沒有網路」時照這個順序；有網路但找不到 C4 時只會往 C4 熱點跳（join_car_wifi），
-# 所以停在辦公室時不會因為手機熱點開著就跳過去。
+# The Pi does not choose a network, it follows the C4 (2026-10-22). The C4 decides (hud/car_hotspot.py): plugged
+# into the car the phone's hotspot, else its own AP; on the desk home / office wifi, else its own AP. The Pi stays
+# wherever the car answers; only after the car has not answered for LOST_AFTER does it look for it on the other
+# known networks, in this order - the phone's hotspot (the car's usual network), the car's own AP, home / office -
+# and stops on the first one the car is on. Until 10/22 the two made their own choices by different rules (the C4
+# on onroad, the Pi on a 0.4 s probe) and chased each other; on the office wifi the C4 answers in 0.3-1.3 s, so the
+# Pi called it gone every one to three minutes.
 KNOWN_WIFI = ["MotowayapC", "weedle-94cc", "Motowayap"]
-CAR_WIFI = "weedle-94cc"      # the car's own AP; the way to reach it when the phone's hotspot is not there
-CAR_RESCAN = 45.0             # seconds between forced scans while hunting for it
+CAR_WIFI = "weedle-94cc"      # the car's own AP
+PROBE_TIMEOUT = 2.0           # s: a connect to the car we already know
+LOST_AFTER = 20.0             # s of the car not answering before looking on another network
+FOLLOW_EVERY = 45.0           # s: at most this often go round the other networks
 
 
 def own_ip() -> str:
@@ -142,12 +145,12 @@ def scan_once() -> str | None:
     candidates.append(CACHE_FILE.read_text().strip())
   candidates += FALLBACK_HOSTS
   for ip in candidates:
-    if ip and port_open(ip):
+    if ip and port_open(ip, timeout=PROBE_TIMEOUT):
       return ip
   for net in local_networks():
     hosts = [str(h) for h in net.hosts()]
     with ThreadPoolExecutor(max_workers=64) as pool:
-      for ip, ok in zip(hosts, pool.map(partial(port_open, timeout=0.4), hosts)):
+      for ip, ok in zip(hosts, pool.map(partial(port_open, timeout=1.0), hosts), strict=True):
         if ok:
           return ip
   return None
@@ -182,29 +185,45 @@ def net_log(event: str) -> None:
     pass
 
 
+def wait_for_change(seconds: int) -> None:
+  """Sleep up to `seconds`, but return the moment the network or this Pi's address changes (10/20: sitting out a
+  whole fixed sleep after a network change was most of the ~30 s of empty HUD)."""
+  before = (read_ssid(), own_ip())
+  for _ in range(seconds):
+    time.sleep(1)
+    if (read_ssid(), own_ip()) != before:
+      return
+
+
 def discover_loop():
   global _found, _ssid
   said = None
+  lost_since = None
   while True:
     with _lock:
       current = _found
-    if current and port_open(current):
-      s2 = read_ssid()
-      with _lock:
-        _ssid = s2
-      key = ("up", s2, current)
-      if key != said:
-        net_log("car reachable")
-        said = key
-      # Poll the SSID while waiting: hopping to the car's hotspot changes the subnet, and
-      # sleeping the whole interval out first would add that much to the time the screen
-      # sits empty.
-      for _ in range(10):
-        time.sleep(1)
-        if read_ssid() != s2:
-          break
-      continue
-    found = scan_once()
+    if current:
+      if port_open(current, timeout=PROBE_TIMEOUT):
+        lost_since = None
+        s2 = read_ssid()
+        with _lock:
+          _ssid = s2
+        key = ("up", s2, current)
+        if key != said:
+          net_log("car reachable")
+          said = key
+        wait_for_change(10)
+        continue
+      # One missed answer is not a lost car - on the office wifi the C4 takes up to 1.3 s. Only LOST_AFTER of
+      # silence is, and nothing moves before that.
+      if lost_since is None:
+        lost_since = time.monotonic()
+      if time.monotonic() - lost_since < LOST_AFTER:
+        time.sleep(2)
+        continue
+    found = scan_once() if own_ip() else None
+    if not found:
+      found = follow_car()
     ssid = read_ssid()
     with _lock:
       _found = found
@@ -214,77 +233,58 @@ def discover_loop():
       net_log("car found" if found else "car NOT found")
       said = key
     if found:
+      lost_since = None
       try:
         CACHE_FILE.write_text(found)
       except OSError:
         pass
-      time.sleep(10)
+      wait_for_change(10)
     else:
-      # Nothing answered on 8902. If that is because the Pi is on no network at all - which
-      # is what a boot in the car looks like, the Pi being ready long before the car is -
-      # then do what the standby screen's button does instead of waiting for
-      # NetworkManager's scan backoff, which stretches to two minutes. net_reconnect returns
-      # straight away when there is already a connection, so at home this costs nothing.
-      if not read_ssid():
-        net_reconnect()
-      elif own_ip():
-        # We have wifi but the car is not on it. If the car is broadcasting its own AP,
-        # that is where it is - NetworkManager will not make that move on its own.
-        # (Not while this network is still coming up with no address yet: a scan for the car's
-        # AP there costs 2-12 s and the car is usually about to show up on this network.)
-        join_car_wifi()
-      # Wait up to 15 s, but look again the moment the network or this Pi's address changes.
-      # 10/20 on the phone's hotspot the first look came before the Pi had an address (nothing
-      # to scan), then this sat out the whole 15 s and the car turned up at the next scan,
-      # 1-2 s of work: ~30 s of empty HUD after a network change, most of it this sleep.
-      before = (read_ssid(), own_ip())
-      for _ in range(15):
-        time.sleep(1)
-        if (read_ssid(), own_ip()) != before:
-          break
+      wait_for_change(15)
 
 
-_last_car_scan = 0.0
+_last_follow = -FOLLOW_EVERY
 
 
-def join_car_wifi() -> bool:
-  """Move to the car's hotspot once it appears, even though we already have wifi.
-
-  NetworkManager never gives up a connection it has already brought up for a better one
-  that turns up later, so parked at home the Pi sits on home wifi while the car drives
-  away hosting an AP nobody joins. read_ssid() returning something used to be enough to
-  skip all of this, so the switch only ever happened once home wifi faded out of range
-  by itself - minutes, and often a reboot. The car now raises its hotspot the moment it
-  goes onroad, so by the time this runs there is usually something to join.
-
-  Only ever moves *to* the car. If the car is not broadcasting - parked in the office,
-  say - this does nothing and leaves whatever network is already up alone.
-  """
-  global _last_car_scan
-  if read_ssid() == CAR_WIFI:
-    return False
-  now = time.monotonic()
-  if now - _last_car_scan > CAR_RESCAN:
-    _last_car_scan = now
-    try:
-      subprocess.run(["nmcli", "dev", "wifi", "rescan"], timeout=10,
-                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-      time.sleep(2)
-    except Exception:
-      pass
+def visible_ssids() -> set[str]:
   try:
+    subprocess.run(["nmcli", "dev", "wifi", "rescan"], timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    time.sleep(2)
     out = subprocess.check_output(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list"],
                                   text=True, timeout=10, stderr=subprocess.DEVNULL)
+    return {ln.strip() for ln in out.splitlines()}
   except Exception:
-    return False
-  if CAR_WIFI not in [ln.strip() for ln in out.splitlines()]:
-    return False
-  try:
-    r = subprocess.run(["nmcli", "-w", "20", "con", "up", CAR_WIFI],
-                       capture_output=True, text=True, timeout=30)
-    return r.returncode == 0
-  except Exception:
-    return False
+    return set()
+
+
+def follow_car() -> str | None:
+  """The car is not on this network: go round the other known networks in KNOWN_WIFI order and stay on the first
+  one the car answers on. NetworkManager never leaves a connection it has for a better one, so this has to make
+  the move itself. At most every FOLLOW_EVERY, since each hop drops the HUD for a few seconds."""
+  global _last_follow
+  if time.monotonic() - _last_follow < FOLLOW_EVERY:
+    return None
+  _last_follow = time.monotonic()
+  seen = visible_ssids()
+  here = read_ssid()
+  for name in KNOWN_WIFI:
+    if name == here or name not in seen:
+      continue
+    try:
+      r = subprocess.run(["nmcli", "-w", "20", "con", "up", name], capture_output=True, text=True, timeout=30)
+    except Exception:
+      continue
+    if r.returncode != 0:
+      continue
+    for _ in range(10):          # the address can take a few seconds after association
+      if own_ip():
+        break
+      time.sleep(1)
+    found = scan_once()
+    net_log(f"looked on {name}: {'car here' if found else 'not here'}")
+    if found:
+      return found
+  return None
 
 
 def net_reconnect() -> dict:

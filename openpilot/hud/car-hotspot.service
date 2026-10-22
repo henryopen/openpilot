@@ -7,7 +7,9 @@ Wants=NetworkManager.service
 Type=simple
 # nmcli con up needs root; everything it touches is NetworkManager's own state
 User=root
-ExecStart=/usr/bin/python3 /data/openpilot/openpilot/hud/car_hotspot.py
+# openpilot's python, to read the panda's harness status (pandaStates) - in the car or not decides the network
+Environment=PYTHONPATH=/data/openpilot
+ExecStart=/usr/local/venv/bin/python /data/openpilot/openpilot/hud/car_hotspot.py
 Restart=always
 RestartSec=10
 
