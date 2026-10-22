@@ -20,6 +20,7 @@ import bisect
 import hmac
 import json
 import os
+import socket
 import threading
 import time
 import traceback
@@ -50,6 +51,13 @@ REASON_NAMES = {_R.cruise: "cruise", _R.lead: "lead0", _R.stopLight: "stoplight"
                 _R.curve: "curve", _R.e2e: "e2e", _R.weakLead: "weaklead"}
 
 KPH_TO_MS = 1 / 3.6
+
+# C3's self-calibration wants the car's vEgo / aEgo (c3link/c3calib.py). They are sent from here, not from a reader
+# of its own: msgq lets a topic have 15 readers, carState already had exactly 15, and c3_relay's 16th made every
+# reader drop messages - the 10/21 drive's commIssue on every engage. Same packet c3_relay used to send, at this
+# loop's ~20 Hz instead of 100.
+C3_ADDR = ("10.44.0.1", 4410)
+C3_BATCH_S = 0.1
 
 # modelV2 的線是 33 個不等距點；降取樣成固定距離，HUD 夠用又不會塞爆 SSE
 SAMPLE_X = [0, 5, 12, 20, 30, 45, 60, 80, 95, 110]
@@ -398,6 +406,8 @@ def _produce():
   targets = TargetTracker()
   last_target_t = time.monotonic()
   edges = RoadEdgeLaneChangeController()
+  c3_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  c3_cs, c3_last = [], 0.
   while True:
     sm.update(1000)
     data = {"ts": time.monotonic(), "alive": {s: bool(sm.alive[s]) for s in SERVICES}}
@@ -414,6 +424,19 @@ def _produce():
     if not onroad:
       edges.reset()
       targets.reset()
+      c3_cs = []
+    else:
+      # to C3 for its calibration; with the cable out the send fails and is dropped
+      if sm.updated["carState"]:
+        c3_cs.append([sm.logMonoTime["carState"], round(float(sm["carState"].vEgo), 3), round(float(sm["carState"].aEgo), 4)])
+      if now - c3_last >= C3_BATCH_S:
+        if c3_cs:
+          try:
+            c3_tx.sendto(json.dumps({"s": time.clock_gettime_ns(time.CLOCK_BOOTTIME), "cs": c3_cs},
+                                    separators=(",", ":")).encode(), C3_ADDR)
+          except OSError:
+            pass
+        c3_cs, c3_last = [], now
     if onroad:
       try:
         data["carState"] = _car_state(sm["carState"])

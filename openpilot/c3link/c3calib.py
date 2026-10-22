@@ -8,7 +8,7 @@ should too.
 
   up       = C3's accelerometer averaged over the drive (gravity; corners and stops average out)
   forward  = the direction in which C3's accelerometer follows the car's own longitudinal acceleration
-             (carState.aEgo from the wheels, sent by C4 over the USB link, c3_relay.py), taken square to "up",
+             (carState.aEgo from the wheels, sent by C4 over the USB link from hud/server.py), taken square to "up",
              leaving out the time spent turning (C3's own gyro about "up" above MAX_YAW_RATE)
   car frame: x forward, z down, y = z x x (right) - openpilot's calib frame; C3's camera is fixed to its
              device frame (tici: view_frame_from_device_frame), so this places every pixel in the car frame.
