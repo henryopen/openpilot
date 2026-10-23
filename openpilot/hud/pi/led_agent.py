@@ -332,7 +332,10 @@ def main():
         # 一張圖回得慢不算斷線：10/12 斷線後問中繼，讀到的是控制卡遲到的回覆 —— 卡和中繼都活著，
         # 只是那張超過 CARD_TIMEOUT。以前一慢就判斷線、等 CARD_RETRY 重登，畫面停 3-4 秒；
         # 現在連續 SLOW_LIMIT 張都逾時才算斷線，中間只跳過那幾張，同一個登入繼續用。
-        if card_ok is True and "no reply" in str(e) and slow + 1 < SLOW_LIMIT:
+        # "no reply" is the ESP32 relay's word for it; since 10/19 the card is reached over the Pi's own USB wifi,
+        # where the same late reply reads "timed out" - and was taken as the card gone every time (10/23).
+        late = "no reply" in str(e) or "timed out" in str(e)
+        if card_ok is True and late and slow + 1 < SLOW_LIMIT:
           slow += 1
           say(f"card slow ({slow}/{SLOW_LIMIT}), frame skipped")
         else:

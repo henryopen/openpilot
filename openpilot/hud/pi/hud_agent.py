@@ -314,10 +314,12 @@ def net_reconnect() -> dict:
 
 
 def net_list() -> dict:
-  """已存網路清單＋現在連哪個＋掃描有沒有看到（用 NM 的快取掃描結果，不主動觸發掃描）。"""
+  """已存網路清單＋現在連哪個＋掃描有沒有看到（用 NM 的快取掃描結果，不主動觸發掃描）。
+  一定要 --rescan no：預設快取超過 30 s 就會讓每張網卡都重掃。dash.html 每 20 s 叫一次，10/23 實測 wlan1
+  每次被拉去掃 4.9 s、收不到字幕卡的回覆，LED 每分鐘斷一次。"""
   visible: set[str] = set()
   try:
-    out = subprocess.check_output(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list"],
+    out = subprocess.check_output(["nmcli", "-t", "-f", "SSID", "dev", "wifi", "list", "--rescan", "no"],
                                   text=True, timeout=8, stderr=subprocess.DEVNULL)
     visible = {line.strip() for line in out.splitlines() if line.strip()}
   except Exception:
