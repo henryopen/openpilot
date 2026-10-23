@@ -294,6 +294,13 @@ CUT_AWAY = 1.0               # m/s the range opens by on average since the jump:
 CUT_AWAY_MIN_S = 0.5         # s of range before that is believed
 CUT_MIN_V = 10 * CV.KPH_TO_MS
 CUT_GENTLE_OFF_FLAG = '/data/cut_gentle_off'
+# ... and over once there has been no lead at all for CUT_LOST_S (2026-10-23). On a rainy night vision kept seeing cars
+# that were not there - reflections, oncoming headlights - their range jumping, each jump starting the 5 s again, and
+# the cap ran on with nothing ahead: 14 s of a 211 s drive held to 0.2 with no lead. A real new car blinks out too, so
+# not at once: closed loop (follow_sim3b, 193 lead changes from 10-08..10-23, 116 hard-braking leads, 50 stops),
+# speed-up-then-brake after a change 41% as it was -> 53 / 46 / 42% ending after 0.5 / 1.0 / 2.0 s gone; hard-braking
+# leads and stops identical in all four; 10-23's changes 1-4 km/h quicker in three of six.
+CUT_LOST_S = 2.0
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
 # that swing while leaving any steady-state offset under 1 km/h.
@@ -465,6 +472,7 @@ class LongitudinalPlanner:
     self.cut_d0 = 0.
     self.cut_since = 0
     self.cut_prev_d = -1.
+    self.cut_lost = 0         # frames in a row with no lead at all - see CUT_LOST_S
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -732,6 +740,9 @@ class LongitudinalPlanner:
       self.cut_frames = max(self.cut_frames - 1, 0)
       self.cut_since += 1
     self.cut_prev_d = d_now
+    self.cut_lost = 0 if lead.present else self.cut_lost + 1
+    if self.cut_lost * self.dt >= CUT_LOST_S:
+      self.cut_frames = 0
     if self.cut_frames > 0 and not self.cut_gentle_off and not reset_state and v_ego > CUT_MIN_V and output_a_target > CUT_A:
       away = (lead.present and self.cut_since * self.dt >= CUT_AWAY_MIN_S
               and (d_now - self.cut_d0) / (self.cut_since * self.dt) > CUT_AWAY)
