@@ -12,7 +12,9 @@ Environment=PYTHONPATH=/data/openpilot
 # encoderd first (VisionIPC frames -> HEVC), then loggerd. If EITHER exits the whole service exits and is restarted:
 # 10/23 encoderd died at boot (the hardware encoder would not open yet) while loggerd ran on, so a whole boot was
 # recorded with logs and no video and nothing restarted it.
-ExecStart=/bin/bash -c '/data/openpilot/system/loggerd/encoderd & sleep 4; /data/openpilot/system/loggerd/loggerd & wait -n; exit 1'
+# (Checked every 2 s rather than `wait -n`: at boot encoderd dies inside the first 4 s, before `wait -n` is reached,
+# and `wait -n` does not see a job that is already gone - the first version of this sat there with loggerd alone.)
+ExecStart=/bin/bash -c '/data/openpilot/system/loggerd/encoderd & E=$!; sleep 4; /data/openpilot/system/loggerd/loggerd & L=$!; while kill -0 $E 2>/dev/null && kill -0 $L 2>/dev/null; do sleep 2; done; echo "c3-record: encoderd or loggerd exited, restarting both"; exit 1'
 Restart=always
 RestartSec=5
 # encoderd asks for realtime priority 52 and asserts if it is refused (10/21)
