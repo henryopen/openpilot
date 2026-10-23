@@ -1,0 +1,27 @@
+[Unit]
+Description=C3 drive recorder (openpilot encoderd + loggerd, no openpilot manager)
+After=c3-camerad.service
+Requires=c3-camerad.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/openpilot
+Environment=PYTHONPATH=/data/openpilot
+# encoderd first (VisionIPC frames -> HEVC), then loggerd. If EITHER exits the whole service exits and is restarted:
+# 10/23 encoderd died at boot (the hardware encoder would not open yet) while loggerd ran on, so a whole boot was
+# recorded with logs and no video and nothing restarted it.
+ExecStart=/bin/bash -c '/data/openpilot/system/loggerd/encoderd & sleep 4; /data/openpilot/system/loggerd/loggerd & wait -n; exit 1'
+Restart=always
+RestartSec=5
+# encoderd asks for realtime priority 52 and asserts if it is refused (10/21)
+LimitRTPRIO=99
+LimitNICE=-20
+AmbientCapabilities=CAP_SYS_NICE
+KillMode=control-group
+StandardOutput=append:/data/c3det/log/record.log
+StandardError=append:/data/c3det/log/record.log
+
+[Install]
+WantedBy=multi-user.target

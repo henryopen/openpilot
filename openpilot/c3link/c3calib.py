@@ -31,6 +31,7 @@ import json
 import math
 import os
 import socket
+import subprocess
 import time
 from collections import deque
 
@@ -61,6 +62,10 @@ MAX_YAW_RATE = 0.05       # rad/s (~3 deg/s, after the gyro bias): turning, left
                           # with aEgo and pulled "forward" 6 deg off, both halves agreeing (split could not see it)
 MOVED_DEG = 4.
 MOVED_S = 20.
+# sensord can come up alive but silent ("poll timed out" forever, 10/23: a whole boot with no accelerometer, so no
+# calibration), which systemd cannot see. No accelerometer for this long restarts it, at most every SENSORD_RETRY.
+SENSORD_SILENT_S = 15.
+SENSORD_RETRY_S = 60.
 LAGS_S = np.arange(-0.6, 0.61, 0.05)
 
 FOCAL, CX, CY = 2648. / 2, 1928. / 4, 1208. / 4   # c3detect's half-resolution frame
@@ -264,8 +269,15 @@ def main():
   det_ts = None
   last_lights = None
   prev_frame = []
+  last_acc = last_sensord_kick = time.monotonic()
   while True:
     sm.update(50)
+    if sm.updated["accelerometer"]:
+      last_acc = time.monotonic()
+    elif time.monotonic() - last_acc > SENSORD_SILENT_S and time.monotonic() - last_sensord_kick > SENSORD_RETRY_S:
+      last_sensord_kick = time.monotonic()
+      print("c3calib: no accelerometer for %.0f s, restarting c3-sensord" % (time.monotonic() - last_acc), flush=True)
+      subprocess.run(["sudo", "systemctl", "restart", "c3-sensord"], timeout=30, check=False)
     if sm.updated["accelerometer"]:
       e = sm["accelerometer"]
       if e.which() == "acceleration" and len(e.acceleration.v) == 3:

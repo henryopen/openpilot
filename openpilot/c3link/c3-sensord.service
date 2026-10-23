@@ -7,6 +7,9 @@ StartLimitIntervalSec=0
 Type=simple
 User=comma
 WorkingDirectory=/data/openpilot/system/sensord
+# 10/23 a whole boot came up with sensord alive but reading nothing ("poll timed out"); a later start was fine.
+# Start it a little after boot, and c3calib restarts it if the accelerometer still goes quiet.
+ExecStartPre=/bin/sleep 15
 ExecStart=/data/openpilot/system/sensord/sensord
 Restart=always
 RestartSec=5
