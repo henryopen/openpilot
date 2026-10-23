@@ -26,7 +26,7 @@ import time
 import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from openpilot.cereal import custom, messaging
+from openpilot.cereal import custom, log, messaging
 from openpilot.common.params import Params
 from openpilot.common.time_helpers import system_time_valid
 from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN
@@ -41,7 +41,7 @@ from openpilot.selfdrive import keypad
 PORT = 8902
 KEYPAD_TOKEN = "/data/keypad_token"
 SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
-            "longitudinalPlan", "longitudinalPlanSP", "controlsState", "gpsLocationExternal"]
+            "longitudinalPlan", "longitudinalPlanSP", "controlsState", "gpsLocationExternal", "pandaStates"]
 
 # what the planner says set the accel; the page shows these instead of the raw plan source
 # Keyed on the enum's raw value: a constant stringifies to its number while a value read
@@ -58,6 +58,21 @@ KPH_TO_MS = 1 / 3.6
 # loop's ~20 Hz instead of 100.
 C3_ADDR = ("10.44.0.1", 4410)
 C3_BATCH_S = 0.1
+
+# Whether the C4 is plugged into the car (the panda's harness), for car_hotspot.py, which picks the network by it.
+# Written here because this process is openpilot's user: car_hotspot runs as root before openpilot is up, and its
+# own pandaStates reader made /dev/shm/msgq_pandaStates root's - openpilot then failed to open it on every boot.
+HARNESS_FILE = "/dev/shm/c4_harness.json"
+
+
+def _write_harness(ps) -> None:
+  try:
+    tmp = HARNESS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+      json.dump({"in_car": ps[0].harnessStatus != log.PandaState.HarnessStatus.notConnected, "t": time.monotonic()}, f)
+    os.replace(tmp, HARNESS_FILE)
+  except (OSError, IndexError):
+    pass
 
 # modelV2 的線是 33 個不等距點；降取樣成固定距離，HUD 夠用又不會塞爆 SSE
 SAMPLE_X = [0, 5, 12, 20, 30, 45, 60, 80, 95, 110]
@@ -410,6 +425,8 @@ def _produce():
   c3_cs, c3_last = [], 0.
   while True:
     sm.update(1000)
+    if sm.updated["pandaStates"]:
+      _write_harness(sm["pandaStates"])
     data = {"ts": time.monotonic(), "alive": {s: bool(sm.alive[s]) for s in SERVICES}}
     onroad = sm.alive["carState"]
 

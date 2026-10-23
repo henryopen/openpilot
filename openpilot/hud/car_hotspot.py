@@ -24,6 +24,7 @@ The Pi (hud/pi/hud_agent.py) follows the C4 rather than choosing for itself.
   sudo systemctl enable --now car-hotspot
 """
 import datetime
+import json
 import os
 import subprocess
 import time
@@ -45,7 +46,8 @@ PHONE_RETRY_AFTER = 300.0  # s: after a failed move to the phone, how long befor
 GRACE = 75.0          # seconds from boot before giving up on a known network
 POLL = 20.0
 RETRY_HOME = 300.0    # not in the car, on our own AP or the phone: how often to look for home / office wifi
-HARNESS_STALE = 30.0  # s without pandaStates before the harness reading is forgotten
+HARNESS_STALE = 30.0  # s: a harness reading older than this is forgotten
+HARNESS_FILE = "/dev/shm/c4_harness.json"   # written by hud/server.py
 # Where the handover actually went. print() alone goes to the journal, and this device has no
 # /var/log/journal - it is all in memory, so a reboot takes it with it. On 2026-09-14 the Pi
 # spent a drive unable to find the car and by the time there was anything to look at, the
@@ -186,25 +188,23 @@ class Harness:
   """Whether this C4 is plugged into the car: the panda's harnessStatus (normal / flipped in the car, notConnected
   on the desk). It does not depend on the ignition - parked with the engine off it still reads as the car - and
   it is what the network choice follows (2026-10-22 the user: "C4 不是可以知道是否接在車上嗎 車上當然以手機熱點為
-  優先"). None until pandad has said anything, or when it has gone quiet for HARNESS_STALE."""
+  優先"). None until it has been written, or when it is older than HARNESS_STALE.
+
+  Read from HARNESS_FILE, which the HUD server (hud/server.py, user comma) writes from pandaStates. This process
+  must NOT open msgq itself: it runs as root and starts before openpilot, so its reader created
+  /dev/shm/msgq_pandaStates owned by root and openpilot (user comma) died on "Permission denied" at every boot -
+  stuck on the boot logo, 10/22 night to 10/23."""
 
   def __init__(self):
-    self.sm = None
-    try:
-      from openpilot.cereal import messaging, log
-      self.sm = messaging.SubMaster(["pandaStates"])
-      self.not_connected = log.PandaState.HarnessStatus.notConnected
-    except Exception as e:  # without openpilot's python this just never knows
-      print(f"harness: cannot read pandaStates ({e})", flush=True)
-    self.value, self.at = None, 0.0
+    self.value = None
 
   def in_car(self) -> bool | None:
-    if self.sm is not None:
-      self.sm.update(0)
-      if self.sm.updated["pandaStates"] and len(self.sm["pandaStates"]) > 0:
-        self.value = self.sm["pandaStates"][0].harnessStatus != self.not_connected
-        self.at = time.monotonic()
-    if self.value is not None and time.monotonic() - self.at > HARNESS_STALE:
+    try:
+      with open(HARNESS_FILE) as f:
+        d = json.load(f)
+      fresh = time.monotonic() - float(d["t"]) < HARNESS_STALE
+      self.value = bool(d["in_car"]) if fresh else None
+    except (OSError, ValueError, KeyError, TypeError):
       self.value = None
     return self.value
 
