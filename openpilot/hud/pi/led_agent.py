@@ -209,6 +209,48 @@ def throttled():
     return "throttled=?"
 
 
+CARD_CON = "led-card"       # NM connection of the Pi's USB wifi (wlan1) to the card's own AP, since 10/19
+CARD_IFACE = "wlan1"
+WIFI_CHECK_EVERY = 15.0
+WIFI_LOG_EVERY = 120.0
+
+
+def card_wifi_watch(card_down):
+  """While the card is down and the card's adapter is sitting disconnected: ask that adapter for a scan, and log
+  whether the card's AP is on the air. 10/23 the adapter sat disconnected for 290 s after boot and then joined in
+  2 s, with nothing in the logs to say whether the AP was not up yet or NetworkManager had not looked. A scan on a
+  disconnected adapter costs nothing (with the card joined it would cost the card's replies - see hud_agent net_list)."""
+  try:
+    ssid = subprocess.run(["nmcli", "-g", "802-11-wireless.ssid", "con", "show", CARD_CON],
+                          capture_output=True, text=True, timeout=5).stdout.strip()
+  except (OSError, subprocess.SubprocessError):
+    ssid = ""
+  said, said_t = None, 0.
+  while True:
+    time.sleep(WIFI_CHECK_EVERY)
+    if not ssid or not card_down():
+      said = None
+      continue
+    try:
+      state = subprocess.run(["nmcli", "-g", "GENERAL.STATE", "dev", "show", CARD_IFACE],
+                             capture_output=True, text=True, timeout=5).stdout.strip()
+      if not state.startswith("30"):        # 30 = disconnected; connecting or connected is left alone
+        continue
+      subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", CARD_IFACE], capture_output=True, timeout=10)
+      time.sleep(5)
+      out = subprocess.run(["nmcli", "-t", "-f", "SSID,SIGNAL,CHAN", "dev", "wifi", "list", "ifname", CARD_IFACE,
+                            "--rescan", "no"], capture_output=True, text=True, timeout=5).stdout
+    except (OSError, subprocess.SubprocessError) as e:
+      say(f"card wifi check failed: {e}")
+      continue
+    seen = [ln.rsplit(":", 2) for ln in out.splitlines() if ln.rsplit(":", 2)[0] == ssid]
+    now = time.monotonic()
+    if bool(seen) != said or now - said_t >= WIFI_LOG_EVERY:
+      said, said_t = bool(seen), now
+      say(f"card wifi {CARD_IFACE} disconnected: AP " +
+          (f"on air, signal {seen[0][1]} ch {seen[0][2]}" if seen else "not seen in a scan"))
+
+
 def mirror(img, key, text, card_ok, manual_left=None):
   """原子寫入（先寫暫存檔再 rename），HUD 不會讀到寫一半的圖。"""
   try:
@@ -282,6 +324,9 @@ def main():
   c3voice = C3VoiceCaptions()
   led = None if args.card == "none" else Led(args.card, timeout=CARD_TIMEOUT)
   card_ok, card_next = None, 0.0
+  card_state = {"ok": None}                        # for card_wifi_watch, which runs in its own thread
+  if led is not None and not args.card.startswith("serial"):
+    threading.Thread(target=card_wifi_watch, args=(lambda: card_state["ok"] is not True,), daemon=True).start()
   slow = 0                                         # 連續逾時的張數（見 SLOW_LIMIT）
   last_key, last_text = None, ""
   mirror_next = 0.0
@@ -344,6 +389,7 @@ def main():
           card_ok, card_next, slow = False, tick + CARD_RETRY, 0
           led.P = None                               # 下次重新登入
 
+    card_state["ok"] = card_ok
     time.sleep(max(0.0, 1 / FPS - (time.monotonic() - tick)))
 
 
