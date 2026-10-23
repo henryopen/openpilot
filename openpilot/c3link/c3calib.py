@@ -16,6 +16,19 @@ should too.
 Offline check on two of C4's own drives (fed in as if C4 were C3; the answer is known from openpilot's own
 calibration): 1-1.5 deg after 10-15 minutes of driving.
 
+C3's IMU does not publish in the device frame: mounted upright in the car its accelerometer reads gravity on +x
+(10/23 drive, 9.78 of 9.8). openpilot's locationd turns both accelerometer and gyro into the device frame with
+(-z, -y, -x); done the same here on the way in, so "up" / "forward" / car_from_dev are all device frame, which is
+what VIEW_FROM_DEVICE needs. (Until 10/23 the raw axes went straight in - never noticed because C3 had never
+finished a calibration; the result would have put the lights ~80 deg off.) Check: the 10/23 drive's average,
+turned so, puts the camera 5.8 deg up, the photos from that drive 3-5 deg.
+
+Coarse (10/23, the driver: the lights should work from the start of the drive): until this drive's fit is ready,
+"up" is just the accelerometer average and "forward" is taken as C3's own forward (device x, squared to "up") -
+pitch and roll right, which decide whether a light is above the horizon; yaw off by however far C3 is turned.
+The previous drive's result is preferred over it while its "up" agrees with this drive's within MOVED_DEG (C3
+not moved since). HUD: "粗標定" -> "已標定".
+
 Ready when there has been enough speeding up and slowing down (MIN_MOVING_S moving, aEgo spread MIN_AEGO_STD)
 and two halves of the drive agree within MAX_SPLIT_DEG. If gravity swings by more than MOVED_DEG from the drive
 average for MOVED_S, C3 has been moved: start over. The last good result is kept in CALIB_FILE and used
@@ -43,9 +56,11 @@ from common.transformations.orientation import euler_from_rot
 LISTEN = ("0.0.0.0", 4410)
 C4 = ("10.44.0.2", 4411)
 DET = "/dev/shm/c3det/det.json"
-VOICE = "/dev/shm/c3voice.json"   # c3voice.py: what C3's mic heard (display only)
+VOICE = "/dev/shm/c3voice.json"   # c3voice.py: what C3's mic heard and what came of it (res)
 STATE = "/dev/shm/c3calib.json"
 CALIB_FILE = "/data/c3link/calib.json"
+CALIB_LOG = "/data/c3link/calib.log"   # every change of status / basis / link, and once a minute while driving
+LOG_MAX = 1_000_000                     # bytes, then one rotation to calib.log.1
 
 GRID_HZ = 20.
 SMOOTH_S = 0.5            # accelerometer moving average before the fit
@@ -61,6 +76,7 @@ MAX_YAW_RATE = 0.05       # rad/s (~3 deg/s, after the gyro bias): turning, left
                           # 10/18 offline: braking into corners correlates the corner's sideways acceleration
                           # with aEgo and pulled "forward" 6 deg off, both halves agreeing (split could not see it)
 MOVED_DEG = 4.
+COARSE_S = 5.             # seconds of accelerometer before the coarse result is offered
 MOVED_S = 20.
 # sensord can come up alive but silent ("poll timed out" forever, 10/23: a whole boot with no accelerometer, so no
 # calibration), which systemd cannot see. No accelerometer for this long restarts it, at most every SENSORD_RETRY.
@@ -75,6 +91,12 @@ ELEV_MIN_DEG = 3.0        # 10/18, 82 boxes on C3's own drives judged by eye: li
 REPEAT_AZ_DEG = 2.0       # a light is passed on once seen twice in a row: same colour, within this
 # camera (x right, y down, z forward) from device (x forward, y right, z down)
 VIEW_FROM_DEVICE = np.array([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])
+LOG_EVERY_S = 60.
+
+
+def dev_from_imu(x, y, z):
+  """C3's accelerometer / gyro axes -> device frame, as openpilot's locationd does."""
+  return -z, -y, -x
 
 
 def boot_ns():
@@ -97,6 +119,24 @@ def write_json(path, obj):
   os.replace(tmp, path)
 
 
+def log_line(text):
+  try:
+    if os.path.exists(CALIB_LOG) and os.path.getsize(CALIB_LOG) > LOG_MAX:
+      os.replace(CALIB_LOG, CALIB_LOG + ".1")
+    with open(CALIB_LOG, "a", encoding="utf-8") as f:
+      f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} up={time.monotonic():.0f} {text}\n")
+  except OSError:
+    pass
+
+
+def car_frame(fwd, up):
+  """car_from_dev (rows: car x forward, y right, z down, in device coordinates) from forward and up."""
+  z = -unit(up)
+  y = unit(np.cross(z, fwd))
+  x = np.cross(y, z)
+  return np.stack([x, y, z])
+
+
 class Calibrator:
   def __init__(self):
     self.acc = deque()          # (t_ns, x, y, z)   C3 accelerometer, C3 clock
@@ -104,6 +144,7 @@ class Calibrator:
     self.cs = deque()           # (t_ns, vEgo, aEgo) from C4, on C3's clock
     self.offsets = deque(maxlen=300)
     self.result = None
+    self.coarse_m = None
     self.prev = self.load()
     self.moved_since = None
     self.state = {}
@@ -123,8 +164,27 @@ class Calibrator:
     self.gyro.clear()
     self.cs.clear()
     self.result = None
+    self.coarse_m = None
     self.moved_since = None
     self.last_reset = why
+
+  def coarse(self):
+    """Pitch and roll from gravity alone, forward taken as C3's own forward (see the top)."""
+    if len(self.acc) < 2 or self.acc[-1][0] - self.acc[0][0] < COARSE_S * 1e9:
+      return None
+    up = unit(np.array(self.acc, dtype=float)[:, 1:].mean(0))
+    return car_frame(np.array([1., 0., 0.]), up)
+
+  def basis(self):
+    """(car_from_dev, which) the lights are turned with: this drive's fit, else the previous drive's while C3 has
+    not moved since, else the coarse one."""
+    if self.result is not None:
+      return self.result, "this drive"
+    if self.prev is not None and (self.coarse_m is None or angle_deg(self.prev[2], self.coarse_m[2]) <= MOVED_DEG):
+      return self.prev, "previous drive"
+    if self.coarse_m is not None:
+      return self.coarse_m, "coarse"
+    return None, None
 
   def add_c4(self, pkt, recv_ns):
     self.offsets.append(recv_ns - pkt["s"])
@@ -203,11 +263,7 @@ class Calibrator:
     split = angle_deg(fh[0], fh[1]) if len(fh) == 2 else 99.
     out["split_deg"] = round(split, 2)
 
-    x = fwd
-    z = -up
-    y = unit(np.cross(z, x))
-    x = np.cross(y, z)
-    car_from_dev = np.stack([x, y, z])
+    car_from_dev = car_frame(fwd, up)
     rpy = euler_from_rot(car_from_dev.T)          # like openpilot's rpyCalib: device_from_calib = rot_from_euler(rpy)
     out.update({"car_from_dev": car_from_dev.round(5).tolist(), "rpy_deg": np.degrees(rpy).round(2).tolist()})
     ok = (GAIN_RANGE[0] <= gain <= GAIN_RANGE[1] and r2 >= MIN_R2 and split <= MAX_SPLIT_DEG)
@@ -269,6 +325,7 @@ def main():
   det_ts = None
   last_lights = None
   prev_frame = []
+  logged, last_log = None, 0.
   last_acc = last_sensord_kick = time.monotonic()
   while True:
     sm.update(50)
@@ -281,13 +338,11 @@ def main():
     if sm.updated["accelerometer"]:
       e = sm["accelerometer"]
       if e.which() == "acceleration" and len(e.acceleration.v) == 3:
-        x, y, z = e.acceleration.v
-        cal.acc.append((sm.logMonoTime["accelerometer"], x, y, z))
+        cal.acc.append((sm.logMonoTime["accelerometer"], *dev_from_imu(*e.acceleration.v)))
     if sm.updated["gyroscope"]:
       e = sm["gyroscope"]
       if e.which() == "gyroUncalibrated" and len(e.gyroUncalibrated.v) == 3:
-        x, y, z = e.gyroUncalibrated.v
-        cal.gyro.append((sm.logMonoTime["gyroscope"], x, y, z))
+        cal.gyro.append((sm.logMonoTime["gyroscope"], *dev_from_imu(*e.gyroUncalibrated.v)))
     try:
       while True:
         data, _ = rx.recvfrom(65536)
@@ -312,11 +367,19 @@ def main():
       if r.get("status") == "ok":
         cal.result = np.array(r["car_from_dev"])
         write_json(CALIB_FILE, {"car_from_dev": r["car_from_dev"], "rpy_deg": r["rpy_deg"]})
-      r["using"] = "this drive" if cal.result is not None else ("previous drive" if cal.prev is not None else None)
-      basis = cal.result if cal.result is not None else cal.prev
+      cal.coarse_m = cal.coarse()
+      basis, r["using"] = cal.basis()
       if basis is not None:
         r["horizon_row"] = horizon_row(basis)
+        r["basis_rpy_deg"] = np.degrees(euler_from_rot(basis.T)).round(2).tolist()
       cal.state = r
+      # a lasting record (10/23: the drive's calibration could not be checked afterwards, /dev/shm is gone)
+      key = (r.get("status"), r.get("using"), "link" not in r, cal.last_reset)
+      if key != logged or ("link" not in r and now - last_log >= LOG_EVERY_S):
+        logged, last_log = key, now
+        log_line(json.dumps({k: r.get(k) for k in ("status", "why", "using", "link", "moving_s", "aego_std", "r2", "gain",
+                                                    "split_deg", "lag_ms", "basis_rpy_deg", "horizon_row")}
+                            | {"reset": cal.last_reset, "n_acc": len(cal.acc), "n_c4": len(cal.cs)}, ensure_ascii=False))
     # every second: whether C4 is sending carState (= driving) - c3detect only runs while it is
     if now - last_state >= 1.:
       last_state = now
@@ -325,13 +388,13 @@ def main():
 
     if now - last_send >= 0.5:
       last_send = now
-      basis = cal.result if cal.result is not None else cal.prev
+      basis, using = cal.basis()
       st = cal.state
       # what the driver sees on C4's HUD (he looks at nothing else while driving): calibration progress,
       # C3's temperature, whether the detector runs, and the lights
       msg = {"cal": st.get("status", "collecting"), "why": st.get("why", ""),
              "prog": st.get("moving_s", 0), "need": MIN_MOVING_S,
-             "using": "this drive" if cal.result is not None else ("previous drive" if cal.prev is not None else None)}
+             "using": using}
       try:
         with open(DET) as f:
           det = json.load(f)
@@ -352,7 +415,7 @@ def main():
         with open(VOICE) as f:
           v = json.load(f)
         msg["voice"] = {"ok": bool(v.get("ok")) and now - float(v.get("t", 0)) < 3., "n": v.get("n", 0),
-                        "last": v.get("last", ""),
+                        "last": v.get("last", ""), "res": v.get("res", ""),
                         "ago": round(now - float(v["last_t"]), 1) if v.get("last_t") else None}
       except (OSError, ValueError, TypeError):
         msg["voice"] = {"ok": False}

@@ -1083,7 +1083,7 @@ function renderC3(c3){
   if(c3.missing){ cls='off'; txt='C3 未連線'; }
   else {
     const prog = `${Math.floor((c3.prog||0)/60)}/${Math.round((c3.need||240)/60)} 分`;
-    const tag = c3.cal==='ok' ? '' : `（標定中 ${prog}）`;
+    const tag = c3.cal==='ok' ? '' : c3.using==='coarse' ? `（粗標定 ${prog}）` : `（標定中 ${prog}）`;
     const L=(c3.lights||[]).filter(l=>Math.abs(l.az)<=12).sort((a,b)=>(b.conf||0)-(a.conf||0));
     if(!c3.using){ txt=`C3 標定中 ${prog}`; }
     else if(c3.det_err){ txt='C3 辨識停止'+tag; cls='hot'; }
@@ -1100,8 +1100,10 @@ function renderC3(c3){
   document.getElementById('c3Txt').textContent=txt;
 }
 
-/* C3 語音（c3link/c3voice.py，10/18）：只顯示、不送車 —— 車上誤判率還沒量。聽到的指令在畫面正中間跳 2.5 秒
-   （跟手勢／Pi 語音共用 gesBig），chip 講語音有沒有在聽。n 是 C3 那邊累計聽到的次數，變了才跳。 */
+/* C3 語音（c3link/c3voice.py，10/18；10/23 起會作用，接手與否都可以）：聽到的指令在畫面正中間跳 2.5 秒
+   （跟手勢／Pi 語音共用 gesBig），下面一行講結果（res）：加減速送到車機沒有、字幕、綠燈沒開只顯示。
+   chip 講語音有沒有在聽。n 是 C3 那邊累計聽到的次數，變了才跳。 */
+const C3V_RES={'sent':['已送出','#3ddc84'], 'led':['後窗字幕','#3ddc84'], 'display only':['只顯示（綠燈未開）','#8b9bab']};
 let c3vSeen=null, c3vHide=0;
 function renderC3Voice(c3){
   const chip=document.getElementById('cC3v'), big=document.getElementById('gesBig');
@@ -1115,8 +1117,9 @@ function renderC3Voice(c3){
     else if(v.n!==c3vSeen){
       c3vSeen=v.n;
       if(v.ago!=null && v.ago<5){
+        const r=C3V_RES[v.res] || ['沒送到 '+String(v.res||'').replace(/[<>&]/g,''),'#ff5a5a'];
         big.innerHTML='<span class="arw">🎤</span>'+String(v.last||'').replace(/[<>&]/g,'')+
-          '<div style="font-size:26px;font-weight:700;color:#8b9bab">C3 聽到・只顯示</div>';
+          `<div style="font-size:26px;font-weight:700;color:${r[1]}">C3 聽到・${r[0]}</div>`;
         big.classList.add('on'); c3vHide=Date.now()+2500;
       }
     }

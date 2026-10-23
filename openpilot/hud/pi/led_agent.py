@@ -136,6 +136,29 @@ class ManualKeys:
       say(f"manual {m.get('key')} -> {director.manual or 'off'}")
 
 
+class C3VoiceCaptions:
+  """C3 語音的字幕（c3link/c3voice.py，10/23）：小白謝謝／抱歉／臨時。C3 聽到的經 C4 的 HUD 資料流過來
+  （c3.voice：n＝C3 累計聽到幾次、last＝最後一句、ago＝幾秒前），n 變了就是新的一次。交給跟鍵盤字幕同一個入口，
+  所以再說一次同一句一樣是取消。"""
+  KEYS = {"小白謝謝": "m_thanks", "小白抱歉": "m_sorry", "小白臨時": "m_temp_stop"}
+  MAX_AGO = 3.0          # 秒：比這舊的不算（例如 led_agent 重啟、C3 斷線又接回時留著的那一句）
+
+  def __init__(self):
+    self.n = None
+
+  def poll(self, director, d, now):
+    v = (d.get("c3") or {}).get("voice") if isinstance(d, dict) else None
+    if not isinstance(v, dict) or "n" not in v:
+      return
+    n, self.n = self.n, v.get("n")
+    if n is None or n == self.n:
+      return
+    key, ago = self.KEYS.get(v.get("last")), v.get("ago")
+    if key and isinstance(ago, (int, float)) and ago <= self.MAX_AGO:
+      director.manual_press(key, now)
+      say(f"c3 voice {v.get('last')} -> {director.manual or 'off'}")
+
+
 def nav_poll(director, now):
   """導航：hud_agent 每秒把 D531 NavDash 的 /nav 寫到 NAV_FILE（mono = 讀到的那一刻，同一台機器的
   monotonic）。讀不到檔（hud_agent 沒在跑）就當作沒在導航。"""
@@ -256,6 +279,7 @@ def main():
   stream.start()
   director = Director()
   manual = ManualKeys()
+  c3voice = C3VoiceCaptions()
   led = None if args.card == "none" else Led(args.card, timeout=CARD_TIMEOUT)
   card_ok, card_next = None, 0.0
   slow = 0                                         # 連續逾時的張數（見 SLOW_LIMIT）
@@ -270,6 +294,7 @@ def main():
     fresh = tick - stream.latest_t < STREAM_STALE
     d: dict = stream.latest if fresh else {"standby": True}
     manual.poll(director, tick)
+    c3voice.poll(director, d, tick)
     nav_poll(director, tick)
     if tick >= power_next:
       power_next = tick + 10.0

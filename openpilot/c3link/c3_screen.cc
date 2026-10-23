@@ -212,7 +212,7 @@ int main(int argc, char *argv[]) {
     } else {
       const QString st = c.value("status").toString();
       const QString using_ = c.value("using").toString();
-      const QString use = using_ == "this drive" ? "用本趟結果" : (using_ == "previous drive" ? "先沿用上一趟" : "還沒有任何結果");
+      const QString use = using_ == "this drive" ? "用本趟結果" : (using_ == "previous drive" ? "先沿用上一趟" : (using_ == "coarse" ? "粗標定（重力，正前方先假設）" : "還沒有任何結果"));
       if (st == "ok") setColored(cal.main, "完成", GREEN);
       else if (st == "converging") setColored(cal.main, "收斂中", YELLOW);
       else if (st == "error") setColored(cal.main, "錯誤", RED);
