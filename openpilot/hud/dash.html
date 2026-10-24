@@ -286,6 +286,7 @@
   <div id="clock">--:--</div>
   <div id="standby-msg">連線中…</div>
   <div id="standby-net"></div>
+  <div id="standby-voice" style="font-size:30px;font-weight:700;color:#e8eef5;min-height:40px"></div>
   <div id="netRow">
     <button id="backHud">返回 HUD</button>
     <button id="reconnBtn">重新連線 WiFi</button>
@@ -1127,6 +1128,27 @@ function renderC3Voice(c3){
   }
   if(c3vHide && Date.now()>c3vHide){ big.classList.remove('on'); c3vHide=0; }
 }
+/* 10/24 使用者：停車（openpilot 待機）也要能用 C3 語音。待機時整片待機畫面蓋住 HUD，聽到的那句改寫在待機畫面上
+   4 秒；跟上面共用 c3vSeen，切回行駛畫面不會再跳一次。字幕（謝謝／抱歉／臨時）待機時照樣上後窗；
+   加速／減速要 MAIN 開著才有設定速度可改，待機時不會有作用，照實講。 */
+let sbvHide=0;
+function standbyVoice(c3){
+  const el=document.getElementById('standby-voice'); if(!el) return;
+  const v = c3 && !c3.missing ? c3.voice : null;
+  if(v && typeof v.n==='number'){
+    if(c3vSeen===null){ c3vSeen=v.n; }
+    else if(v.n!==c3vSeen){
+      c3vSeen=v.n;
+      if(v.ago!=null && v.ago<5){
+        const car = v.res==='sent';   // 加速／減速：C4 收到了，但待機時沒有設定速度可改
+        const r = car ? ['待機中不會改速度','#ffbe00'] : (C3V_RES[v.res] || ['沒送到 '+String(v.res||'').replace(/[<>&]/g,''),'#ff5a5a']);
+        el.innerHTML='🎤 C3 聽到 '+String(v.last||'').replace(/[<>&]/g,'')+`・<span style="color:${r[1]}">${r[0]}</span>`;
+        sbvHide=Date.now()+4000;
+      }
+    }
+  }
+  if(sbvHide && Date.now()>sbvHide){ el.textContent=''; sbvHide=0; }
+}
 
 function clearLight(){    // 辨識停了：這時候留著上一顆燈就是騙人
   litHold=null; litAt=0;
@@ -1627,7 +1649,7 @@ async function connect(){
                const F=fromSSE(J);
                lastData=Date.now();
                if(F){ stopDemo(); if(!manualStandby) hideStandbyScreen(); setConn('live'); showFrame(F); }
-               else { setConn('standby'); showIdle(); showStandbyScreen('已連線，openpilot 待機','ok'); } }
+               else { setConn('standby'); showIdle(); showStandbyScreen('已連線，openpilot 待機','ok'); standbyVoice(J.c3); } }
           catch(e){ window.__hudErr&&window.__hudErr('SSE '+(e&&e.message||e)); }
         };
         es.onerror=()=>{ if(es){es.close(); es=null;} lastData=0; setConn('offline'); showIdle(); showStandbyScreen('連線中斷，重試中…'); setTimeout(connect,1500); };
