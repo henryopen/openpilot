@@ -30,8 +30,9 @@ The previous drive's result is preferred over it while its "up" agrees with this
 not moved since). HUD: "粗標定" -> "已標定".
 
 Ready when there has been enough speeding up and slowing down (MIN_MOVING_S moving, aEgo spread MIN_AEGO_STD)
-and two halves of the drive agree within MAX_SPLIT_DEG. If gravity swings by more than MOVED_DEG from the drive
-average for MOVED_S, C3 has been moved: start over. The last good result is kept in CALIB_FILE and used
+and two halves of the drive agree within MAX_SPLIT_DEG. If gravity, with the car standing still, is more than
+MOVED_DEG from the drive average for MOVED_S, C3 has been moved: start over (this drive's fit, if any, becomes the
+fallback while gravity still agrees with it). The last good result is kept in CALIB_FILE and used
 (marked "prev") until this drive's is ready.
 
 Lights: c3lights (C4's band models) writes its boxes to /dev/shm/c3det/det.json at half resolution (964x604,
@@ -78,6 +79,7 @@ MAX_YAW_RATE = 0.05       # rad/s (~3 deg/s, after the gyro bias): turning, left
 MOVED_DEG = 4.
 COARSE_S = 5.             # seconds of accelerometer before the coarse result is offered
 MOVED_S = 20.
+STILL_V = 0.3             # m/s: "C3 moved" is only judged with the car standing still (see check_moved)
 # sensord can come up alive but silent ("poll timed out" forever, 10/23: a whole boot with no accelerometer, so no
 # calibration), which systemd cannot see. No accelerometer for this long restarts it, at most every SENSORD_RETRY.
 SENSORD_SILENT_S = 15.
@@ -160,6 +162,11 @@ class Calibrator:
       return None
 
   def reset(self, why):
+    # keep this drive's finished fit as the fallback: basis() still drops it for the coarse one once gravity
+    # disagrees with it by more than MOVED_DEG (really moved). 10/24 every reset of the drive was false and each
+    # one threw the fit away - the coarse basis after it was 3 deg off in pitch, moving lights across ELEV_MIN_DEG
+    if self.result is not None:
+      self.prev = self.result
     self.acc.clear()
     self.gyro.clear()
     self.cs.clear()
@@ -273,8 +280,15 @@ class Calibrator:
     return out
 
   def check_moved(self, now_ns):
-    """C3 knocked or remounted: gravity in the last few seconds far from the drive's average."""
+    """C3 knocked or remounted: gravity in the last few seconds far from the drive's average. Only with the car
+    standing still - while driving the specific force carries the car's own acceleration: 10/24 a junction turn
+    (1-1.7 m/s2 forward, 1 m/s2 sideways for 20-25 s) tripped it twice. Replayed on that drive: stopped, the angle
+    was 1.2 deg median / 2.3 max over 157 checks, no reset."""
     if len(self.acc) < 2000:
+      return False
+    vs = [v for t, v, _ in self.cs if t > now_ns - 5e9]
+    if len(vs) < 10 or max(vs) >= STILL_V:
+      self.moved_since = None
       return False
     A = np.array(self.acc, dtype=float)
     recent = A[A[:, 0] > now_ns - 5e9, 1:]
