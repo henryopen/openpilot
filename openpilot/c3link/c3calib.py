@@ -26,14 +26,17 @@ turned so, puts the camera 5.8 deg up, the photos from that drive 3-5 deg.
 Coarse (10/23, the driver: the lights should work from the start of the drive): until this drive's fit is ready,
 "up" is just the accelerometer average and "forward" is taken as C3's own forward (device x, squared to "up") -
 pitch and roll right, which decide whether a light is above the horizon; yaw off by however far C3 is turned.
-The previous drive's result is preferred over it while its "up" agrees with this drive's within MOVED_DEG (C3
+The previous drive's result is preferred over it while its "up" agrees with this drive's within BOOT_MOVED_DEG (C3
 not moved since). HUD: "粗標定" -> "已標定".
 
 Ready when there has been enough speeding up and slowing down (MIN_MOVING_S moving, aEgo spread MIN_AEGO_STD)
-and two halves of the drive agree within MAX_SPLIT_DEG. If gravity, with the car standing still, is more than
-MOVED_DEG from the drive average for MOVED_S, C3 has been moved: start over (this drive's fit, if any, becomes the
-fallback while gravity still agrees with it). The last good result is kept in CALIB_FILE and used
+and two halves of the drive agree within MAX_SPLIT_DEG. The last good result is kept in CALIB_FILE and used
 (marked "prev") until this drive's is ready.
+
+C3 moved? Judged only once per boot, by the BOOT_MOVED_DEG check above - never during a drive (10/24, the
+driver: a mount that does not change while driving is fixed; only a reboot needs the question). The old in-drive
+check (gravity of the last 5 s vs the drive average, 4 deg for 20 s) reset four times on 10/24, every one false:
+junction turns and the garage ramp put 1-1.7 m/s2 of the car's own acceleration into the specific force.
 
 Lights: c3lights (C4's band models) writes its boxes to /dev/shm/c3det/det.json at half resolution (964x604,
 ar0231 f=2648 at full res), Each box centre becomes
@@ -76,10 +79,9 @@ MAX_SPLIT_DEG = 1.5
 MAX_YAW_RATE = 0.05       # rad/s (~3 deg/s, after the gyro bias): turning, left out of the forward fit.
                           # 10/18 offline: braking into corners correlates the corner's sideways acceleration
                           # with aEgo and pulled "forward" 6 deg off, both halves agreeing (split could not see it)
-MOVED_DEG = 4.
+BOOT_MOVED_DEG = 10.      # previous drive's result kept unless this boot's gravity is this far from it. 10/24 the
+                          # garage ramp alone was 5.8 deg from the drive's result (4 deg used to reject it)
 COARSE_S = 5.             # seconds of accelerometer before the coarse result is offered
-MOVED_S = 20.
-STILL_V = 0.3             # m/s: "C3 moved" is only judged with the car standing still (see check_moved)
 # sensord can come up alive but silent ("poll timed out" forever, 10/23: a whole boot with no accelerometer, so no
 # calibration), which systemd cannot see. No accelerometer for this long restarts it, at most every SENSORD_RETRY.
 SENSORD_SILENT_S = 15.
@@ -148,9 +150,9 @@ class Calibrator:
     self.result = None
     self.coarse_m = None
     self.prev = self.load()
-    self.moved_since = None
+    self.prev_ok = None         # decided once per boot (first coarse gravity vs prev), then fixed for the drive
+    self.boot_deg = None
     self.state = {}
-    self.last_reset = None
 
   @staticmethod
   def load():
@@ -161,20 +163,6 @@ class Calibrator:
     except (OSError, ValueError, KeyError):
       return None
 
-  def reset(self, why):
-    # keep this drive's finished fit as the fallback: basis() still drops it for the coarse one once gravity
-    # disagrees with it by more than MOVED_DEG (really moved). 10/24 every reset of the drive was false and each
-    # one threw the fit away - the coarse basis after it was 3 deg off in pitch, moving lights across ELEV_MIN_DEG
-    if self.result is not None:
-      self.prev = self.result
-    self.acc.clear()
-    self.gyro.clear()
-    self.cs.clear()
-    self.result = None
-    self.coarse_m = None
-    self.moved_since = None
-    self.last_reset = why
-
   def coarse(self):
     """Pitch and roll from gravity alone, forward taken as C3's own forward (see the top)."""
     if len(self.acc) < 2 or self.acc[-1][0] - self.acc[0][0] < COARSE_S * 1e9:
@@ -184,11 +172,15 @@ class Calibrator:
 
   def basis(self):
     """(car_from_dev, which) the lights are turned with: this drive's fit, else the previous drive's while C3 has
-    not moved since, else the coarse one."""
+    not moved since (judged once, at the first coarse gravity of this boot), else the coarse one."""
     if self.result is not None:
       return self.result, "this drive"
-    if self.prev is not None and (self.coarse_m is None or angle_deg(self.prev[2], self.coarse_m[2]) <= MOVED_DEG):
-      return self.prev, "previous drive"
+    if self.prev is not None:
+      if self.prev_ok is None and self.coarse_m is not None:
+        self.boot_deg = round(angle_deg(self.prev[2], self.coarse_m[2]), 1)
+        self.prev_ok = self.boot_deg <= BOOT_MOVED_DEG
+      if self.prev_ok is not False:
+        return self.prev, "previous drive"
     if self.coarse_m is not None:
       return self.coarse_m, "coarse"
     return None, None
@@ -279,30 +271,6 @@ class Calibrator:
       out["why"] = f"gain {gain:.2f} r2 {r2:.2f} split {split:.1f} deg"
     return out
 
-  def check_moved(self, now_ns):
-    """C3 knocked or remounted: gravity in the last few seconds far from the drive's average. Only with the car
-    standing still - while driving the specific force carries the car's own acceleration: 10/24 a junction turn
-    (1-1.7 m/s2 forward, 1 m/s2 sideways for 20-25 s) tripped it twice. Replayed on that drive: stopped, the angle
-    was 1.2 deg median / 2.3 max over 157 checks, no reset."""
-    if len(self.acc) < 2000:
-      return False
-    vs = [v for t, v, _ in self.cs if t > now_ns - 5e9]
-    if len(vs) < 10 or max(vs) >= STILL_V:
-      self.moved_since = None
-      return False
-    A = np.array(self.acc, dtype=float)
-    recent = A[A[:, 0] > now_ns - 5e9, 1:]
-    if len(recent) < 50:
-      return False
-    d = angle_deg(recent.mean(0), A[:, 1:].mean(0))
-    if d > MOVED_DEG:
-      self.moved_since = self.moved_since or now_ns
-      if now_ns - self.moved_since > MOVED_S * 1e9:
-        return True
-    else:
-      self.moved_since = None
-    return False
-
 
 def light_dirs(det, car_from_dev):
   """c3detect boxes -> car-frame azimuth / elevation (deg); below the horizon dropped."""
@@ -370,8 +338,6 @@ def main():
     if now - last_solve >= SOLVE_EVERY:
       last_solve = now
       cal.trim(now_ns)
-      if cal.check_moved(now_ns):
-        cal.reset("C3 moved")
       try:
         r = cal.solve()
       except Exception as ex:  # keep calibrating whatever one solve throws
@@ -388,12 +354,12 @@ def main():
         r["basis_rpy_deg"] = np.degrees(euler_from_rot(basis.T)).round(2).tolist()
       cal.state = r
       # a lasting record (10/23: the drive's calibration could not be checked afterwards, /dev/shm is gone)
-      key = (r.get("status"), r.get("using"), "link" not in r, cal.last_reset)
+      key = (r.get("status"), r.get("using"), "link" not in r, cal.prev_ok)   # prev_ok: the boot decision, logged once
       if key != logged or ("link" not in r and now - last_log >= LOG_EVERY_S):
         logged, last_log = key, now
         log_line(json.dumps({k: r.get(k) for k in ("status", "why", "using", "link", "moving_s", "aego_std", "r2", "gain",
                                                     "split_deg", "lag_ms", "basis_rpy_deg", "horizon_row")}
-                            | {"reset": cal.last_reset, "n_acc": len(cal.acc), "n_c4": len(cal.cs)}, ensure_ascii=False))
+                            | {"boot_deg": cal.boot_deg, "n_acc": len(cal.acc), "n_c4": len(cal.cs)}, ensure_ascii=False))
     # every second: whether C4 is sending carState (= driving) - c3detect only runs while it is
     if now - last_state >= 1.:
       last_state = now

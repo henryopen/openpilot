@@ -1083,7 +1083,8 @@ function renderC3(c3){
   if(c3.missing){ cls='off'; txt='C3 未連線'; }
   else {
     const prog = `${Math.floor((c3.prog||0)/60)}/${Math.round((c3.need||240)/60)} 分`;
-    const tag = c3.cal==='ok' ? '' : c3.using==='coarse' ? `（粗標定 ${prog}）` : `（標定中 ${prog}）`;
+    // 10/24：有這趟或上一趟的標定就照用、不標「標定中」（它在重新收資料時也是用好的標定，只是字在跳）
+    const tag = c3.using==='coarse' ? `（粗標定 ${prog}）` : '';
     const L=(c3.lights||[]).filter(l=>Math.abs(l.az)<=12).sort((a,b)=>(b.conf||0)-(a.conf||0));
     if(!c3.using){ txt=`C3 標定中 ${prog}`; }
     else if(c3.det_err){ txt='C3 辨識停止'+tag; cls='hot'; }
