@@ -8,7 +8,7 @@ from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
 from openpilot.common.constants import CV
 from openpilot.common.filter_simple import FirstOrderFilter
 from openpilot.common.realtime import DT_MDL
-from openpilot.cereal import custom
+from openpilot.cereal import custom, log
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.selfdrive.controls.lib.longcontrol import LongCtrlState
 from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import LongitudinalMpc, LongitudinalPlanSource
@@ -301,6 +301,25 @@ CUT_GENTLE_OFF_FLAG = '/data/cut_gentle_off'
 # speed-up-then-brake after a change 41% as it was -> 53 / 46 / 42% ending after 0.5 / 1.0 / 2.0 s gone; hard-braking
 # leads and stops identical in all four; 10-23's changes 1-4 km/h quicker in three of six.
 CUT_LOST_S = 2.0
+# A shorter follow gap while the lane change is under way (2026-10-24, after StarPilot 7.0's lane_change_gap.py). The
+# driver: changing lanes it often slows down. Over 10-12..10-23, 29 lane changes engaged at 40 km/h or more with no
+# pedal, 18 lost more than 3 km/h: moving across, the MPC meets the next lane's car inside its 1.5 s gap and brakes
+# to open it - and for the first 2-3 s that car is vision's alone (this radar reports the one target the stock ACC
+# holds, still in the old lane), its speed read a median 4 km/h, often 10-20, below what the radar then measures.
+# So while laneChangeStarting/Finishing (not preLaneChange - a blinker above 20 km/h at a junction is that too)
+# t_follow comes down to LC_T_FOLLOW at LC_RAMP_IN /s and goes back at LC_RAMP_OUT /s once it is over; at once if
+# the lead brakes LC_ABORT_A or harder, the blind spot on that side is taken, a pedal is pressed, or under
+# LC_MIN_V. StarPilot goes back at 4 /s; that only moves the braking to just after the lane change.
+# Closed loop (follow_sim3b, 60 lane changes 10-12..10-23 + 116 hard-braking leads + 50 stops), against today:
+# lane changes slowing > 3 km/h 22 -> 19, time braking past -0.3 108 -> 92 s, past -1.0 27.2 -> 27.5 s, mean speed
+# after +1.0 km/h, headways under 0.8 s 5 -> 5; one hard-braking lead nearer, 10-14 18:46:17 25.4 -> 22.5 m;
+# stops unchanged. (StarPilot's 4 /s back: past -1.0 29.4 s; 0.75 s: one more headway under 0.8 s.)
+LC_T_FOLLOW = 1.0            # s
+LC_RAMP_IN = 0.6             # s of t_follow per s
+LC_RAMP_OUT = 0.1            # s of t_follow per s
+LC_ABORT_A = -0.8            # m/s^2, the lead's aLeadK
+LC_MIN_V = 30 * CV.KPH_TO_MS
+LC_STATES = (log.LaneChangeState.laneChangeStarting, log.LaneChangeState.laneChangeFinishing)
 # Measured on this car: holding a set speed swings about +/-1 km/h on the cluster, crossing
 # the set speed six to eight times in fifteen seconds. 0.25 m/s is 0.9 km/h, so it covers
 # that swing while leaving any steady-state offset under 1 km/h.
@@ -477,6 +496,7 @@ class LongitudinalPlanner:
     self.cut_since = 0
     self.cut_prev_d = -1.
     self.cut_lost = 0         # frames in a row with no lead at all - see CUT_LOST_S
+    self.lc_t_follow = None   # the follow gap the lane-change ramp is at, None when not in use - see LC_*
     # Driven again as of 2026-09-13. It was parked in 09-06 on the grounds that two stopping
     # laws would fight each other, but the two are not both stopping laws: the handoff takes
     # speed off on the way in and never says where to stop, and this says where to stop and
@@ -497,6 +517,24 @@ class LongitudinalPlanner:
     self.v_desired_trajectory = np.zeros(CONTROL_N)
     self.a_desired_trajectory = np.zeros(CONTROL_N)
     self.j_desired_trajectory = np.zeros(CONTROL_N)
+
+  def _lane_change_t_follow(self, sm, lead, v_ego, reset_state):
+    """The MPC's follow gap: the personality's, or less while a lane change is under way - see LC_*."""
+    base = get_T_FOLLOW(sm['selfdriveState'].personality)
+    meta, cs = sm['modelV2'].meta, sm['carState']
+    direction = meta.laneChangeDirection
+    cur = base if self.lc_t_follow is None else self.lc_t_follow
+    if (reset_state or cs.gasPressed or cs.brakePressed or v_ego < LC_MIN_V
+        or (direction == log.LaneChangeDirection.left and cs.leftBlindspot)
+        or (direction == log.LaneChangeDirection.right and cs.rightBlindspot)
+        or (lead.present and float(lead.aLeadK) <= LC_ABORT_A)):
+      cur = base
+    elif meta.laneChangeState in LC_STATES:
+      cur = max(LC_T_FOLLOW, cur - LC_RAMP_IN * self.dt)
+    else:
+      cur = min(base, cur + LC_RAMP_OUT * self.dt)
+    self.lc_t_follow = None if cur >= base else cur
+    return cur
 
   def update(self, sm):
     self.flag_frame += 1
@@ -583,9 +621,10 @@ class LongitudinalPlanner:
     stop_x = self.stop_for_lights.obstacle_x(MPC_STOP_DISTANCE) if self.stop_for_lights.is_active else None
     self.mpc.set_weights(prev_accel_constraint, personality=sm['selfdriveState'].personality)
     self.mpc.set_cur_state(self.v_desired_filter.x, self.output_a_target)
+    t_follow = self._lane_change_t_follow(sm, radar.leadOne, v_ego, reset_state)
     # the MPC alone gets the lead with a band round its follow distance - see lead_view GAP_*
     self.mpc.update(self.lead_view.for_mpc(radar), personality=sm['selfdriveState'].personality,
-                    stop_x=stop_x, a_min=STOP_MAX_DECEL if stop_x is not None else ACCEL_MIN)
+                    stop_x=stop_x, a_min=STOP_MAX_DECEL if stop_x is not None else ACCEL_MIN, t_follow=t_follow)
 
     self.v_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.v_solution)
     self.a_desired_trajectory = np.interp(CONTROL_N_T_IDX, T_IDXS_MPC, self.mpc.a_solution)
@@ -606,7 +645,6 @@ class LongitudinalPlanner:
     output_a_target_e2e = sm['modelV2'].action.desiredAcceleration
     output_should_stop_e2e = sm['modelV2'].action.shouldStop
 
-    t_follow = get_T_FOLLOW(sm['selfdriveState'].personality)
     lead_free = lead_is_far(radar.leadOne, v_ego, t_follow)
     # the same gap in the MPC's own terms, for anything that wants to show where it is
     # trying to sit. Kept here rather than worked out again downstream, which is how the

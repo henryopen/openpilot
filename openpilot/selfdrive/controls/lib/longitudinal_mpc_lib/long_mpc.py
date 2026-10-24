@@ -471,7 +471,7 @@ class LongitudinalMpc:
     return lead_xv
 
   def update(self, radarstate, personality=log.LongitudinalPersonality.standard,
-             stop_x=None, a_min=ACCEL_MIN):
+             stop_x=None, a_min=ACCEL_MIN, t_follow=None):
     """stop_x puts a standing obstacle in the road, for a junction with nothing at it.
 
     Stopping is a question about where, and this solver is the one part of the chain that
@@ -480,7 +480,8 @@ class LongitudinalMpc:
     happens to be imaginary. a_min is how hard it may brake for one - the call is a guess,
     so the worst a wrong one can do is a firm slow down rather than a stab at the pedal.
     """
-    t_follow = get_T_FOLLOW(personality)
+    # the planner can ask for less than the personality's gap - see longitudinal_planner LC_*
+    t_follow = get_T_FOLLOW(personality) if t_follow is None else t_follow
 
     lead_xv_0 = self.process_lead(radarstate.leadOne)
     lead_xv_1 = self.process_lead(radarstate.leadTwo)
