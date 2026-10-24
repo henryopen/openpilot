@@ -403,7 +403,7 @@ def get_coast_accel(pitch):
   return np.sin(pitch) * -5.65 - 0.3  # fitted from data using xx/projects/allow_throttle/compute_coast_accel.py
 
 def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, accel_coast, allow_throttle,
-                     lead_free=False, chase=False, chase_old=False):
+                     lead_free=False, chase=False, chase_old=False, a_target_prev=None):
   max_accel = ACCEL_MAX if e2e else get_max_accel(v_ego, lead_free)
   if chase and not e2e:
     bp, vals = (CHASE_BP_OLD, CHASE_VALS_OLD) if chase_old else (CHASE_BP, CHASE_VALS)
@@ -439,7 +439,11 @@ def get_cruise_accel(e2e, v_cruise, v_ego, a_cruise_prev, angle_steers, CP, dt, 
   comfort_accel = min(abs(speed_error), math.sqrt(2. * J_CRUISE_COMFORT * abs(speed_error)))
   target_accel = np.clip(math.copysign(comfort_accel, speed_error), A_CRUISE_MIN, max_accel)
   j_cruise = np.interp(v_ego, J_CRUISE_BP, J_CRUISE_VALS)
-  target_accel = float(np.clip(target_accel, a_cruise_prev - j_cruise * dt, a_cruise_prev + j_cruise * dt))
+  # Coming down, start from what the car was actually given if that was lower (upstream 2ab952d5e, 10-19: no delay
+  # when the set speed is lowered). a_cruise_prev is cruise's own last wish; while a lead or anything else held the
+  # output below it, ramping down from that wish cost up to a second before cruise asked for less than the car got.
+  low = a_cruise_prev if a_target_prev is None else min(a_cruise_prev, a_target_prev)
+  target_accel = float(np.clip(target_accel, low - j_cruise * dt, a_cruise_prev + j_cruise * dt))
 
   # the ceiling comes back too: on an open road it is what holds the car back, and from the
   # outside that is indistinguishable from the car simply choosing not to accelerate. The
@@ -617,7 +621,7 @@ class LongitudinalPlanner:
       chase=(CHASE_ON and lead_one.present and float(lead_one.vLead) > v_ego + CHASE_DV
              and float(lead_one.dRel) >= self.follow_distance
              and (not CHASE_NEED_LEAVING or is_chase(sm['radarState'].leadOne))),
-      chase_old=self.launch_chase_old)
+      chase_old=self.launch_chase_old, a_target_prev=self.output_a_target)
     # ease off before a corner the model can see. it is a limit on cruise rather than a
     # separate plan source, so it just takes the lower of the two.
     self.curve_speed.update(sm, not long_control_off, sm['carState'].gasPressed, v_ego, sm['carState'].aEgo)
