@@ -210,7 +210,22 @@ def throttled():
 
 
 CARD_CON = "led-card"       # NM connection of the Pi's USB wifi (wlan1) to the card's own AP, since 10/19
-CARD_IFACE = "wlan1"
+CARD_MAC = "98:48:27:e0:4b:7f"   # the USB wifi (rtl8821au). 10/25: found by MAC, not by name - on a cold boot it can
+                                 # come up as wlan0 (the led-card NM profile is bound to this MAC too)
+
+
+def card_iface() -> str:
+  try:
+    for name in os.listdir("/sys/class/net"):
+      try:
+        with open(f"/sys/class/net/{name}/address") as f:
+          if f.read().strip().lower() == CARD_MAC:
+            return name
+      except OSError:
+        continue
+  except OSError:
+    pass
+  return "wlan1"
 WIFI_CHECK_EVERY = 15.0
 WIFI_LOG_EVERY = 120.0
 
@@ -232,13 +247,13 @@ def card_wifi_watch(card_down):
       said = None
       continue
     try:
-      state = subprocess.run(["nmcli", "-g", "GENERAL.STATE", "dev", "show", CARD_IFACE],
+      state = subprocess.run(["nmcli", "-g", "GENERAL.STATE", "dev", "show", card_iface()],
                              capture_output=True, text=True, timeout=5).stdout.strip()
       if not state.startswith("30"):        # 30 = disconnected; connecting or connected is left alone
         continue
-      subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", CARD_IFACE], capture_output=True, timeout=10)
+      subprocess.run(["nmcli", "dev", "wifi", "rescan", "ifname", card_iface()], capture_output=True, timeout=10)
       time.sleep(5)
-      out = subprocess.run(["nmcli", "-t", "-f", "SSID,SIGNAL,CHAN", "dev", "wifi", "list", "ifname", CARD_IFACE,
+      out = subprocess.run(["nmcli", "-t", "-f", "SSID,SIGNAL,CHAN", "dev", "wifi", "list", "ifname", card_iface(),
                             "--rescan", "no"], capture_output=True, text=True, timeout=5).stdout
     except (OSError, subprocess.SubprocessError) as e:
       say(f"card wifi check failed: {e}")
@@ -247,7 +262,7 @@ def card_wifi_watch(card_down):
     now = time.monotonic()
     if bool(seen) != said or now - said_t >= WIFI_LOG_EVERY:
       said, said_t = bool(seen), now
-      say(f"card wifi {CARD_IFACE} disconnected: AP " +
+      say(f"card wifi {card_iface()} disconnected: AP " +
           (f"on air, signal {seen[0][1]} ch {seen[0][2]}" if seen else "not seen in a scan"))
 
 

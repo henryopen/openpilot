@@ -72,11 +72,41 @@ def own_ip() -> str:
     return ""
 
 
+# The Pi's built-in wifi does the car's networks; the USB one (rtl8821au) only the rear LED card. 10/25: the kernel names
+# are not fixed - on a cold boot the USB driver can come up first and take wlan0 - and on the 2nd-4th drives net.log
+# showed the card's AP on "wlan0" and MotowayapC without an address, which a swap explains. So the card is found by its
+# MAC (the NM profiles are bound by MAC too) and every start writes which name is which into net.log.
+CAR_MAC = "88:a2:9e:87:6d:de"
+
+
+def iface_by_mac(mac: str, fallback: str) -> str:
+  try:
+    for p in Path("/sys/class/net").iterdir():
+      a = p / "address"
+      if a.exists() and a.read_text().strip().lower() == mac:
+        return p.name
+  except OSError:
+    pass
+  return fallback
+
+
+def car_iface() -> str:
+  return iface_by_mac(CAR_MAC, "wlan0")
+
+
+def iface_map() -> str:
+  try:
+    return " ".join(f"{p.name}={(p / 'address').read_text().strip()}" for p in sorted(Path("/sys/class/net").iterdir())
+                    if p.name.startswith("wl"))
+  except OSError:
+    return "?"
+
+
 def read_ssid() -> str:
-  """wlan0（車上網路那張）現在掛的連線名稱（＝KNOWN_WIFI 的名字），不觸發掃描。
+  """內建網卡（車上網路那張，照 MAC 找）現在掛的連線名稱（＝KNOWN_WIFI 的名字），不觸發掃描。
   10/25：原本先試 iwgetid，但 Pi 上沒裝；而且它不分網卡，wlan1（字幕卡專用）的 SSID 也會被當成目前網路。"""
   try:
-    out = subprocess.check_output(["nmcli", "-t", "-f", "GENERAL.CONNECTION", "dev", "show", "wlan0"],
+    out = subprocess.check_output(["nmcli", "-t", "-f", "GENERAL.CONNECTION", "dev", "show", car_iface()],
                                   text=True, timeout=3, stderr=subprocess.DEVNULL).strip()
     out = out.split(":", 1)[-1].strip()
     return out if out and out != "--" else ""
@@ -85,9 +115,9 @@ def read_ssid() -> str:
 
 
 def wlan0_ip() -> str:
-  """wlan0 自己的 IPv4（own_ip 走預設路由，看不出 wlan0 有沒有拿到位址）。"""
+  """內建網卡（照 MAC 找，平常叫 wlan0）自己的 IPv4（own_ip 走預設路由，看不出這張卡有沒有拿到位址）。"""
   try:
-    out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"],
+    out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "dev", car_iface()],
                                   text=True, timeout=3, stderr=subprocess.DEVNULL)
     for line in out.splitlines():
       parts = line.split()
@@ -569,6 +599,7 @@ def nav_loop():
 
 
 def main():
+  net_log(f"start: car network on {car_iface()} ({iface_map()})")   # which kernel name each card got this boot
   threading.Thread(target=discover_loop, daemon=True).start()
   threading.Thread(target=nav_loop, daemon=True).start()
   server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
