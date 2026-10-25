@@ -54,6 +54,12 @@ CAR_WIFI = "weedle-94cc"      # the car's own AP
 PROBE_TIMEOUT = 2.0           # s: a connect to the car we already know
 LOST_AFTER = 20.0             # s of the car not answering before looking on another network
 FOLLOW_EVERY = 45.0           # s: at most this often go round the other networks
+# 10/25: on the 2nd-4th drives wlan0 sat on MotowayapC with no address for the whole drive (the phone's DHCP never
+# answered after the 1st drive's boot - the lease file shows no MotowayapC lease after it), and nothing ever asked
+# again: follow_car skipped the network it was on. Associated but no address for this long -> bring the same
+# connection up again (a fresh DHCP), at most every NO_IP_RETRY_EVERY.
+NO_IP_RETRY_S = 20.0
+NO_IP_RETRY_EVERY = 30.0
 
 
 def own_ip() -> str:
@@ -67,17 +73,28 @@ def own_ip() -> str:
 
 
 def read_ssid() -> str:
-  """目前連上的 AP 名稱。iwgetid 最輕量，沒有再退回 nmcli（都不觸發掃描）。"""
-  for cmd in (["iwgetid", "-r"],
-              ["nmcli", "-t", "-f", "GENERAL.CONNECTION", "dev", "show", "wlan0"]):
-    try:
-      out = subprocess.check_output(cmd, text=True, timeout=3, stderr=subprocess.DEVNULL).strip()
-      if cmd[0] == "nmcli":
-        out = out.split(":", 1)[-1].strip()
-      if out and out != "--":
-        return out
-    except Exception:
-      continue
+  """wlan0（車上網路那張）現在掛的連線名稱（＝KNOWN_WIFI 的名字），不觸發掃描。
+  10/25：原本先試 iwgetid，但 Pi 上沒裝；而且它不分網卡，wlan1（字幕卡專用）的 SSID 也會被當成目前網路。"""
+  try:
+    out = subprocess.check_output(["nmcli", "-t", "-f", "GENERAL.CONNECTION", "dev", "show", "wlan0"],
+                                  text=True, timeout=3, stderr=subprocess.DEVNULL).strip()
+    out = out.split(":", 1)[-1].strip()
+    return out if out and out != "--" else ""
+  except Exception:
+    return ""
+
+
+def wlan0_ip() -> str:
+  """wlan0 自己的 IPv4（own_ip 走預設路由，看不出 wlan0 有沒有拿到位址）。"""
+  try:
+    out = subprocess.check_output(["ip", "-4", "-o", "addr", "show", "dev", "wlan0"],
+                                  text=True, timeout=3, stderr=subprocess.DEVNULL)
+    for line in out.splitlines():
+      parts = line.split()
+      if "inet" in parts:
+        return parts[parts.index("inet") + 1].split("/")[0]
+  except Exception:
+    pass
   return ""
 
 
@@ -199,7 +216,20 @@ def discover_loop():
   global _found, _ssid
   said = None
   lost_since = None
+  no_ip_since, last_ip_retry = None, -NO_IP_RETRY_EVERY
   while True:
+    # associated but no address (10/25): ask the same network again rather than sit there for the whole drive
+    here = read_ssid()
+    if here and not wlan0_ip():
+      no_ip_since = no_ip_since or time.monotonic()
+      now = time.monotonic()
+      if now - no_ip_since >= NO_IP_RETRY_S and now - last_ip_retry >= NO_IP_RETRY_EVERY:
+        last_ip_retry = now
+        reconnect_same(here, now - no_ip_since)
+        if wlan0_ip():
+          no_ip_since = None
+    else:
+      no_ip_since = None
     with _lock:
       current = _found
     if current:
@@ -246,6 +276,22 @@ def discover_loop():
 _last_follow = -FOLLOW_EVERY
 
 
+def reconnect_same(name: str, waited: float) -> None:
+  """wlan0 is on `name` but has had no address for `waited` s: bring the same connection up again (new DHCP)."""
+  try:
+    r = subprocess.run(["nmcli", "-w", "20", "con", "up", name], capture_output=True, text=True, timeout=30)
+    ok = r.returncode == 0
+  except Exception:
+    ok = False
+  for _ in range(10):          # the address can take a few seconds after association
+    if wlan0_ip():
+      break
+    time.sleep(1)
+  ip = wlan0_ip()
+  got = f"got {ip}" if ip else "still no address"
+  net_log(f"no address on {name} for {waited:.0f} s: reconnect {'ok' if ok else 'failed'}, {got}")
+
+
 def visible_ssids() -> set[str]:
   try:
     subprocess.run(["nmcli", "dev", "wifi", "rescan"], timeout=10, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -266,7 +312,7 @@ def follow_car() -> str | None:
     return None
   _last_follow = time.monotonic()
   seen = visible_ssids()
-  here = read_ssid()
+  here = read_ssid() if wlan0_ip() else ""     # on it but without an address counts as not on it (10/25)
   for name in KNOWN_WIFI:
     if name == here or name not in seen:
       continue
