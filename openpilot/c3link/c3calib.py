@@ -89,10 +89,15 @@ SENSORD_RETRY_S = 60.
 LAGS_S = np.arange(-0.6, 0.61, 0.05)
 
 FOCAL, CX, CY = 2648. / 2, 1928. / 4, 1208. / 4   # c3detect's half-resolution frame
-ELEV_MIN_DEG = 3.0        # 10/18, 82 boxes on C3's own drives judged by eye: lights sat 2.4-11.9 deg up (one at
+ELEV_MIN_DEG = 0.0        # 10/25: on the Custin's dashboard (and the new finder) 44% of 533 judged lights sat under 3 deg
+                          # (median 3.4); 3 -> 0 deg: HUD shows a light in 85% instead of 66% of the frames with one in
+                          # front, frames with only false lights 31 -> 51 of 269 (before "twice in a row"). Was 3.0:
+                          # 10/18, 82 boxes on C3's own drives judged by eye: lights sat 2.4-11.9 deg up (one at
                           # -0.5), tail lights / scooters / the dashboard around the horizon. >= 3 deg keeps 46 of
                           # 48 real lights and drops 17 of 34 false ones; raising the confidence instead cost lights
 REPEAT_AZ_DEG = 2.0       # a light is passed on once seen twice in a row: same colour, within this
+LIGHTS_FRESH_S = 3.0      # lights older than this are not shown (the 10/25 finder + colour runs ~1/s on C3, was 2.5/s)
+LIGHT_HOLD_S = 2.5        # one cycle without the light does not blank it: the last lights stay this long (HUD flicker)
 # camera (x right, y down, z forward) from device (x forward, y right, z down)
 VIEW_FROM_DEVICE = np.array([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])
 LOG_EVERY_S = 60.
@@ -306,6 +311,7 @@ def main():
   last_c4 = -1e9
   det_ts = None
   last_lights = None
+  last_seen = 0.
   prev_frame = []
   logged, last_log = None, 0.
   last_acc = last_sensord_kick = time.monotonic()
@@ -363,7 +369,7 @@ def main():
     # every second: whether C4 is sending carState (= driving) - c3detect only runs while it is
     if now - last_state >= 1.:
       last_state = now
-      fresh = last_lights is not None and now - last_lights[2] < 1.5
+      fresh = last_lights is not None and now - last_lights[2] < LIGHTS_FRESH_S
       write_json(STATE, dict(cal.state, driving=now - last_c4 < 5, t=now, lights=last_lights[0] if fresh else []))
 
     if now - last_send >= 0.5:
@@ -388,7 +394,12 @@ def main():
             seen = [lt for lt in lights if any(p["zh"] == lt["zh"] and abs(p["az"] - lt["az"]) <= REPEAT_AZ_DEG
                                                and abs(p["el"] - lt["el"]) <= REPEAT_AZ_DEG for p in prev_frame)]
             prev_frame = lights
-            last_lights = (seen, below, now)
+            if seen or last_lights is None or not last_lights[0] or now - last_seen > LIGHT_HOLD_S:
+              last_lights = (seen, below, now)
+              if seen:
+                last_seen = now
+            else:
+              last_lights = (last_lights[0], below, now)    # held: a missed cycle keeps what was shown
       except (OSError, ValueError):
         msg["det_err"] = "c3detect 沒有輸出"
       try:
@@ -399,7 +410,7 @@ def main():
                         "ago": round(now - float(v["last_t"]), 1) if v.get("last_t") else None}
       except (OSError, ValueError, TypeError):
         msg["voice"] = {"ok": False}
-      if last_lights is not None and now - last_lights[2] < 1.5:   # detector runs ~2.5/s, sends go out 2/s
+      if last_lights is not None and now - last_lights[2] < LIGHTS_FRESH_S:   # sends go out 2/s
         msg["lights"], msg["below"] = last_lights[0], last_lights[1]
       try:
         tx.sendto(json.dumps(msg, ensure_ascii=False).encode(), C4)

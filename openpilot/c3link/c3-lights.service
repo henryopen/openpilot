@@ -1,5 +1,5 @@
 [Unit]
-Description=C3 traffic lights, C4's band detector c4band1 (no classifier) -> /dev/shm/c3det (display only)
+Description=C3 traffic lights: ft1n finder (yolo26n, C3-trained) + lightcls colour -> /dev/shm/c3det (display only)
 After=c3-camerad.service c3calib.service
 Wants=c3-camerad.service
 StartLimitIntervalSec=0
