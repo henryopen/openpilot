@@ -84,6 +84,21 @@ STRAIGHT_KP_BLEND = [0.15, 0.4]   # m/s^2 of requested lateral accel: straight -
 # turned in no better and erred more past 80 km/h; ungated it shook the wheel on straights (30-50 km/h
 # 8.4 -> 15.5 swings a minute), the request's direction there being noise.
 CURVE_JERK_FRICTION = 0.5
+# ...but turning in, half the coefficient is far short of what holds the wheel at low speed (2026-10-25). The
+# driver: fast corners are smooth, slow ones go in steps although the model draws a smooth curve. The fitted
+# steering model (plant4b, corners) has the rack's breakaway at 49 / 44 / 32 / 17 counts of 384 at 15-30 /
+# 30-50 / 50-80 / 80-140 km/h against an aligning spring of 6 / 11 / 23 / 42: fast, the spring dominates
+# and the 16 counts added here (0.082 x 0.5) cover the stiction; at 15-30 km/h stiction is 8x the spring
+# and a third of it is covered, the rest waits for P, which lets go as soon as the wheel jumps - the 10-25
+# drives, hands off and still winding in, sent torque falling back a third of the time, 2.9-3.7 times a
+# second. (10-06's full strength was 31 counts, still short of 49.) So while the request winds in, the
+# friction added is the measured breakaway at that speed (CURVE_ENTRY_FS_*); unwinding keeps the half.
+# Closed loop (lat_sim6, the 44 corners of 10-25): corner error 8-30 / 30-50 / 50-140 km/h 0.246 / 0.088 /
+# 0.097 -> 0.242 / 0.082 / 0.091, tracked 0.88-0.99 -> 0.90-1.01 (no overshoot), unwinding unchanged. The
+# simulator's wheel sticks only half as often as the real one (0.59 vs 1.21 stalls a second turning in), so
+# whether the steps go is for the next drive to show: turning in now 1.21 stalls/s, 9.3 degrees each.
+CURVE_ENTRY_FS_BP = [22., 40., 65., 110.]   # km/h
+CURVE_ENTRY_FS_V = [49., 44., 32., 17.]     # counts of 384, the rack's breakaway in a corner
 
 # In a corner, P and I see the request averaged over the frames either side of the one they track (2026-10-06).
 # The driver: a 30 degree turn goes in as 10, 10, 10, not in one movement. Over 10-01..10-05, turning in on its
@@ -485,8 +500,13 @@ class LatControlTorque(LatControl):
                                             freeze_integrator=freeze_integrator, p_scale=p_scale)
         output_torque = ff_torque + self.torque_from_lateral_accel(feedback_lataccel, self.torque_params)
         # see CURVE_JERK_FRICTION
-        output_torque += CURVE_JERK_FRICTION * w_curve * get_friction(corner_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD,
-                                                                      self.torque_params) / max(self.torque_params.latAccelFactor, 0.1)
+        # see CURVE_ENTRY_FS_V: winding in, the breakaway at this speed
+        fric_gain = CURVE_JERK_FRICTION
+        if corner_jerk * setpoint > 0.:
+          fric_gain = (float(np.interp(CS.vEgo * 3.6, CURVE_ENTRY_FS_BP, CURVE_ENTRY_FS_V)) * 1.0 / 384. /
+                       max(self.torque_params.friction, 1e-3))
+        output_torque += fric_gain * w_curve * get_friction(corner_jerk, lateral_accel_deadzone, FRICTION_THRESHOLD,
+                                                            self.torque_params) / max(self.torque_params.latAccelFactor, 0.1)
         output_torque = float(np.clip(output_torque, -self.steer_max, self.steer_max))
         # see CURVE_UNWIND_HZ
         if self.unwind_torque is None:
