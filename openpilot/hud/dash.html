@@ -1045,7 +1045,9 @@ function renderTL(tl, la){
   if(!txt){ if(tlAt){ box.className='ov lit'; tlAt=0; } return; }
   tlAt=Date.now();
   box.className='ov lit on '+cls;
-  document.getElementById('litTxt').textContent=txt+(tl.mode==='approach'?act:'');
+  // 10/25：燈色改由 C3 判（C4 不再跑看燈模型），C3 沒資料時才退回 C4 自己的 → 標出這次是誰判的
+  const src = tl.src==='c3' ? '・C3' : '';
+  document.getElementById('litTxt').textContent=txt+src+(tl.mode==='approach'?act:'');
 }
 
 /* TDX 即時路況：前方 3 km 內的事故／施工（同方向）最優先，其次前方慢路段，再來是本段車速。

@@ -41,6 +41,17 @@ and, once that is wired, the planner. A reader must treat a file older than a se
 ENABLE: without /data/tlwatch/ENABLE it only logs what it would have done (shadow mode).
 DISABLE: /data/tlwatch/DISABLE stops it looking at all.
 
+C3 does the looking (2026-10-25, the driver: "C4就不要花效能去辨識燈號 由C3處理 當然最後要C4去綜合判斷"). C3 runs its own
+finder + colour on its camera (c3link/c3lights.py, 88% of the lit frames found on the Custin night/rain set) and sends
+the lights it has seen twice, as car-frame directions, through c3_relay to /dev/shm/c3lights.json. While that file is
+fresh (C3_FRESH_S) this process grabs no frame and runs neither model: the light is C3's lights within C3_AZ_DEG of
+straight ahead - any red there is red; a green ball and no red is go (a green arrow alone is not: C3 cannot tell its
+direction). The OSM signal, the approach call (LightCall), the HUD state and every guard on GO stay as they are. At a
+wait, GO on C3 needs a red seen earlier in this wait and then go held C3_GO_HOLD_S; it is pressed only with
+/data/tlwatch/C3_GO as well as ENABLE - without it shadow (logged, the HUD says observe) until C3's calls are checked
+against real drives. No fresh C3 (cable out, C3 down) -> C4's own models as before. 'src' in the logs and the HUD
+state says which one decided.
+
   tlwatchd.py                      live
   tlwatchd.py --replay <route dir glob>   replay recorded segments (fcamera.hevc + rlog), timed as live
 """
@@ -64,6 +75,11 @@ import yolo_core as yc
 BASE = Path('/data/tlwatch')
 ENABLE = BASE / 'ENABLE'
 DISABLE = BASE / 'DISABLE'
+C3_GO = BASE / 'C3_GO'          # GO on C3's call is pressed only with this too (see the top)
+C3_FILE = '/dev/shm/c3lights.json'
+C3_FRESH_S = 1.5                # c3_relay rewrites it twice a second while C3 sends
+C3_AZ_DEG = 12.0                # the HUD's "in front" for C3's lights
+C3_GO_HOLD_S = 1.5              # go (green ball, no red) held this long before a GO on C3's call
 MODEL_DET = '/data/yolo/c4band1_1344x352.int8v2.onnx'
 MODEL_CLS = '/data/yolo/tlcls_v2_1344x352.onnx'
 
@@ -197,6 +213,24 @@ def snap(out, band, name):
     pass
 
 
+def c3_read(now):
+  """C3's call on the light ahead as [none, red, go] like the classifier's, or None when C3 is not there / not reading.
+  red = the most confident red within C3_AZ_DEG; go = the most confident green ball there, 0 while any red is there."""
+  try:
+    with open(C3_FILE) as f:
+      j = json.load(f)
+  except (OSError, ValueError):
+    return None
+  if now - float(j.get('t', 0)) > C3_FRESH_S or j.get('idle') or not j.get('using'):
+    return None
+  front = [lt for lt in (j.get('lights') or []) if abs(float(lt.get('az', 99))) <= C3_AZ_DEG]
+  red = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_red'], default=0.)
+  go = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_green'], default=0.)
+  if red > 0:
+    go = 0.
+  return [round(1. - max(red, go), 3), round(red, 3), round(go, 3)]
+
+
 def classify(sess, band):
   x = (band.astype(np.float32) / 255.).transpose(2, 0, 1)
   x = ((x - MEAN) / STD)[None]
@@ -216,6 +250,18 @@ class Wait:
     self.fired = None
     self.rows = []
     self.reds_seen = 0      # classifier-only watch: cycles it has called red so far
+    self.src = None         # 'c3' while C3 does the looking for this wait, else C4's models
+    self.c3_red_t = None    # last time C3 saw a red in front during this wait
+    self.c3_go_since = None
+
+  def watch_c3(self, p, t):
+    """C3's call (c3_read) at a wait: GO once a red was seen in this wait and go has held C3_GO_HOLD_S."""
+    if p[1] > 0:
+      self.c3_red_t = t
+    ok = self.c3_red_t is not None and p[1] == 0 and p[2] >= GO_P
+    self.c3_go_since = (self.c3_go_since or t) if ok else None
+    self.rows.append({'t': round(t - self.t0, 2), 'p': p, 'lit': None, 'src': 'c3'})
+    return ok and t - self.c3_go_since >= C3_GO_HOLD_S
 
   def find(self, det_sess, band, t):
     dets = yc.detect_band(det_sess, band, conf_thres=DET_CONF)
@@ -388,6 +434,7 @@ def main():
   # the last GO (when, pressed, classifier only): the HUD keeps it up GO_SHOW s even if the car moves
   # off in the same instant - the driver has to see the moment it called, not just that it did
   go_shown = (-1e9, False, False)
+  c3p = None                # C3's call this cycle (live only; replays are C4's models)
   while True:
     try:
       if a.replay:
@@ -417,6 +464,7 @@ def main():
               'lead': sm['radarState'].leadOne.dRel if sm['radarState'].leadOne.present else 999.}
         t = time.monotonic()
         tag = datetime.now().strftime('%H:%M:%S')
+        c3p = c3_read(t)          # C3's call on the light, or None -> C4's own models (see the top)
         thermal = sm['deviceState'].thermalStatus
         if thermal == Thermal.critical:
           wait = None
@@ -456,7 +504,9 @@ def main():
                        'light': light.call, 'p': p_last, 'wait': ws, 'why': look['why'] if look is not None else None,
                        'go': ({'age': round(now - go_shown[0], 1), 'sent': go_shown[1], 'cls_only': go_shown[2]}
                               if now - go_shown[0] < GO_SHOW else None),
-                       'enable': ENABLE.exists()})
+                       # whether a GO from whoever is looking now would be pressed (C3's needs C3_GO too)
+                       'enable': ENABLE.exists() and (c3p is None or C3_GO.exists()),
+                       'src': 'c3' if c3p is not None else 'c4'})
 
       stopped = st['v'] < STOPPED
       quiet = stopped and st['en'] and not st['brake'] and st['lead'] > LEAD_NEAR
@@ -471,7 +521,7 @@ def main():
         if paused is not None and not stopped:
           log.write(json.dumps({'start': paused.tag, 'end': tag, 't0': paused.t0, 'dur': round(t - paused.t0, 1),
                                 'det_runs': paused.det_runs, 'lamps': paused.lamps, 'fired': paused.fired,
-                                'cls_only': paused.lamps == [], 'rows': paused.rows}) + '\n')
+                                'cls_only': paused.lamps == [], 'src': paused.src, 'rows': paused.rows}) + '\n')
           paused = None
         if stopped:
           # A standstill it will not act on. Read the light anyway, for the HUD and the stop log, so the
@@ -486,6 +536,12 @@ def main():
           if look is None:
             look = {'start': tag, 't0': t, 'why': why, 'rows': []}
           look['why'] = why
+          if c3p is not None:        # C3 is looking: no frame, no model here
+            p_last = c3p
+            light.update(p_last, t)
+            look['rows'].append({'t': round(t - look['t0'], 2), 'p': p_last, 'why': why, 'src': 'c3'})
+            time.sleep(0.5)
+            continue
           if not a.replay:
             band = grab()
             if band is None:
@@ -506,7 +562,15 @@ def main():
           look = None
         stopped_since = None
         if not a.replay:
-          if st['v'] >= MOVING and osm_m is not None and osm_m <= APPROACH_M:
+          if st['v'] >= MOVING and osm_m is not None and osm_m <= APPROACH_M and c3p is not None:
+            # coming up to a signal, C3 looking: its call, report only
+            p_last = c3p
+            light.update(p_last, t)
+            appr_log.write(json.dumps({'t': round(t, 2), 'wall': tag, 'v': round(float(st['v']), 2),
+                                       'osm_m': round(osm_m, 1), 'kind': osm_kind, 'p': p_last, 'call': light.call,
+                                       'lead': round(float(st['lead']), 1), 'en': bool(st['en']), 'src': 'c3'}) + '\n')
+            time.sleep(0.5)
+          elif st['v'] >= MOVING and osm_m is not None and osm_m <= APPROACH_M:
             # coming up to a signal: read the light, report only
             band = grab()
             if band is not None:
@@ -543,6 +607,31 @@ def main():
         if not a.replay:
           time.sleep(0.2)
         continue
+
+      if c3p is not None:
+        # C3 is looking (see the top): its call instead of finding / watching lamps on C4's frames
+        if wait.src != 'c3':
+          wait.src, wait.run, wait.c3_go_since = 'c3', 0, None
+          wait.lamps = [{'box': None, 'ref': 0., 'src': 'c3'}]   # the HUD's "watching", not "classifier only"
+        if wait.watch_c3(c3p, t):
+          sm.update(0)
+          cs = sm['carState']
+          lead = sm['radarState'].leadOne
+          if (cs.vEgo >= STOPPED or cs.brakePressed or not sm['selfdriveState'].enabled
+              or (lead.present and lead.dRel <= LEAD_NEAR)):
+            wait.c3_go_since = None
+            continue
+          wait.fired = round(t - wait.t0, 2)
+          enabled = ENABLE.exists() and C3_GO.exists()
+          if enabled:
+            keypad.post('go')
+          go_shown = (time.monotonic(), enabled, False)
+          print(f'tlwatchd: {tag} green (C3), {"GO sent" if enabled else "would GO (shadow)"} after {wait.fired} s stopped',
+                flush=True)
+        time.sleep(0.5)
+        continue
+      if wait.src == 'c3':           # C3 gone mid-wait: start over with C4's own models
+        wait.src, wait.lamps, wait.run, wait.det_runs, wait.reds = 'c4', None, 0, 0, []
 
       if not a.replay:
         band = grab()
