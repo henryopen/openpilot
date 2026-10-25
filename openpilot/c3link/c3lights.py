@@ -17,7 +17,7 @@ a light in 16% of the frames that had one). Now two stages, both trained / check
              off / pedestrian are not passed on (the HUD shows one light: it should be ours).
 
 Output /dev/shm/c3det/det.json as before - boxes in half-resolution coordinates, cls light_red / light_green /
-light_yellow / light_green_arrow, zh, conf (the colour's probability), det (the finder's score) - for c3calib, which
+light_green_arrow (no yellow, see PASS_ON), zh, conf (the colour's probability), det (the finder's score) - for c3calib, which
 turns them into car-frame directions for C4's HUD. Only while C4 is driving (c3calib's "driving"), else idle.
 
   c3lights.py                       live (VisionIPC road camera)
@@ -50,7 +50,11 @@ DET_CONF = 0.15                    # Custin set, rows 224-928: 0.13 -> 84% of li
 COLOR_MIN = 0.5
 PAD = 0.25                         # lightcls was trained on boxes padded like this (build_cls_dataset.py)
 CLS_NAMES = ['green', 'green_arrow', 'off', 'pedestrian', 'red', 'yellow']   # lightcls_64.onnx's output order
-PASS_ON = {'red': 'light_red', 'yellow': 'light_yellow', 'green': 'light_green', 'green_arrow': 'light_green_arrow'}
+# No yellow (10/25): of the 135 boxes passed on as yellow on the Custin set nearly all were yellow-black striped posts,
+# chevron curve signs, yellow signs and countdown digits (by eye), and the 10/25 drive's three false lights included two
+# roadside yellow markers. A yellow lasts 3 s, C3 reads ~1/s and wants a light twice - it would barely show anyway.
+# Without it: frames with only false lights 51 -> 43 of 269, colour right 85 -> 86%, a light shown 85 -> 80%.
+PASS_ON = {'red': 'light_red', 'green': 'light_green', 'green_arrow': 'light_green_arrow'}
 ZH = {'light_red': '紅燈', 'light_green': '綠燈', 'light_yellow': '黃燈', 'light_green_arrow': '綠箭頭'}
 
 
