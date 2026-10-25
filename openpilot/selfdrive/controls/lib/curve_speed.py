@@ -115,7 +115,8 @@ _V2_A_STOP = 0.3            # braking, let go once less than this is needed
 _V2_A_MAX = 1.6             # m/s^2, the most an ordinary driver uses for a corner
 _V2_D_MARGIN_T = 0.8        # s: be down to speed this far before the point
 _V2_A_TOTAL = 2.0           # m/s^2, longitudinal and lateral together on the way out
-_V2_SLOW_TURN_V = 25 * CV.KPH_TO_MS   # below this, hold through the whole turn, not just to the apex
+_V2_SLOW_TURN_V = 40 * CV.KPH_TO_MS   # below this, hold through the whole turn, not just to the apex (25 until
+                                      # 10-25: bends taken at 26 accelerated with the wheel at 85 degrees, see winding)
 _V2_REQ_TAU_UP = 0.6        # s: the needed deceleration jumps up with the model frame - smooth that
 _V2_REQ_TAU_DOWN = 0.15     # s: but let go quickly once it has been done
 _V2_START_HOLD = 0.3        # s over _V2_A_START before braking
@@ -191,10 +192,42 @@ _FAR_OFF_FLAG = "/data/curve_far_off"
 _LC_HOLD = 2.0   # s
 _LC_STATES = (log.LaneChangeState.laneChangeStarting, log.LaneChangeState.laneChangeFinishing)
 
+# ---- winding road (2026-10-25). The driver, of a winding stretch that day (14:18-14:21, six bends of 85-125
+# degrees at 18-34 km/h): it does not feel right through the bends. What the car did: out of each bend it
+# picked up to 34-38 km/h, the next sharp bend only grew into the plan 1-2 s before it (at 14:19:17, when he
+# braked, the plan showed a fifth of the curvature 3-4 s out), and he braked for five of them himself; and
+# with the wheel still at 82-87 degrees it was already accelerating at 0.5-0.76, because holding through the
+# whole turn stopped at 25 km/h and these were taken at 26. He keeps 4-5 km/h over the apex speed between
+# bends (25-26 at the apex, 29-30 between). The 10-07 mountain finding was the same: speed itself was right,
+# the rhythm was not - accelerate-then-brake 4.0 a minute against his 1.2.
+# So: once a second real bend (actual lateral > _WIND_LAT for _WIND_MIN_T) has ended (< _WIND_END) within
+# _WIND_WIN of the one before, for _WIND_HOLD after it the car gains speed at no more than _WIND_A, and only
+# up to that bend's apex speed + _WIND_DV; and holding through the turn goes on up to _V2_SLOW_TURN_V 40.
+# Closed loop on the device (follow_sim4, the whole planner), now -> this: 38 windows of the 10-06 mountain
+# road accelerate-then-brake 3.52 -> 2.02 a minute, over the comfort curve by >10% 5.5% -> 3.3% of the
+# time, braking harder than 1.0 11.4% -> 8.6%, mean speed 33.3 -> 31.6 km/h; 40 windows of 10-25 1.76 ->
+# 1.61, mean 42.0 -> 41.8; 42 town windows and 58 launches unchanged (no window off by > 2 km/h on the
+# town ones but 1); 34 September road corners 2.57 -> 2.43, harder braking 8.9% -> 8.4%. A single junction
+# turn never arms it (the launches above). Hold 40 alone: 3.00 / 3.9%; the speed reference alone: 2.81.
+_WIND_LAT = 1.0      # m/s^2, a real bend
+_WIND_MIN_T = 0.5    # s above it
+_WIND_END = 0.3      # m/s^2, the bend is over
+_WIND_WIN = 25.      # s: the bend before has to have ended this recently
+_WIND_HOLD = 12.     # s after the bend
+_WIND_A = 0.3        # m/s^2
+_WIND_DV = 5 * CV.KPH_TO_MS
+
 
 class CurveV2:
   def __init__(self):
     self.anticipate = True
+    # winding road: kept across reset() (a press of the accelerator between bends does not forget them)
+    self.wind_t = 0.
+    self.wind_in = 0.
+    self.wind_pk = 0.
+    self.wind_v_pk = 0.
+    self.wind_v_ref = 0.
+    self.wind_ends: list[float] = []
     self.reset()
 
   def reset(self) -> None:
@@ -270,11 +303,28 @@ class CurveV2:
       a = float(np.sqrt(max(_V2_A_TOTAL ** 2 - lat_now ** 2, 0.)))   # past the apex: out inside the g-g circle
     else:
       a = np.inf
+    a = min(a, self._winding(v_ego, lat_now))
     if self.anticipate:
       a = min(a, self._far(x, ks, v_ego))
     if v_ego <= V_FLOOR and a < 0.:
       a = 0.
     return a
+
+  def _winding(self, v_ego: float, lat_now: float) -> float:
+    """After the second real bend in a row, a slow pick-up to just over that bend's apex speed (see _WIND_*)."""
+    self.wind_t += DT_MDL
+    if lat_now > _WIND_LAT:
+      self.wind_in += DT_MDL
+      if lat_now >= self.wind_pk:
+        self.wind_pk, self.wind_v_pk = lat_now, v_ego
+    elif lat_now < _WIND_END:
+      if self.wind_in >= _WIND_MIN_T:
+        self.wind_ends = [e for e in self.wind_ends if self.wind_t - e < _WIND_WIN] + [self.wind_t]
+        self.wind_v_ref = self.wind_v_pk
+      self.wind_in, self.wind_pk = 0., 0.
+    if len(self.wind_ends) >= 2 and self.wind_t - self.wind_ends[-1] < _WIND_HOLD and lat_now < _WIND_LAT:
+      return _WIND_A if v_ego < self.wind_v_ref + _WIND_DV else 0.
+    return np.inf
 
   @staticmethod
   def _far(x, ks, v_ego: float) -> float:
