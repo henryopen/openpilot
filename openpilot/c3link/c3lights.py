@@ -27,6 +27,10 @@ a light in 16% of the frames that had one). Now two stages, both trained / check
     the GPU): it returns boxes + 80 class scores per anchor and the light boxes are those with class-9 score >= DET_CONF
     (this head is NMS-free; same 46 boxes on 30 frames as the end2end export). No compiled program -> onnxruntime.
 
+10/26 later: stopped with lights in view, their colour is read 10 times a second off just their rows (TRACK_*), the
+full finder only once a second - the car does not move, so neither do the lights, and a green is known within ~0.1 s
+instead of one finder cycle. Moving, every cycle is the full finder as before.
+
 Output /dev/shm/c3det/det.json as before - boxes in half-resolution coordinates, cls light_red / light_green /
 light_green_arrow (no yellow, see PASS_ON), zh, conf (the colour's probability), det (the finder's score) - for c3calib, which
 turns them into car-frame directions for C4's HUD. Only while C4 is driving (c3calib's "driving"), else idle.
@@ -67,6 +71,10 @@ CLS_NAMES = ['green', 'green_arrow', 'off', 'pedestrian', 'red', 'yellow']   # l
 # roadside yellow markers. A yellow lasts 3 s, C3 reads ~1/s and wants a light twice - it would barely show anyway.
 # Without it: frames with only false lights 51 -> 43 of 269, colour right 85 -> 86%, a light shown 85 -> 80%.
 PASS_ON = {'red': 'light_red', 'green': 'light_green', 'green_arrow': 'light_green_arrow'}
+TRACK_V = 0.3                      # m/s (C4's vEgo through c3calib): stopped
+TRACK_PERIOD = 0.1                 # s: stopped with lights found, their colour this often ...
+FIND_EVERY_S = 1.0                 # ... and the full finder this often (a light that appears / goes / was missed)
+TRACK_PAD = 0.6                    # rows above / below a box read for its colour, in box heights (lightcls pads 25%)
 ZH = {'light_red': '紅燈', 'light_green': '綠燈', 'light_yellow': '黃燈', 'light_green_arrow': '綠箭頭'}
 
 
@@ -159,6 +167,21 @@ def colours(cls, frame, boxes):
   return [cls.run(None, {name: x[None]})[0][0] for x in xs]   # the export has a fixed batch of 1
 
 
+def dets_from(boxes, scores, probs):
+  """Full-res boxes, finder scores and colour probabilities -> det.json entries (half-res), dropped count."""
+  dets, dropped = [], 0
+  for (x1, y1, x2, y2), score, p in zip(boxes, scores, probs, strict=True):
+    k = int(np.argmax(p))
+    name, pc = CLS_NAMES[k], float(p[k])
+    if name not in PASS_ON or pc < COLOR_MIN:
+      dropped += 1
+      continue
+    c = PASS_ON[name]
+    dets.append({'x': round(x1 / 2, 1), 'y': round(y1 / 2, 1), 'w': round((x2 - x1) / 2, 1), 'h': round((y2 - y1) / 2, 1),
+                 'cls': c, 'zh': ZH[c], 'conf': round(pc, 3), 'det': round(score, 3)})
+  return dets, dropped
+
+
 def read(det, cls, frame, row0, col0):
   """Full-res RGB frame -> det.json boxes (half-res) and counts."""
   band = np.ascontiguousarray(frame[row0:row0 + BAND_H, col0:col0 + BAND_W])
@@ -168,17 +191,45 @@ def read(det, cls, frame, row0, col0):
   boxes = [(x1 + col0, y1 + row0, x2 + col0, y2 + row0) for x1, y1, x2, y2, _ in found]
   probs = colours(cls, frame, boxes)
   t2 = time.perf_counter()
-  dets, dropped = [], 0
-  for (x1, y1, x2, y2), (_, _, _, _, score), p in zip(boxes, found, probs, strict=True):
-    k = int(np.argmax(p))
-    name, pc = CLS_NAMES[k], float(p[k])
-    if name not in PASS_ON or pc < COLOR_MIN:
-      dropped += 1
-      continue
-    c = PASS_ON[name]
-    dets.append({'x': round(x1 / 2, 1), 'y': round(y1 / 2, 1), 'w': round((x2 - x1) / 2, 1), 'h': round((y2 - y1) / 2, 1),
-                 'cls': c, 'zh': ZH[c], 'conf': round(pc, 3), 'det': round(score, 3)})
+  dets, dropped = dets_from(boxes, [f[4] for f in found], probs)
   return dets, {'found': len(found), 'dropped': dropped, 'det_ms': round((t1 - t0) * 1000), 'cls_ms': round((t2 - t1) * 1000)}
+
+
+class Reader:
+  """One reading a call: the full finder + colour, or - stopped, lights found within FIND_EVERY_S - the colour of
+  those lights only, off their own rows. rows(r0, r1) -> (full-width RGB of rows r0.., first row actually given)."""
+  def __init__(self, det, cls):
+    self.det, self.cls = det, cls
+    self.boxes, self.scores, self.t_find = [], [], -1e9
+    self.n_shown = 0
+    self.went_dark = False     # all tracked lights stopped showing a colour (the lit lamp moved, e.g. to a lamp of the
+                               # head the finder did not box): find again at once instead of after FIND_EVERY_S
+
+  def tracking(self, now, stopped):
+    return stopped and bool(self.boxes) and now - self.t_find < FIND_EVERY_S and not self.went_dark
+
+  def step(self, rows, row0, col0, now, stopped):
+    t0 = time.perf_counter()
+    if self.tracking(now, stopped):
+      top = int(max(0, min(y1 - (y2 - y1) * TRACK_PAD for _, y1, _, y2 in self.boxes)))
+      bot = int(min(FULL_H, max(y2 + (y2 - y1) * TRACK_PAD for _, y1, _, y2 in self.boxes) + 2))
+      rgb, r0 = rows(top, bot)
+      probs = colours(self.cls, rgb, [(x1, y1 - r0, x2, y2 - r0) for x1, y1, x2, y2 in self.boxes])
+      dets, dropped = dets_from(self.boxes, self.scores, probs)
+      self.went_dark = not dets and self.n_shown > 0     # every tracked light dark: whatever is lit now is elsewhere
+      return dets, {'mode': 'track', 'found': len(self.boxes), 'dropped': dropped, 'det_ms': 0,
+                    'cls_ms': round((time.perf_counter() - t0) * 1000)}
+    rgb, r0 = rows(row0, row0 + BAND_H)
+    band = np.ascontiguousarray(rgb[row0 - r0:row0 - r0 + BAND_H, col0:col0 + BAND_W])
+    found = find(self.det, band)
+    t1 = time.perf_counter()
+    self.boxes = [(x1 + col0, y1 + row0, x2 + col0, y2 + row0) for x1, y1, x2, y2, _ in found]
+    self.scores, self.t_find = [f[4] for f in found], now
+    probs = colours(self.cls, rgb, [(x1, y1 - r0, x2, y2 - r0) for x1, y1, x2, y2 in self.boxes])
+    dets, dropped = dets_from(self.boxes, self.scores, probs)
+    self.n_shown, self.went_dark = len(dets), False
+    return dets, {'mode': 'find', 'found': len(found), 'dropped': dropped, 'det_ms': round((t1 - t0) * 1000),
+                  'cls_ms': round((time.perf_counter() - t1) * 1000)}
 
 
 def nv12_rgb(buf, r0, r1):
@@ -198,15 +249,15 @@ def nv12_rgb(buf, r0, r1):
 
 
 def calib_state():
-  """(driving, horizon row, straight-ahead column - both half resolution or None) from c3calib."""
+  """(driving, horizon row, straight-ahead column - both half resolution or None, C4's vEgo or None) from c3calib."""
   try:
     with open(CALIB) as f:
       c = json.load(f)
   except (OSError, ValueError):
-    return False, None, None
+    return False, None, None, None
   if time.monotonic() - float(c.get('t', 0)) > 15:
-    return False, None, None
-  return bool(c.get('driving')), c.get('horizon_row'), c.get('ahead_col')
+    return False, None, None, None
+  return bool(c.get('driving')), c.get('horizon_row'), c.get('ahead_col'), c.get('v')
 
 
 def cpu_temp():
@@ -255,13 +306,14 @@ def main():
   client = VisionIpcClient('camerad', VisionStreamType.VISION_STREAM_ROAD, False)
   state = {'model': label, 'dets': [], 'n': 0, 'err': 'starting', 'idle': True, 'w': DISP_W, 'h': DISP_H}
   write(state)
-  last_check, driving, horizon, ahead = 0., False, None, None
+  last_check, driving, horizon, ahead, v = 0., False, None, None, None
   fps, t_last = 0., time.monotonic()
+  reader, last_out = Reader(det, cls), 0.
   while True:
     now = time.monotonic()
     if now - last_check > 1.:
       last_check = now
-      driving, horizon, ahead = calib_state()
+      driving, horizon, ahead, v = calib_state()
     if not (driving or ALWAYS):
       state.update({'dets': [], 'n': 0, 'err': '', 'idle': True, 'temp': round(cpu_temp(), 1), 'ts': round(now, 2)})
       write(state)
@@ -276,11 +328,12 @@ def main():
     if buf is None:
       time.sleep(0.02)
       continue
+    stopped = v is not None and v < TRACK_V
+    if reader.tracking(now, stopped) and now - last_out < TRACK_PERIOD:
+      continue
+    last_out = now
     row0, col0 = band_row0(horizon), band_col0(ahead)
-    rgb, r0 = nv12_rgb(buf, row0, row0 + BAND_H)
-    frame = np.zeros((FULL_H, FULL_W, 3), dtype=np.uint8)      # read() crops boxes from full-frame coordinates
-    frame[r0:r0 + rgb.shape[0]] = rgb
-    dets, st = read(det, cls, frame, row0, col0)
+    dets, st = reader.step(lambda a, b, buf=buf: nv12_rgb(buf, a, b), row0, col0, now, stopped)
     t_end = time.monotonic()
     dt = t_end - t_last
     t_last = t_end

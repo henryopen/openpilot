@@ -413,7 +413,9 @@ def main():
     if now - last_state >= 1.:
       last_state = now
       fresh = last_lights is not None and now - last_lights[2] < LIGHTS_FRESH_S
-      write_json(STATE, dict(cal.state, driving=now - last_c4 < 5, t=now, lights=last_lights[0] if fresh else []))
+      # C4's speed for c3lights (10/26: stopped, it reads the found lights' colour 10x a second)
+      v_c4 = round(float(cal.cs[-1][1]), 2) if cal.cs and now - last_c4 < 2 else None
+      write_json(STATE, dict(cal.state, driving=now - last_c4 < 5, t=now, v=v_c4, lights=last_lights[0] if fresh else []))
 
     if now - last_send >= 0.5:
       last_send = now
