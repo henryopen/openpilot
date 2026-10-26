@@ -1,0 +1,20 @@
+[Unit]
+Description=C3 objects: people / bicycles / motorcycles / cars / trucks / buses with a size-based distance (yolo26n, CPU) -> /dev/shm/c3obj
+After=c3-camerad.service c3calib.service
+Wants=c3-camerad.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/c3link
+Environment=PYTHONPATH=/data/openpilot
+Environment=C3_OBJ_THREADS=3
+# below c3lights: the lights come first when the CPU is short
+Nice=5
+ExecStart=/usr/local/pyenv/versions/3.11.4/bin/python /data/c3link/c3objects.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
