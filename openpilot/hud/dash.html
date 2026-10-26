@@ -1592,7 +1592,7 @@ refreshApRow(); setInterval(refreshApRow, 20000);
 // 用旋鈕開的頁 60 秒沒動就自己回 HUD（開車時 HUD 不能一直被蓋著）。
 (()=>{
   const sb=document.getElementById('standby');
-  let pid=null, seen=0, sel=0, knobOpen=false, lastAct=0, busy=false;
+  let pid=null, primed=false, seen=0, sel=0, knobOpen=false, lastAct=0, busy=false;
   const shown=()=>!!sb && getComputedStyle(sb).display!=='none';
   const items=()=>[document.getElementById('backHud'), document.getElementById('reconnBtn'),
                    ...document.querySelectorAll('#apRow button')].filter(Boolean);
@@ -1625,10 +1625,11 @@ refreshApRow(); setInterval(refreshApRow, 20000);
       const r=await fetch('/knob_menu.json',{cache:'no-store'});
       if(r.ok){
         const j=await r.json(), ev=Array.isArray(j.ev)?j.ev:[];
-        // 頁面剛載入：之前的動作不算；keypad_agent 重啟（pid 變了）：id 從頭數
-        if(j.pid!==pid){ seen = pid===null && ev.length ? ev[ev.length-1][0] : 0; pid=j.pid; }
+        // 頁面剛載入時已經在的動作不算；之後才出現的檔案（載入時鍵盤還沒轉過）或 keypad_agent 重啟（pid 變了）：id 從頭數
+        if(j.pid!==pid){ seen = !primed && ev.length ? ev[ev.length-1][0] : 0; pid=j.pid; }
         ev.forEach(([id,a])=>{ if(id>seen){ seen=id; handle(a); } });
       }
+      primed=true;
     }catch(e){}
     finally{ busy=false; }
     if(knobOpen && manualStandby && Date.now()-lastAct>60000){
