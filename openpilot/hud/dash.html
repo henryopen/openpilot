@@ -40,8 +40,9 @@
      定位獨立於 maxrow —— 那一列是 MAX 與「實際在追的設定速度」，
      擠進第三個元素會讓它們隨著 tgt 的出現消失左右跳。
      暗掉＝車機時鐘還沒被 GPS/NTP 校到，那個時間對不上任何一段，不要抄 */
-  .clk{top:46px;left:300px;font-size:30px;font-weight:700;color:var(--dim2);
-    font-variant-numeric:tabular-nums;letter-spacing:.5px}
+  /* 10/26 起放在左下燈號列最前面：導航卡／路況卡佔掉左上之後，原位置的時鐘會被收起來 */
+  .clk{font-size:20px;font-weight:800;color:#c9d6e2;font-variant-numeric:tabular-nums;letter-spacing:.3px;
+    margin-right:2px;text-shadow:var(--sh)}
   .clk.stale{color:#41505d}
   .sub{font-size:17px;color:var(--dim2);font-weight:600;margin-top:2px;letter-spacing:.4px}
   .sub b{color:var(--txt);font-weight:800}
@@ -69,7 +70,7 @@
 
   /* 狀態 chips */
   /* 底部 .bar 從 324px 開始且疊在上層；排不下的 chip 換到右邊第二欄，不能往下被蓋住（09-25：直線／緩衝按不到） */
-  .chips{top:132px;left:20px;display:flex;flex-direction:column;flex-wrap:wrap;max-height:186px;gap:7px 10px;
+  .chips{top:132px;left:20px;display:flex;flex-direction:column;flex-wrap:wrap;max-height:156px;gap:7px 10px;
     align-content:flex-start;align-items:flex-start}
   .chip{padding:5px 13px;border-radius:5px;font-size:17px;font-weight:800;letter-spacing:.4px;
     background:rgba(6,11,16,.82);border:1px solid var(--line);color:var(--dim2);text-shadow:none}
@@ -132,18 +133,43 @@
   .lit.ped .dot{background:#7fb3ff} .lit.ped .txt{color:#7fb3ff}
   .lit.off .dot{background:#55636f} .lit.off .txt{color:#8b9bab}
 
-  /* TDX 即時路況（selfdrive/mapd/tdx_traffic.py）：只顯示，不控制。接在號誌燈牌下面 */
-  .traf{top:176px;right:196px;display:none;align-items:center;gap:9px;
-    padding:6px 13px 6px 9px;border-radius:8px;background:rgba(8,12,16,.82);
-    border:1px solid rgba(255,255,255,.10)}
-  .traf.on{display:flex}
-  .traf .dot{width:15px;height:15px;border-radius:3px;flex:0 0 auto;background:#55636f}
-  .traf .txt{font-size:18px;font-weight:800;letter-spacing:.5px;white-space:nowrap;color:#8b9bab}
-  .traf.warn .dot{background:#ffbe00;box-shadow:0 0 14px #ffbe00} .traf.warn .txt{color:#ffbe00}
-  .traf.slow .dot{background:#ff7a1a;box-shadow:0 0 14px #ff7a1a} .traf.slow .txt{color:#ff9a4d}
-  .traf.ok .dot{background:#00d977} .traf.ok .txt{color:#b9c7d3}
-  /* C3（USB 連線的第二台）自己標定後看到的燈：只顯示 */
-  .c3l{top:220px;right:196px;display:none;align-items:center;gap:9px;
+  /* TDX 即時路況（selfdrive/mapd/tdx_traffic.py）：只顯示，不控制。
+     10/26 使用者：「交通資訊應該也是一樣的卡片，字大小跟導航放大後的字一樣」→ 跟導航卡同欄、同寬、同字級，
+     接在導航卡下面（沒導航時補到最上面）。抓不到／沒網路之類改由燈號列的「路況」燈講，卡片只放路況本身 */
+  .tcard{display:none;flex-direction:column;gap:3px;padding:7px 13px 9px 12px;border-radius:12px;
+    background:rgba(6,14,20,.90);border:2px solid rgba(147,168,187,.35);text-shadow:var(--sh)}
+  .tcard.on{display:flex}
+  .tcard .hd{display:flex;align-items:baseline;gap:8px;font-size:20px;font-weight:700;color:#cfe3f2;white-space:nowrap}
+  .tcard .hd .t{flex:1 1 auto}
+  .tcard .hd .dd{flex:0 0 auto;font-size:24px;font-weight:800;color:var(--txt);font-variant-numeric:tabular-nums}
+  .tcard .bd{font-size:24px;font-weight:800;line-height:1.2;color:#b9c7d3;white-space:pre-line;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+  .tcard.warn{border-color:rgba(255,190,0,.75)} .tcard.warn .bd{color:#ffbe00}
+  .tcard.slow{border-color:rgba(255,122,26,.75)} .tcard.slow .bd{color:#ff9a4d}
+  .tcard.ok .bd{color:#9fe0b8}
+  /* 左上資訊欄：導航卡＋路況卡上下疊，誰沒有誰收起來 */
+  .infocol{position:absolute;z-index:3;left:176px;top:8px;width:300px;display:flex;flex-direction:column;gap:8px;
+    pointer-events:none}
+  /* 資訊欄有東西時，警示框往右讓（置中會壓到卡片）：卡片右緣 476，STOP 左緣約 1016 */
+  body.infoon .alertbox{left:746px;max-width:500px}
+
+  /* 連線燈號列（10/26 使用者：「有沒有連線的文字改用燈號」）。每顆燈都帶短標籤，不只靠顏色：
+     綠＝正常、琥珀＝半正常（睡著／資料舊／粗標定）、紅＝斷線／沒回應、青＝語音正在聽。
+     沒裝或沒在跑的模組整顆不顯示（跟以前的 chip 一樣），C3／路況這種「該在卻不在」的才亮紅 */
+  .stat{left:20px;top:292px;display:flex;align-items:center;gap:7px;pointer-events:none}
+  .lt{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:13px;
+    background:rgba(6,11,16,.86);border:1px solid #1c2934;font-size:16px;font-weight:700;color:#a9bccd;
+    white-space:nowrap;text-shadow:none}
+  .lt i{width:11px;height:11px;border-radius:50%;flex:0 0 auto;background:#55636f}
+  .lt.ok i{background:#2fd45a;box-shadow:0 0 7px rgba(47,212,90,.9)}
+  .lt.warn i{background:#ffbe00;box-shadow:0 0 7px rgba(255,190,0,.9)} .lt.warn{color:#ffd36a}
+  .lt.bad i{background:#ff3b3b;box-shadow:0 0 8px rgba(255,59,59,1)} .lt.bad{color:#ff8a8a;border-color:rgba(255,59,59,.45)}
+  .lt.hi i{background:var(--cyan);box-shadow:0 0 8px var(--cyan)} .lt.hi{color:#8fe6f8}
+  /* 點了進網路設定（待機畫面選 AP），跟以前左上角那行字一樣；外觀跟其他燈一樣，按的範圍用透明外框放大 */
+  .stat #netInfo{pointer-events:auto;position:relative;padding:3px 10px 3px 8px;margin:0}
+  .stat #netInfo::after{content:"";position:absolute;inset:-12px -8px}
+  /* C3（USB 連線的第二台）自己標定後看到的燈：只顯示（路況牌搬去左欄後往上補位） */
+  .c3l{top:176px;right:196px;display:none;align-items:center;gap:9px;
     padding:5px 12px 5px 9px;border-radius:8px;background:rgba(8,12,16,.82);
     border:1px solid rgba(255,255,255,.10)}
   .c3l.on{display:flex}
@@ -208,6 +234,8 @@
   .m .v i.sub{font-size:22px}
   .m .v i{font-style:normal;color:var(--dim)}
   .v.ok{color:var(--green)} .v.am{color:var(--amber)} .v.bad{color:var(--red)} .v.dim{color:#3b4b5b}
+  /* 縱向加減速（m3）：減速紅、0 灰藍、加速綠 */
+  .v.acc-neg{color:#ff4d4d} .v.acc-zero{color:#8fb4d6} .v.acc-pos{color:#3ddc84}
   .trk{position:absolute;left:18px;right:18px;bottom:4px;height:3px;background:rgba(14,22,30,.9);
     border-radius:2px;overflow:hidden}
   .trk i{display:block;height:100%;border-radius:2px;background:var(--green)}
@@ -250,34 +278,35 @@
      左上角、設定速度右邊（原本時鐘的位置，導航中時鐘先收起來）：不碰中央警示框、LED 鏡像、右側車速／速限／燈牌。
      第一行固定「目的地・幾點到・剩幾公里」（使用者 10/20：「目的地預計抵達時間都要」）；
      剩 NAV_NEAR_M 內外框亮起來；有車道資料就畫車道（建議的車道亮）；快到時預告下一個轉彎。 */
-  .nav{position:absolute;z-index:3;left:176px;top:10px;width:232px;display:none;flex-direction:column;gap:4px;
-    padding:6px 11px 7px 8px;border-radius:10px;background:rgba(6,14,20,.88);
-    border:1.5px solid rgba(34,205,242,.40);text-shadow:var(--sh)}
+  /* 10/26 使用者：「導航的字太小」→ 卡寬 232→300、字級全部放大（目的地／時間 15→20、距離 32→46、路名 17→24）。
+     位置改由 .infocol 管（跟路況卡同一欄） */
+  .nav{width:300px;display:none;flex-direction:column;gap:4px;
+    padding:7px 13px 9px 10px;border-radius:12px;background:rgba(6,14,20,.90);
+    border:2px solid rgba(34,205,242,.45);text-shadow:var(--sh)}
   .nav.on{display:flex}
   .nav.near{border-color:var(--cyan);box-shadow:0 0 22px rgba(34,205,242,.38)}
-  .nav.stale{opacity:.55;border-color:var(--amber)}
-  .nav .hd{display:flex;align-items:baseline;gap:6px;font-size:15px;font-weight:700;color:#cfe3f2;white-space:nowrap}
+  .nav.stale{opacity:.6;border-color:var(--amber)}
+  .nav .hd{display:flex;align-items:baseline;gap:8px;font-size:20px;font-weight:700;color:#cfe3f2;white-space:nowrap}
   .nav .hd .dst{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto}
-  .nav .hd .eta{flex:0 0 auto;color:var(--txt);font-variant-numeric:tabular-nums}
-  .nav .hd .eta small{font-size:12px;color:var(--dim2);margin-left:2px}
-  .nav .hd .km{flex:0 0 auto;font-size:13px;color:var(--dim2);font-variant-numeric:tabular-nums}
+  .nav .hd .eta{flex:0 0 auto;font-size:24px;font-weight:800;color:var(--txt);font-variant-numeric:tabular-nums}
+  .nav .hd .eta small{font-size:16px;color:var(--dim2);margin-left:2px}
+  .nav .hd .km{flex:0 0 auto;font-size:18px;color:var(--dim2);font-variant-numeric:tabular-nums}
   .nav.stale .hd .eta{color:var(--amber)}
-  .nav .r1{display:flex;align-items:center;gap:8px}
-  .nav svg.arw{width:48px;height:48px;flex:0 0 auto}
-  .nav .d{font-size:32px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
-  .nav .d small{font-size:16px;font-weight:700;margin-left:3px;color:var(--dim2)}
-  .nav .rd{font-size:17px;font-weight:700;color:#cfe3f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:158px;margin-top:2px}
-  .nav .r2{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:24px}
+  .nav .r1{display:flex;align-items:center;gap:10px}
+  .nav svg.arw{width:64px;height:64px;flex:0 0 auto}
+  .nav .d{font-size:46px;font-weight:800;line-height:1;font-variant-numeric:tabular-nums}
+  .nav .d small{font-size:22px;font-weight:700;margin-left:4px;color:var(--dim2)}
+  .nav .rd{font-size:24px;font-weight:700;color:#cfe3f2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:206px;margin-top:3px}
+  .nav .r2{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:32px}
   .nav .r2:empty{display:none}
-  .nav .lanes{display:flex;gap:3px}
-  .nav .ln{width:24px;height:24px;border-radius:4px;border:1.5px solid #2a3a48;background:rgba(255,255,255,.03);
+  .nav .lanes{display:flex;gap:4px}
+  .nav .ln{width:32px;height:32px;border-radius:5px;border:2px solid #2a3a48;background:rgba(255,255,255,.03);
     display:flex;align-items:center;justify-content:center}
   .nav .ln.rec{border-color:var(--cyan);background:rgba(34,205,242,.16)}
-  .nav .ln svg{width:17px;height:17px}
-  .nav .nx{font-size:14px;color:var(--dim2);font-weight:700;white-space:nowrap}
+  .nav .ln svg{width:23px;height:23px}
+  .nav .nx{font-size:19px;color:var(--dim2);font-weight:700;white-space:nowrap}
   .nav .nx b{color:#cfe3f2}
-  .nav .nx svg{width:15px;height:15px;vertical-align:-2px}
-  body.navon #clk{display:none}
+  .nav .nx svg{width:20px;height:20px;vertical-align:-3px}
 </style>
 </head>
 <body>
@@ -301,17 +330,33 @@
   <div class="bsd bsdR" id="bsdR"></div>
 
   <div class="ov cnr cnrL" id="paneL">
-    <div class="cap">設定速度<i id="netInfo"></i></div>
+    <div class="cap">設定速度</div>
     <div class="maxrow">
       <div class="num blue" id="maxV">60</div>
       <div class="tgt" id="tgtV"></div>
     </div>
   </div>
 
-  <div class="ov clk" id="clk">--:--:--</div>
   <img class="ov ledm" id="ledMir" alt="">
-  <div class="nav" id="navCard"></div>
+  <div class="infocol" id="infoCol">
+    <div class="nav" id="navCard"></div>
+    <div class="tcard" id="trafCard"><div class="hd"><span class="t" id="trafHd">前方路況</span><span class="dd" id="trafD"></span></div><div class="bd" id="trafTxt"></div></div>
+  </div>
   <div class="ov ledtag" id="ledTag">後窗 LED</div>
+
+  <!-- 連線燈號列：<b> 是標籤，<i> 是燈 -->
+  <div class="ov stat" id="statRow">
+    <span class="clk" id="clk">--:--:--</span>
+    <span class="lt" id="ltC3" style="display:none"><i></i><b>C3</b></span>
+    <span class="lt" id="cC3v" style="display:none"><i></i><b>C3 語音</b></span>
+    <span class="lt" id="ltLed" style="display:none"><i></i><b>後窗 LED</b></span>
+    <span class="lt" id="cKey" style="display:none"><i></i><b>鍵盤</b></span>
+    <span class="lt" id="cSpk" style="display:none"><i></i><b>語音</b></span>
+    <span class="lt" id="cGes" style="display:none"><i></i><b>手勢</b></span>
+    <span class="lt" id="ltTx" style="display:none"><i></i><b>路況</b></span>
+    <span class="lt" id="ltNav" style="display:none"><i></i><b>導航</b></span>
+    <span class="lt" id="netInfo" style="display:none"><i></i><b>WiFi</b></span>
+  </div>
 
   <div class="ov cnr cnrR" id="paneR">
     <div class="cap">車速 km/h</div>
@@ -332,10 +377,6 @@
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
-    <span class="chip kbd" id="cKey" style="display:none">鍵盤</span>
-    <span class="chip kbd" id="cGes" style="display:none">手勢</span>
-    <span class="chip kbd" id="cSpk" style="display:none">語音</span>
-    <span class="chip kbd" id="cC3v" style="display:none">C3 語音</span>
   </div>
 
   <div class="ov alertbox" id="alertBox">
@@ -347,7 +388,6 @@
   <div class="ov handoff" id="hfBox"><span class="hflbl">路口交接</span></div>
 
   <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
-  <div class="ov traf" id="trafBox"><span class="dot"></span><span class="txt" id="trafTxt">—</span></div>
   <div class="ov c3l" id="c3Box"><span class="txt" id="c3Txt">—</span></div>
 
   <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
@@ -380,6 +420,18 @@
 })();
 /* ═════ 盲點指示：直接掛在側欄上（不再畫裝飾框）═════ */
 const $=id=>document.getElementById(id);
+/* 燈號列的一顆燈：st = 'ok' | 'warn' | 'bad' | 'hi' | ''（灰），null = 整顆收起來；label 不給就不動標籤 */
+function setLt(id, st, label){
+  const el=$(id); if(!el) return;
+  if(st===null){ el.style.display='none'; return; }
+  el.style.display=''; el.className='lt '+st;
+  if(label!==undefined){ const b=el.querySelector('b'); if(b && b.textContent!==label) b.textContent=label; }
+}
+/* 左上資訊欄有卡片時，警示框往右讓 */
+function updateInfoCol(){
+  const on = $('navCard').classList.contains('on') || $('trafCard').classList.contains('on');
+  document.body.classList.toggle('infoon', on);
+}
 function applyBsd(F){
   $('bsdL').classList.toggle('on', !!F.bsdL);
   $('bsdR').classList.toggle('on', !!F.bsdR);
@@ -1053,26 +1105,29 @@ function renderTL(tl, la){
 /* TDX 即時路況：前方 3 km 內的事故／施工（同方向）最優先，其次前方慢路段，再來是本段車速。
    沒網路、沒定位、不在 TDX 有資料的路上就不顯示。10/18 使用者：只能顯示、不能控制。 */
 function renderTraffic(tx){
-  const box=document.getElementById('trafBox');
-  if(!box) return;
-  if(!tx){ box.className='ov traf'; return; }
-  // 開車時只看 HUD（10/18）：抓不到、沒資料也要講出來，不是整塊藏起來
-  const ST={offline:'路況 無網路', nocred:'路況 無金鑰', off:'路況 已關閉', nogps:'路況 等定位', missing:'路況 程式未執行'};
+  const card=$('trafCard');
+  if(!card) return;
+  const hide=()=>{ card.className='tcard'; updateInfoCol(); };
+  if(!tx){ setLt('ltTx', null); hide(); return; }
+  // 開車時只看 HUD（10/18）：抓不到、沒資料也要講出來 —— 10/26 起由燈號講（燈＋標籤），卡片只放路況本身
+  const ST={offline:['bad','路況 無網路'], nocred:['bad','路況 無金鑰'], off:['','路況 關閉'], nogps:['warn','路況 等定位'],
+            missing:['bad','路況 未執行']};
   if(tx.status!=='ok'){
-    box.className='ov traf on';
-    document.getElementById('trafTxt').textContent=ST[tx.status]||('路況 '+(tx.status||'—'));
-    return;
+    const s=ST[tx.status]||['bad','路況 '+(tx.status||'—')];
+    setLt('ltTx', s[0], s[1]); hide(); return;
   }
   const km = d => d>=1000 ? (d/1000).toFixed(1)+' km' : (Math.round(d/10)*10)+' m';
   const ev=(tx.events||[])[0], vd=tx.vd;
-  let cls='', txt='';
-  if(ev){ cls='warn'; txt=`前方 ${km(ev.d)} ${ev.kind}`+(ev.text?'・'+ev.text:''); }
-  else if(tx.slow){ cls='slow'; txt=`前方 ${km(tx.slow.d)} 車速 ${tx.slow.speed}`; }
-  else if(vd && Math.min(...vd.lanes)<40){ cls='slow'; txt=`前方 ${km(vd.d)} 車道 ${vd.lanes.join('/')}`; }
-  else if(tx.speed){ cls='ok'; txt=`路況 本段 ${tx.speed}`+(vd?`・前方車道 ${vd.lanes.join('/')}`:''); }
-  if(!txt){ cls=''; txt='路況 此路段無資料'; }
-  box.className='ov traf on '+cls;
-  document.getElementById('trafTxt').textContent=txt;
+  let cls='', hd='', dd='', bd='';
+  if(ev){ cls='warn'; hd='前方'+ev.kind; dd=km(ev.d); bd=ev.text||ev.kind; }
+  else if(tx.slow){ cls='slow'; hd='前方慢車'; dd=km(tx.slow.d); bd=`車速 ${tx.slow.speed} km/h`; }
+  else if(vd && Math.min(...vd.lanes)<40){ cls='slow'; hd='前方車道車速'; dd=km(vd.d); bd=vd.lanes.join(' / ')+' km/h'; }
+  else if(tx.speed){ cls='ok'; hd='本段路況'; bd=`車速 ${tx.speed} km/h`+(vd?`\n前方車道 ${vd.lanes.join(' / ')}`:''); }
+  if(!bd){ setLt('ltTx', 'warn', '路況 無資料'); hide(); return; }   // 程式正常，只是這條路 TDX 沒資料
+  setLt('ltTx', 'ok', '路況');
+  $('trafHd').textContent=hd; $('trafD').textContent=dd; $('trafTxt').textContent=bd;
+  card.className='tcard on '+cls;
+  updateInfoCol();
 }
 
 /* C3（USB 線上的第二台）：開車時駕駛只看得到 HUD（10/18），所以它的狀態都要講出來 ——
@@ -1081,10 +1136,13 @@ function renderTraffic(tx){
 function renderC3(c3){
   const box=document.getElementById('c3Box');
   if(!box) return;
-  if(!c3){ box.className='ov c3l'; return; }
+  if(!c3){ box.className='ov c3l'; setLt('ltC3', null); return; }
   let cls='', txt='';
-  if(c3.missing){ cls='off'; txt='C3 未連線'; }
-  else {
+  // 連線／標定狀態（10/26 起）：燈號列的「C3」燈。紅＝沒連上或辨識停了、琥珀＝還在標定／粗標定、綠＝正常
+  if(c3.missing){ setLt('ltC3', 'bad', 'C3'); box.className='ov c3l'; return; }
+  setLt('ltC3', c3.det_err ? 'bad' : (!c3.using || c3.using==='coarse') ? 'warn' : 'ok',
+        !c3.using ? 'C3 標定中' : c3.using==='coarse' ? 'C3 粗標定' : 'C3');
+  {
     const prog = `${Math.floor((c3.prog||0)/60)}/${Math.round((c3.need||240)/60)} 分`;
     // 10/24：有這趟或上一趟的標定就照用、不標「標定中」（它在重新收資料時也是用好的標定，只是字在跳）
     const tag = c3.using==='coarse' ? `（粗標定 ${prog}）` : '';
@@ -1097,7 +1155,6 @@ function renderC3(c3){
       const side = Math.abs(l.az)<1 ? '正前' : (l.az>0?'右':'左')+Math.abs(l.az).toFixed(0)+'°';
       txt=`C3 ${z} ${Math.round((l.conf||0)*100)}%・${side}${tag}`;
     } else { txt='C3 前方無燈'+tag; }
-    if(c3.voice && !c3.voice.ok) txt+='・語音沒在聽';
     if((c3.temp||0)>=85){ cls='hot'; txt+=`・C3 ${Math.round(c3.temp)}°C`; }
   }
   box.className='ov c3l on '+cls;
@@ -1113,10 +1170,9 @@ function renderC3Voice(c3){
   const chip=document.getElementById('cC3v'), big=document.getElementById('gesBig');
   if(!chip || !big) return;
   const v = c3 && !c3.missing ? c3.voice : null;
-  if(!v){ chip.style.display='none'; }
+  if(!v){ setLt('cC3v', null); }
   else {
-    chip.style.display=''; chip.textContent = v.ok ? 'C3 語音' : 'C3 語音沒在聽';
-    chip.classList.toggle('sleep', !v.ok);
+    setLt('cC3v', v.ok ? 'ok' : 'bad', 'C3 語音');
     if(c3vSeen===null){ c3vSeen=v.n; }
     else if(v.n!==c3vSeen){
       c3vSeen=v.n;
@@ -1184,7 +1240,7 @@ function render(F){
     tg.className = 'tgt' + (show && F.vTgt < F.vCruise-1 ? ' cut' : '');
   }
   const ck=$('clk');
-  if(ck){ ck.textContent = F.clk || '--:--:--'; ck.className = 'ov clk' + (F.clkOk ? '' : ' stale'); }
+  if(ck){ ck.textContent = F.clk || '--:--:--'; ck.className = 'clk' + (F.clkOk ? '' : ' stale'); }
   set('spdV', F.vEgo);
   set('spdF', F.road || '—');
   $('paneL').className='ov cnr cnrL'+(F.engaged?'':' off');
@@ -1276,11 +1332,13 @@ function render(F){
                  lateral:'轉彎', coast:'收油', e2e:'模型'};
   const srcTxt = A_SRC[F.aMaxSrc] || '';
   m3.innerHTML = (F.aT>=0?'+':'')+F.aT.toFixed(2)
-    + (F.aMax>0 && F.aT>-0.01 ? `<i> / </i>${F.aMax.toFixed(2)}` : '')
+    + (F.aMax>0 && F.aT>-0.01 ? `<i> / </i><span style="color:#c9d6e2">${F.aMax.toFixed(2)}</span>` : '')
     + '<u>m/s²</u>'
     + (srcTxt ? `<u class="src" style="color:${capped?'#ffb020':'#7d8ea0'}">${srcTxt}</u>` : '')
     + (capped?'<u class="src" style="color:#ffb020">上限</u>':'');
-  m3.className='v'+(capped?' am':'');
+  // 10/26 使用者：「加減速度負的要紅色，0 的要另一個顏色，不要都白色」→ 減速紅、0 灰藍、加速綠。
+  // 頂到上限改由後面的「上限」標籤（琥珀）講，數字本身照正負上色
+  m3.className='v '+(F.aT<=-0.05 ? 'acc-neg' : F.aT>=0.05 ? 'acc-pos' : 'acc-zero');
   document.getElementById('m4').innerHTML=`${F.tq.toFixed(2)}${F.sat?'<u style="color:#ff2d2d">飽和</u>':''}`;
   document.getElementById('m4b').style.width=Math.min(100,Math.abs(F.tq)*100)+'%';
   document.getElementById('m4b').style.background=F.sat?'#ff2d2d':'#5aa9ff';
@@ -1673,11 +1731,13 @@ async function updateNet(){
     const j=await r.json();
     const ssid=j.ssid||'', host=window.__esHost||j.c4||(j.hosts&&j.hosts[0])||'';
     window.__selfIp = j.self||'';
-    el.textContent=[ssid, host].filter(Boolean).join('  ·  ');
+    // 10/26 起是燈號列的「WiFi」燈（點了一樣進網路設定）；名稱與 IP 留在待機畫面
+    setLt('netInfo', ssid ? 'ok' : 'bad', 'WiFi');
+    el.title=[ssid, host].filter(Boolean).join('  ·  ');
     const sb=document.getElementById('standby-net');
     if(sb) sb.textContent=[ssid?'WiFi '+ssid:'WiFi 未連線', j.self?'本機 '+j.self:'', host?'車機 '+host:''].filter(Boolean).join('   ·   ');
     setConn(window.__connState||'offline');
-  }catch(e){ el.textContent = window.__esHost || ''; }
+  }catch(e){ setLt('netInfo', '', 'WiFi'); }
 }
 updateNet(); setInterval(updateNet, 15000);
 
@@ -1772,15 +1832,10 @@ if(new URLSearchParams(location.search).has('play')){
       if(!r.ok) throw new Error(r.status);
       const s=await r.json();
       const bat = typeof s.battery==='number' ? s.battery : null;
-      if(s.connected){
-        el.textContent = '鍵盤' + (bat!==null ? ` ${bat}%` : '');
-        el.classList.remove('sleep'); el.classList.toggle('low', bat!==null && bat<=20);
-      }else{
-        el.textContent = '鍵盤睡著・按 8 叫醒';
-        el.classList.add('sleep'); el.classList.remove('low');
-      }
-      el.style.display='';
-    }catch(e){ el.style.display='none'; }
+      // 燈號：連著＝綠（電量 ≤20% 琥珀）、睡著／斷線＝琥珀（下一下按鍵只會叫醒它）
+      if(s.connected) setLt('cKey', (bat!==null && bat<=20) ? 'warn' : 'ok', '鍵盤' + (bat!==null ? ` ${bat}%` : ''));
+      else setLt('cKey', 'warn', '鍵盤 睡著');
+    }catch(e){ setLt('cKey', null); }
   }
   poll(); setInterval(poll, 2000);
 })();
@@ -1799,14 +1854,15 @@ if(new URLSearchParams(location.search).has('play')){
       let card=null, man=null; try{ if(jr.ok){ const j=await jr.json(); card=j.card; man=j.manual; } }catch(e){}
       const sticky = man==='sticky';
       const isMan = sticky || (typeof man==='number' && man>0);
-      tag.textContent = (card===true ? '後窗 LED' : '後窗 LED（控制卡未連線）')
+      // 控制卡有沒有接上改由燈號列的「後窗 LED」燈講（10/26）；鏡像標籤只講手動字幕
+      setLt('ltLed', card===true ? 'ok' : 'bad', '後窗 LED');
+      tag.textContent = '後窗 LED'
                       + (sticky ? '・手動字幕 常駐中（再按同鍵關閉）'
                          : isMan ? `・手動字幕 剩 ${Math.ceil(man)} 秒（再按同鍵取消）` : '');
-      tag.classList.toggle('down', card!==true && !isMan);
       tag.classList.toggle('man', isMan);
       img.classList.toggle('man', isMan);
       img.classList.add('on'); tag.classList.add('on'); fails=0;
-    }catch(e){ if(++fails>=3) hide(); }
+    }catch(e){ if(++fails>=3){ hide(); setLt('ltLed', null); } }
     finally{ busy=false; }
   }
   poll(); setInterval(poll, 400);
@@ -1822,8 +1878,7 @@ if(new URLSearchParams(location.search).has('play')){
       const r=await fetch('/gesture_state.json',{cache:'no-store'});
       if(!r.ok) throw new Error(r.status);
       const s=await r.json();
-      chip.style.display=''; chip.textContent = s.ok ? '手勢' : '手勢模組沒回應';
-      chip.classList.toggle('sleep', !s.ok);
+      setLt('cGes', s.ok ? 'ok' : 'bad', '手勢');
       raw.style.display='block'; raw.textContent = 'GS20 ' + (s.ok ? 'raw ' + (s.raw||[]).join(' ') : 'no answer') + '  last ' + (s.letter||'') + ' ' + (s.name||'-');
       if(seen===null){ seen=s.seq; }
       else if(s.seq!==seen){
@@ -1831,7 +1886,7 @@ if(new URLSearchParams(location.search).has('play')){
         big.innerHTML='<span class="arw">'+(ARW[s.code]||'?')+'</span>'+(s.letter?s.letter+'　':'')+s.name+(s.act?'　'+s.act:'');
         big.classList.add('on'); hideAt=Date.now()+2500;
       }
-    }catch(e){ chip.style.display='none'; raw.style.display='none'; }
+    }catch(e){ setLt('cGes', null); raw.style.display='none'; }
     if(hideAt && Date.now()>hideAt){ big.classList.remove('on'); hideAt=0; }
   }
   poll(); setInterval(poll, 100);
@@ -1846,10 +1901,8 @@ if(new URLSearchParams(location.search).has('play')){
       const r=await fetch('/speech_state.json',{cache:'no-store'});
       if(!r.ok) throw new Error(r.status);
       const s=await r.json();
-      chip.style.display='';
-      chip.textContent = !s.ok ? '語音模組沒回應' : (s.awake ? '🎤 在聽' : '語音');
-      chip.classList.toggle('sleep', !s.ok);
-      chip.classList.toggle('low', !!s.awake);
+      // 燈號：正常＝綠、喚醒後正在聽＝青、模組沒回應＝紅
+      setLt('cSpk', !s.ok ? 'bad' : (s.awake ? 'hi' : 'ok'), s.awake && s.ok ? '語音 在聽' : '語音');
       if(seen===null){ seen=s.seq; }
       else if(s.seq!==seen){
         seen=s.seq;
@@ -1859,7 +1912,7 @@ if(new URLSearchParams(location.search).has('play')){
       // 喚醒後到聽到指令（或逾時）之間，畫面中間掛「在聽」：待機畫面上方那排 chip 是藏起來的
       if(s.ok && s.awake && !hideAt){ big.innerHTML='<span class="arw">🎤</span>在聽…'; big.classList.add('on'); listening=true; }
       else if(listening && !s.awake){ big.classList.remove('on'); listening=false; }
-    }catch(e){ chip.style.display='none'; }
+    }catch(e){ setLt('cSpk', null); }
     if(hideAt && Date.now()>hideAt){ big.classList.remove('on'); hideAt=0; }
   }
   poll(); setInterval(poll, 150);
@@ -1903,7 +1956,8 @@ if(new URLSearchParams(location.search).has('play')){
     const n=j && j.nav;
     const navOn = n && (n.state==='navigating' || n.state==='rerouting');
     const age = j && typeof j.age==='number' ? j.age : null;
-    if(!navOn || age===null || age>GONE){ card.className='nav'; document.body.classList.remove('navon'); return; }
+    if(!navOn || age===null || age>GONE){
+      card.className='nav'; document.body.classList.remove('navon'); setLt('ltNav', null); updateInfoCol(); return; }
     const st=n.step||{}, rm=n.remain||{}, dest=(n.dest&&n.dest.name)||'';
     const stale = age>STALE;
     const near = !stale && (st.dist||0) <= NAV_NEAR_M;
@@ -1917,7 +1971,9 @@ if(new URLSearchParams(location.search).has('play')){
     const nx0=(n.next||[])[0];
     const nx = (near && nx0) ? `<span class="nx">接著 ${arrow(kindOf(nx0.maneuver, nx0.modifier), '#93a8bb', 7)} <b>${dist(nx0.distFromPrev)[0]} ${dist(nx0.distFromPrev)[1]}</b></span>` : '';
     const road = n.state==='rerouting' ? '重新規劃路線中…' : (st.road || st.instruction || '');
-    const eta = stale ? `連線中斷 ${Math.round(age)} 秒` : `${esc(rm.eta||'--:--')}<small>到</small>`;
+    // 資料太舊（D531 斷了）改由燈號列的「導航」燈講（琥珀），卡片本身變淡、時間不再給
+    const eta = stale ? '--:--' : `${esc(rm.eta||'--:--')}<small>到</small>`;
+    setLt('ltNav', stale ? 'warn' : 'ok', stale ? `導航 ${Math.round(age)} 秒前` : '導航');
     card.innerHTML =
       `<div class="hd"><span class="dst">${esc(dest)}</span><span class="eta">${eta}</span><span class="km">${stale?'':km(rm.dist)}</span></div>`+
       `<div class="r1">${arrow(kindOf(st.maneuver, st.modifier), near?'#22cdf2':'#5ec8e8', 7).replace('<svg ','<svg class="arw" ')}`+
@@ -1925,6 +1981,7 @@ if(new URLSearchParams(location.search).has('play')){
       `<div class="r2">${(lanes||nx) ? `<div class="lanes">${lanes}</div>${nx}` : ''}</div>`;
     card.className='nav on'+(near?' near':'')+(stale?' stale':'');
     document.body.classList.add('navon');
+    updateInfoCol();
   }
   window.__navRender=render;       // 離線驗證用（Playwright 直接餵 /nav.json 的內容）
   async function poll(){
