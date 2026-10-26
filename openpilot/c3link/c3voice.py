@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """C3's voice commands, engaged or not (the driver, 10/23: "C3語音應該不管有沒有engaged都要可以用").
 
-The same six commands the PiBar's LD3320 had (hud/pi/speech_agent.py, 10/15): 小白 + 加速 / 減速 (MAX +-10),
-綠燈 (go), 謝謝 / 抱歉 / 臨時 (rear-window captions). The LD3320 failed in the car (10/16-17: 1 command out of 55,
+The same six commands the PiBar's LD3320 had (10/15; its speech_agent.py removed 10/26): 小白 + 加速 / 減速
+(MAX +-10), 綠燈 (go), 謝謝 / 抱歉 / 臨時 (rear-window captions); 10/26 the other five keypad captions (禮讓行人 /
+救護車 / 事故 / 靠邊 / 不熟) and 取消 (off). The LD3320 failed in the car (10/16-17: 1 command out of 55,
 road noise) and was switched off. 10/18 on C3 instead: its own mic (arecord hw:0,0, 16 kHz mono) and sherpa-onnx's
 Chinese keyword spotter (zipformer wenetspeech 3.3M, fp32, epoch-12-avg-2), always listening, 1 thread ~11% of a
 core. Scripted check in the office, the driver reading prompts off C3's screen: 22/24 heard, none heard as another
@@ -12,7 +13,7 @@ From 10/23 they act, the same way the PiBar keypad does:
   加速 / 減速  max_up / max_down (MAX +-10, like the left knob: engaged or not, never an engage), POSTed with the
                keypad token to C4's HUD server over the USB link (http://10.44.0.2:8902/keypad), which hands it to
                card / plannerd (selfdrive/keypad.py). Once, 0.5 s timeout, no retry - like the keypad.
-  謝謝 / 抱歉 / 臨時  rear-window captions: nothing sent from here; the PiBar's led_agent sees the hit in C4's
+  captions (謝謝 ...)  rear-window captions: nothing sent from here; the PiBar's led_agent sees the hit in C4's
                HUD stream (c3.voice) and presses the caption key itself.
   綠燈         go (moves a stopped car): only with the flag file GO_FLAG; without it display only. A false hit at
                a red light would move the car, and the road-noise false-hit rate has not been measured.
@@ -51,7 +52,10 @@ TOKEN_FILE = os.path.join(HERE, 'keypad_token')          # a copy of C4's /data/
 GO_FLAG = os.path.join(HERE, 'VOICE_GO')                 # present = 小白綠燈 really sends go
 SEND_TIMEOUT = 0.5
 CAR = {'小白加速': 'max_up', '小白減速': 'max_down', '小白綠燈': 'go'}
-LED = ('小白謝謝', '小白抱歉', '小白臨時')                # acted on by the PiBar's led_agent
+# acted on by the PiBar's led_agent. 10/26: all eight keypad captions (the touch screen's jobs went to the keypad's
+# right knob, the captions to the voice; the keypad keys stay as the backup), and 取消 turns off whichever is showing.
+LED = ('小白謝謝', '小白抱歉', '小白臨時', '小白禮讓行人', '小白救護車', '小白事故', '小白靠邊', '小白不熟')
+LED_OFF = '小白取消'
 
 
 def write_json(path, obj):
@@ -84,6 +88,8 @@ def act(tag):
     if CAR[tag] == 'go' and not os.path.exists(GO_FLAG):
       return 'display only'
     return send(CAR[tag])
+  if tag == LED_OFF:
+    return 'led off'
   return 'led' if tag in LED else ''
 
 

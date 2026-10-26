@@ -10,7 +10,9 @@
   第 4 排：C 路況不熟  D 謝謝禮讓    E 不好意思  F 臨時停車      ┘ 再按同一顆取消（led_director.MANUAL）
   左旋鈕：調 MAX —— 順時針轉 3 格 +10、逆時針 3 格 -10（沒接管時也能調＝接回時要恢復的速度，但不會接回；
           轉快會掉格（10/11 實測），所以算收到的格數；兩格隔超過 1.5 s 或轉向反過來就重算）
-  右旋鈕：不用
+  右旋鈕：網路設定頁（10/26：觸控接頭在車上不穩，原本只能用手點的那頁改用旋鈕）—— 按下＝開頁／執行框到的
+          那一項，轉＝在「返回 HUD／重新連線／各個網路」之間移動。只在 Pi 本機寫 KNOB_MENU_FILE 給 HUD，
+          不經車機；HUD 主畫面時轉動沒有作用。
 
 - 直接讀 /dev/input/eventN，不靠 python-evdev（pi 在 input 群組，讀得到）。
 - 一定要 grab 獨佔：Pi 上有 HUD 瀏覽器，不獨佔的話按鍵會打進瀏覽器。
@@ -45,6 +47,10 @@ SEND_TIMEOUT = 0.5     # s
 # 駕駛要知道下一下按鍵只會叫醒它。寫在 RAM，~/hud 放一個 symlink 讓 HUD 同源讀得到。
 STATE_FILE = "/dev/shm/keypad_state.json"
 STATE_LINK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "keypad_state.json")
+# 右旋鈕給 HUD 的網路設定頁：最近幾筆動作，HUD 每 150 ms 讀一次、只做 id 比上次大的（同樣 symlink 到 ~/hud）
+KNOB_MENU_FILE = "/dev/shm/knob_menu.json"
+KNOB_MENU_LINK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "knob_menu.json")
+KNOB_MENU_KEEP = 8
 LOG = os.path.expanduser("~/hud/keypad.log")
 LOG_MAX = 1_000_000    # bytes, then one rotation to keypad.log.1
 BT_EVERY = 30.0        # s: how often to look at BlueZ while the keyboard node is missing
@@ -76,6 +82,13 @@ KNOB = {
 }
 KNOB_STEPS = 3         # detents in one direction for one +10 / -10: one nudged by accident does nothing
 KNOB_GAP = 1.5         # s between detents before the count starts over
+
+# 右旋鈕：網路設定頁（左轉 L、按下 M、右轉 N —— 照左旋鈕 G-H-I 的排法推定，10/26 還沒逐格確認過）
+MENU_KNOB = {
+  38: "prev",        # KEY_L  逆時針
+  50: "press",       # KEY_M  按下
+  49: "next",        # KEY_N  順時針
+}
 
 KEYS = {
   2: "main_on",      # KEY_1
@@ -167,6 +180,26 @@ def led_manual(key):
   os.replace(tmp, MANUAL_FILE)
 
 
+_menu_events = []
+
+
+def knob_menu(action):
+  """右旋鈕的一下寫給 HUD（原子寫入）。pid 換了（程式重啟）HUD 就從頭數 id。"""
+  _menu_events.append([(_menu_events[-1][0] + 1) if _menu_events else 1, action])
+  del _menu_events[:-KNOB_MENU_KEEP]
+  try:
+    if not (os.path.islink(KNOB_MENU_LINK) and os.readlink(KNOB_MENU_LINK) == KNOB_MENU_FILE):
+      if os.path.lexists(KNOB_MENU_LINK):
+        os.remove(KNOB_MENU_LINK)
+      os.symlink(KNOB_MENU_FILE, KNOB_MENU_LINK)
+    tmp = KNOB_MENU_FILE + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+      json.dump({"pid": os.getpid(), "ev": _menu_events}, f)
+    os.replace(tmp, KNOB_MENU_FILE)
+  except OSError as e:
+    say(f"knob menu: {e}")
+
+
 def write_state(connected, battery=None):
   try:
     if not (os.path.islink(STATE_LINK) and os.readlink(STATE_LINK) == STATE_FILE):
@@ -225,6 +258,10 @@ def run(dev, token):
       if code in LED_KEYS:
         led_manual(LED_KEYS[code])
         say(f"led {LED_KEYS[code]}")
+        continue
+      if code in MENU_KNOB:
+        knob_menu(MENU_KNOB[code])
+        say(f"menu {MENU_KNOB[code]}")
         continue
       if code in KNOB:
         d, now = KNOB[code], time.monotonic()

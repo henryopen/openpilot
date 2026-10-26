@@ -382,7 +382,11 @@ class Director:
     return now < self.nav_want_until
 
   def manual_press(self, key, now):
-    """鍵盤按了一顆字幕鍵：同一顆在顯示中 = 取消，否則換成它、重算 MANUAL_SECS。"""
+    """鍵盤按了一顆字幕鍵：同一顆在顯示中 = 取消，否則換成它、重算 MANUAL_SECS。
+    key "off"（C3 語音「小白取消」，10/26）：不管顯示的是哪一個都關掉。"""
+    if key == "off":
+      self.manual, self.manual_until = None, 0.0
+      return
     if key not in MANUAL:
       return
     if self.manual == key and now < self.manual_until:

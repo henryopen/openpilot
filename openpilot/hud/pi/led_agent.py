@@ -137,10 +137,13 @@ class ManualKeys:
 
 
 class C3VoiceCaptions:
-  """C3 語音的字幕（c3link/c3voice.py，10/23）：小白謝謝／抱歉／臨時。C3 聽到的經 C4 的 HUD 資料流過來
+  """C3 語音的字幕（c3link/c3voice.py，10/23）：小白謝謝／抱歉／臨時；10/26 起鍵盤第 3、4 排的八個字幕全部都有，
+  另加「小白取消」關掉正在顯示的字幕（常駐的那幾個原本要再按同一顆才關）。C3 聽到的經 C4 的 HUD 資料流過來
   （c3.voice：n＝C3 累計聽到幾次、last＝最後一句、ago＝幾秒前），n 變了就是新的一次。交給跟鍵盤字幕同一個入口，
   所以再說一次同一句一樣是取消。"""
-  KEYS = {"小白謝謝": "m_thanks", "小白抱歉": "m_sorry", "小白臨時": "m_temp_stop"}
+  KEYS = {"小白謝謝": "m_thanks", "小白抱歉": "m_sorry", "小白臨時": "m_temp_stop",
+          "小白禮讓行人": "m_ped", "小白救護車": "m_ambulance", "小白事故": "m_accident",
+          "小白靠邊": "m_pull_over", "小白不熟": "m_unfamiliar", "小白取消": "off"}
   MAX_AGO = 3.0          # 秒：比這舊的不算（例如 led_agent 重啟、C3 斷線又接回時留著的那一句）
 
   def __init__(self):

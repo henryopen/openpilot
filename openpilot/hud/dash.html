@@ -263,6 +263,9 @@
     border:1px solid #24384a; border-radius:10px; padding:13px 20px; }
   .apbtn.cur { color:#7ee2a0; border-color:#2e6b45; }
   .apbtn:disabled { opacity:.45 }
+  /* 鍵盤右旋鈕框到的那一顆（10/26：觸控接頭在車上不穩，這頁改用旋鈕） */
+  #netRow button.ksel { outline:3px solid var(--cyan); outline-offset:3px; box-shadow:0 0 18px rgba(34,205,242,.55); }
+  #knobHint { position:absolute; right:18px; bottom:10px; font-size:16px; color:#5a6b7c; letter-spacing:1px; }
 
   /* 後窗 LED 鏡像：led_agent 推給控制卡的同一張 256x64 圖，駕駛在車裡看不到後窗。
      10/26 起放路面窗格左下角（正上方留給警示框）；1 倍、像素不模糊。
@@ -324,6 +327,7 @@
     <button id="reconnBtn">重新連線 WiFi</button>
     <div id="apRow"></div>
   </div>
+  <div id="knobHint">鍵盤右旋鈕：轉＝選　按＝執行</div>
 </div>
 
 <div id="dash">
@@ -352,7 +356,6 @@
     <span class="lt" id="cC3v" style="display:none"><i></i><b>C3 語音</b></span>
     <span class="lt" id="ltLed" style="display:none"><i></i><b>後窗 LED</b></span>
     <span class="lt" id="cKey" style="display:none"><i></i><b>鍵盤</b></span>
-    <span class="lt" id="cSpk" style="display:none"><i></i><b>語音</b></span>
     <span class="lt" id="ltTx" style="display:none"><i></i><b>路況</b></span>
     <span class="lt" id="ltNav" style="display:none"><i></i><b>導航</b></span>
     <span class="lt" id="netInfo" style="display:none"><i></i><b>WiFi</b></span>
@@ -958,9 +961,9 @@ function renderC3(c3){
 }
 
 /* C3 語音（c3link/c3voice.py，10/18；10/23 起會作用，接手與否都可以）：聽到的指令在畫面正中間跳 2.5 秒
-   （跟手勢／Pi 語音共用 gesBig），下面一行講結果（res）：加減速送到車機沒有、字幕、綠燈沒開只顯示。
+   （gesBig），下面一行講結果（res）：加減速送到車機沒有、字幕、綠燈沒開只顯示。
    chip 講語音有沒有在聽。n 是 C3 那邊累計聽到的次數，變了才跳。 */
-const C3V_RES={'sent':['已送出','#3ddc84'], 'led':['後窗字幕','#3ddc84'], 'display only':['只顯示（綠燈未開）','#8b9bab']};
+const C3V_RES={'sent':['已送出','#3ddc84'], 'led':['後窗字幕','#3ddc84'], 'led off':['關掉後窗字幕','#3ddc84'], 'display only':['只顯示（綠燈未開）','#8b9bab']};
 let c3vSeen=null, c3vHide=0;
 function renderC3Voice(c3){
   const chip=document.getElementById('cC3v'), big=document.getElementById('gesBig');
@@ -1583,6 +1586,60 @@ async function refreshApRow(){
 }
 refreshApRow(); setInterval(refreshApRow, 20000);
 
+// 鍵盤右旋鈕操作這一頁（Pi 本機 keypad_agent 寫的 /knob_menu.json，同源；10/26 觸控接頭在車上不穩）：
+// HUD 主畫面時按下＝開這頁（跟點 WiFi 燈一樣），轉動沒作用；這頁上轉＝在「返回 HUD／重新連線／各個網路」間移動、
+// 按下＝執行框到的那一顆（就是 click，跟手點走同一段）。開頁時框在「返回 HUD」，所以誤按一下、再按一下就回去；
+// 用旋鈕開的頁 60 秒沒動就自己回 HUD（開車時 HUD 不能一直被蓋著）。
+(()=>{
+  const sb=document.getElementById('standby');
+  let pid=null, seen=0, sel=0, knobOpen=false, lastAct=0, busy=false;
+  const shown=()=>!!sb && getComputedStyle(sb).display!=='none';
+  const items=()=>[document.getElementById('backHud'), document.getElementById('reconnBtn'),
+                   ...document.querySelectorAll('#apRow button')].filter(Boolean);
+  function mark(){
+    const its=items(); if(sel>=its.length) sel=0;
+    its.forEach((b,i)=>b.classList.toggle('ksel', shown() && i===sel));
+  }
+  function handle(a){
+    lastAct=Date.now();
+    if(!shown()){
+      if(a!=='press') return;
+      manualStandby=true;
+      showStandbyScreen('AP 設定 — 選好按「返回 HUD」','ok');
+      refreshApRow();
+      sel=0; knobOpen=true;
+      return;
+    }
+    const its=items(), n=its.length; if(!n) return;
+    if(a==='next') sel=(sel+1)%n;
+    else if(a==='prev') sel=(sel-1+n)%n;
+    else if(a==='press'){
+      const b=its[sel];
+      if(b && !b.disabled) b.click();
+      if(b && b.id==='backHud') knobOpen=false;
+    }
+  }
+  async function poll(){
+    if(busy) return; busy=true;
+    try{
+      const r=await fetch('/knob_menu.json',{cache:'no-store'});
+      if(r.ok){
+        const j=await r.json(), ev=Array.isArray(j.ev)?j.ev:[];
+        // 頁面剛載入：之前的動作不算；keypad_agent 重啟（pid 變了）：id 從頭數
+        if(j.pid!==pid){ seen = pid===null && ev.length ? ev[ev.length-1][0] : 0; pid=j.pid; }
+        ev.forEach(([id,a])=>{ if(id>seen){ seen=id; handle(a); } });
+      }
+    }catch(e){}
+    finally{ busy=false; }
+    if(knobOpen && manualStandby && Date.now()-lastAct>60000){
+      knobOpen=false; document.getElementById('backHud').click();
+    }
+    if(!shown()) knobOpen=false;
+    mark();
+  }
+  setInterval(poll, 150);
+})();
+
 /* ═════ 版面檢查：?demo=N 固定顯示第 N 組示範幀 ═════ */
 if(DEMO_FIX){ hideStandbyScreen(); startDemo(); }
 
@@ -1653,32 +1710,6 @@ if(new URLSearchParams(location.search).has('play')){
     finally{ busy=false; }
   }
   poll(); setInterval(poll, 400);
-})();
-// ---- 語音模組（Pi 本機 speech_agent 寫的 /speech_state.json，同源）。喚醒後 chip 變「🎤 在聽」，
-// 聽到指令在畫面正中間跳 2.5 秒（跟手勢共用那一塊）。
-(()=>{
-  const big=document.getElementById('gesBig'), chip=document.getElementById('cSpk');
-  let seen=null, hideAt=0, listening=false;
-  async function poll(){
-    try{
-      const r=await fetch('/speech_state.json',{cache:'no-store'});
-      if(!r.ok) throw new Error(r.status);
-      const s=await r.json();
-      // 燈號：正常＝綠、喚醒後正在聽＝青、模組沒回應＝紅
-      setLt('cSpk', !s.ok ? 'bad' : (s.awake ? 'hi' : 'ok'), s.awake && s.ok ? '語音 在聽' : '語音');
-      if(seen===null){ seen=s.seq; }
-      else if(s.seq!==seen){
-        seen=s.seq;
-        big.innerHTML='<span class="arw">🎤</span>'+(s.text||'');
-        big.classList.add('on'); hideAt=Date.now()+2500; listening=false;
-      }
-      // 喚醒後到聽到指令（或逾時）之間，畫面中間掛「在聽」：待機畫面上方那排 chip 是藏起來的
-      if(s.ok && s.awake && !hideAt){ big.innerHTML='<span class="arw">🎤</span>在聽…'; big.classList.add('on'); listening=true; }
-      else if(listening && !s.awake){ big.classList.remove('on'); listening=false; }
-    }catch(e){ setLt('cSpk', null); }
-    if(hideAt && Date.now()>hideAt){ big.classList.remove('on'); hideAt=0; }
-  }
-  poll(); setInterval(poll, 150);
 })();
 // ---- 導航卡（Pi 本機 hud_agent 讀車機 D531 NavDash 給的 /nav.json，同源）。沒在導航時整張收起來、時鐘回來。
 (()=>{
