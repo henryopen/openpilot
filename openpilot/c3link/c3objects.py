@@ -41,6 +41,9 @@ MIN_PERIOD = 0.4                   # s: at most 2.5 a second. 10/26 at 4/s with 
 CLASSES = {0: ('person', 'h', 1.65, 0.40), 1: ('bicycle', 'h', 1.60, 0.40), 3: ('motorcycle', 'h', 1.60, 0.40),
            2: ('car', 'w', 1.80, 0.35), 5: ('bus', 'w', 2.55, 0.35), 7: ('truck', 'w', 2.00, 0.35)}
 RIDERS = (1, 3)                    # bicycle / motorcycle: measured with their rider (the union of the two boxes)
+# A truck below this is called a car. 10/26, 200 unpicked frames of the 10/25 drives checked by eye: COCO's truck took
+# 15 SUVs / vans out of 36 (all <= 0.75); at 0.70, 18 of 21 real trucks stay trucks and 2 of the 15 SUVs do.
+TRUCK_MIN = 0.70
 EDGE = 4                           # px (full res): a box this close to the frame edge is cut, no distance
 
 
@@ -93,6 +96,8 @@ def detect(sess, small):
   keep = best >= thr
   res = []
   for r, s, c in zip(out[keep], best[keep], which[keep], strict=True):
+    if c == 7 and s < TRUCK_MIN:
+      c = 2
     x1, y1 = COL0 + K * r[0], ROW0 + K * (r[1] - PAD_T)
     x2, y2 = COL0 + K * r[2], ROW0 + K * (r[3] - PAD_T)
     res.append((int(c), float(s), float(x1), float(y1), float(x2), float(y2)))
