@@ -16,6 +16,17 @@ a light in 16% of the frames that had one). Now two stages, both trained / check
              haiku's (over-exposed red called yellow, countdown digits over a green called yellow).
              off / pedestrian are not passed on (the HUD shows one light: it should be ours).
 
+10/26 (the driver: "C3 cannot even read the lights fast enough to do distance - is the method too dumb?" - it was):
+  - the band is 1248 wide, centred on straight ahead (c3calib's ahead_col): only lights within 12 deg are used (C4's
+    tlwatchd / HUD), the outer 35% of the 1920 band was scanned for nothing. Custin truth set, onnxruntime: finder
+    855 -> 539 ms, front light shown 218 / 218 frames, colour right 187 -> 186, red read as go 4 -> 3, false 43 -> 40.
+  - the finder runs on the GPU from a program compiled once (compile_lights_gpu.py, ~6 min, the way openpilot's
+    compile3.py ships the driving model) instead of recompiling on every start: loads in ~4 s, 461 ms a frame, ~0.1
+    CPU cores instead of 4, identical results. The model is cut before its TopK tail (the class index there is int64,
+    which tinygrad on the Adreno got wrong - every class but the first row came back as 2.8e14 - and a sort is slow on
+    the GPU): it returns boxes + 80 class scores per anchor and the light boxes are those with class-9 score >= DET_CONF
+    (this head is NMS-free; same 46 boxes on 30 frames as the end2end export). No compiled program -> onnxruntime.
+
 Output /dev/shm/c3det/det.json as before - boxes in half-resolution coordinates, cls light_red / light_green /
 light_green_arrow (no yellow, see PASS_ON), zh, conf (the colour's probability), det (the finder's score) - for c3calib, which
 turns them into car-frame directions for C4's HUD. Only while C4 is driving (c3calib's "driving"), else idle.
@@ -33,7 +44,8 @@ import onnxruntime as ort
 from PIL import Image
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-MODEL_DET = os.environ.get('C3_DET', os.path.join(HERE, 'models/c3light_ft1n_704x1920.onnx'))
+MODEL_DET = os.environ.get('C3_DET', os.path.join(HERE, 'models/c3light_ft1n_704x1248_raw.onnx'))
+MODEL_GPU = os.environ.get('C3_GPU', os.path.join(HERE, 'models/c3light_ft1n_704x1248_raw_qcom.pkl'))
 MODEL_CLS = os.environ.get('C3_CLS', os.path.join(HERE, 'models/lightcls_64.onnx'))
 THREADS = int(os.environ.get('C3_THREADS', '4'))
 ALWAYS = os.environ.get('C3_ALWAYS', '0') == '1'      # testing: run whether or not the car is driving
@@ -41,8 +53,8 @@ OUT_DIR = '/dev/shm/c3det'
 CALIB = '/dev/shm/c3calib.json'
 FULL_W, FULL_H = 1928, 1208        # ar0231
 DISP_W, DISP_H = 964, 604          # half resolution: det.json's coordinates (c3calib's FOCAL / CX / CY)
-BAND_H, BAND_W = 704, 1920         # the finder's input; columns 4..1924 of the frame, no resize
-COL0 = (FULL_W - BAND_W) // 2
+BAND_H, BAND_W = 704, 1248         # the finder's input, no resize; columns centred on straight ahead (see the top)
+LIGHT_CLASS = 9                    # COCO 'traffic light'
 BAND_ABOVE = 690                   # rows above the horizon (full res; Custin: horizon ~912 -> rows 222-926)
 ROW0_DEFAULT = 224                 # no calibration yet
 DET_CONF = 0.15                    # Custin set, rows 224-928: 0.13 -> 84% of light frames found / 80 frames with only
@@ -73,12 +85,51 @@ def band_row0(horizon_half):
   return int(max(0, min(FULL_H - BAND_H, 2 * float(horizon_half) - BAND_ABOVE)))
 
 
+def band_col0(ahead_half):
+  """First full-res column of the band, centred on straight ahead (c3calib's ahead_col, half res), else the middle."""
+  centre = FULL_W / 2 if ahead_half is None else 2 * float(ahead_half)
+  return int(max(0, min(FULL_W - BAND_W, round(centre - BAND_W / 2))))
+
+
+class GpuFinder:
+  """The finder compiled for the Adreno once (compile_lights_gpu.py) and loaded here."""
+  def __init__(self, pkl):
+    import pickle
+    os.environ.setdefault('QCOM', '1')
+    os.environ.setdefault('IMAGE', '2')
+    os.environ.setdefault('NOLOCALS', '1')
+    os.environ.setdefault('JIT_BATCH_SIZE', '0')
+    sys.path.insert(0, '/data/openpilot/tinygrad_repo')
+    from tinygrad import Tensor
+    with open(pkl, 'rb') as f:
+      self.jit = pickle.load(f)
+    self.name = self.jit.captured.expected_names[0]
+    self.buf = np.zeros((1, 3, BAND_H, BAND_W), dtype=np.float32)
+    self.x = Tensor(self.buf, device='NPY').realize()        # wraps buf: writing into buf is the next run's input
+    self.jit(**{self.name: self.x}).numpy()
+
+  def __call__(self, x):
+    self.buf[:] = x
+    return self.jit(**{self.name: self.x}).numpy()
+
+
+def finder():
+  """(run(x) -> raw output, label): the GPU program if there is one, else onnxruntime on the CPU."""
+  if os.path.exists(MODEL_GPU):
+    try:
+      return GpuFinder(MODEL_GPU), 'GPU ' + os.path.basename(MODEL_GPU)
+    except Exception as e:  # a broken compile must not stop the lights
+      print('c3lights: GPU finder failed, using the CPU:', repr(e)[:200], flush=True)
+  sess = session(MODEL_DET)
+  name = sess.get_inputs()[0].name
+  return (lambda x: sess.run(None, {name: x})[0]), 'CPU ' + os.path.basename(MODEL_DET)
+
+
 def find(det, band):
-  """Finder on a (704, 1920, 3) uint8 RGB band -> [(x1, y1, x2, y2, score)] in band pixels, traffic lights only."""
-  x = band.transpose(2, 0, 1)[None].astype(np.float32) / 255.
-  out = det.run(None, {det.get_inputs()[0].name: x})[0][0]      # (300, 6): x1 y1 x2 y2 score class
-  keep = (out[:, 4] >= DET_CONF) & (out[:, 5].round() == 9)
-  return [tuple(float(v) for v in r[:5]) for r in out[keep]]
+  """Finder on a (704, 1248, 3) uint8 RGB band -> [(x1, y1, x2, y2, score)] in band pixels, traffic lights only."""
+  out = det(band.transpose(2, 0, 1)[None].astype(np.float32) / 255.)[0]   # (anchors, 84): x1 y1 x2 y2 + 80 scores
+  out = out[out[:, 4 + LIGHT_CLASS] >= DET_CONF][:, [0, 1, 2, 3, 4 + LIGHT_CLASS]]
+  return [tuple(float(v) for v in r) for r in out[np.argsort(-out[:, 4])]]
 
 
 def cls_input(crop):
@@ -108,13 +159,13 @@ def colours(cls, frame, boxes):
   return [cls.run(None, {name: x[None]})[0][0] for x in xs]   # the export has a fixed batch of 1
 
 
-def read(det, cls, frame, row0):
+def read(det, cls, frame, row0, col0):
   """Full-res RGB frame -> det.json boxes (half-res) and counts."""
-  band = np.ascontiguousarray(frame[row0:row0 + BAND_H, COL0:COL0 + BAND_W])
+  band = np.ascontiguousarray(frame[row0:row0 + BAND_H, col0:col0 + BAND_W])
   t0 = time.perf_counter()
   found = find(det, band)
   t1 = time.perf_counter()
-  boxes = [(x1 + COL0, y1 + row0, x2 + COL0, y2 + row0) for x1, y1, x2, y2, _ in found]
+  boxes = [(x1 + col0, y1 + row0, x2 + col0, y2 + row0) for x1, y1, x2, y2, _ in found]
   probs = colours(cls, frame, boxes)
   t2 = time.perf_counter()
   dets, dropped = [], 0
@@ -147,15 +198,15 @@ def nv12_rgb(buf, r0, r1):
 
 
 def calib_state():
-  """(driving, horizon row at half resolution or None) from c3calib."""
+  """(driving, horizon row, straight-ahead column - both half resolution or None) from c3calib."""
   try:
     with open(CALIB) as f:
       c = json.load(f)
   except (OSError, ValueError):
-    return False, None
+    return False, None, None
   if time.monotonic() - float(c.get('t', 0)) > 15:
-    return False, None
-  return bool(c.get('driving')), c.get('horizon_row')
+    return False, None, None
+  return bool(c.get('driving')), c.get('horizon_row'), c.get('ahead_col')
 
 
 def cpu_temp():
@@ -182,12 +233,14 @@ def write(state):
 
 def offline(fdir, out_path):
   import glob
-  det, cls = session(MODEL_DET), session(MODEL_CLS)
+  (det, label), cls = finder(), session(MODEL_CLS)
+  print('finder', label, flush=True)
   row0 = int(os.environ.get('ROW0', ROW0_DEFAULT))
+  col0 = int(os.environ.get('COL0', band_col0(None)))
   res = {}
   for f in sorted(glob.glob(os.path.join(fdir, '*.jpg'))):
     frame = np.asarray(Image.open(f).convert('RGB'))
-    dets, st = read(det, cls, frame, row0)
+    dets, st = read(det, cls, frame, row0, col0)
     res[os.path.basename(f)] = {'dets': dets, **st}
   json.dump(res, open(out_path, 'w'), ensure_ascii=False)
   ms = [v['det_ms'] + v['cls_ms'] for v in res.values()]
@@ -197,18 +250,18 @@ def offline(fdir, out_path):
 def main():
   from msgq.visionipc import VisionIpcClient, VisionStreamType
   os.makedirs(OUT_DIR, exist_ok=True)
-  det, cls = session(MODEL_DET), session(MODEL_CLS)
-  label = os.path.basename(MODEL_DET) + ' + ' + os.path.basename(MODEL_CLS)
+  (det, label), cls = finder(), session(MODEL_CLS)
+  label += ' + ' + os.path.basename(MODEL_CLS)
   client = VisionIpcClient('camerad', VisionStreamType.VISION_STREAM_ROAD, False)
   state = {'model': label, 'dets': [], 'n': 0, 'err': 'starting', 'idle': True, 'w': DISP_W, 'h': DISP_H}
   write(state)
-  last_check, driving, horizon = 0., False, None
+  last_check, driving, horizon, ahead = 0., False, None, None
   fps, t_last = 0., time.monotonic()
   while True:
     now = time.monotonic()
     if now - last_check > 1.:
       last_check = now
-      driving, horizon = calib_state()
+      driving, horizon, ahead = calib_state()
     if not (driving or ALWAYS):
       state.update({'dets': [], 'n': 0, 'err': '', 'idle': True, 'temp': round(cpu_temp(), 1), 'ts': round(now, 2)})
       write(state)
@@ -223,17 +276,17 @@ def main():
     if buf is None:
       time.sleep(0.02)
       continue
-    row0 = band_row0(horizon)
+    row0, col0 = band_row0(horizon), band_col0(ahead)
     rgb, r0 = nv12_rgb(buf, row0, row0 + BAND_H)
     frame = np.zeros((FULL_H, FULL_W, 3), dtype=np.uint8)      # read() crops boxes from full-frame coordinates
     frame[r0:r0 + rgb.shape[0]] = rgb
-    dets, st = read(det, cls, frame, row0)
+    dets, st = read(det, cls, frame, row0, col0)
     t_end = time.monotonic()
     dt = t_end - t_last
     t_last = t_end
     if dt > 0:
       fps = 1. / dt if fps == 0 else fps * 0.8 + 0.2 / dt
-    state.update({'dets': dets, 'n': len(dets), **st, 'fps': round(fps, 2), 'band_y0': row0 // 2,
+    state.update({'dets': dets, 'n': len(dets), **st, 'fps': round(fps, 2), 'band_y0': row0 // 2, 'band_x0': col0 // 2,
                   'temp': round(cpu_temp(), 1), 'err': '', 'idle': False, 'ts': round(now, 2)})
     write(state)
 

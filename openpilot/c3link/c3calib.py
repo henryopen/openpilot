@@ -300,6 +300,12 @@ def horizon_row(car_from_dev):
   return round(float(CY + FOCAL * ray_cam[1] / ray_cam[2]), 1) if ray_cam[2] > 0 else None
 
 
+def ahead_col(car_from_dev):
+  """Image column (half res) of straight ahead - c3lights centres its band on it (10/26: it only looks within 12 deg)."""
+  ray_cam = VIEW_FROM_DEVICE @ (car_from_dev.T @ np.array([1., 0., 0.]))
+  return round(float(CX + FOCAL * ray_cam[0] / ray_cam[2]), 1) if ray_cam[2] > 0 else None
+
+
 def main():
   sm = messaging.SubMaster(["accelerometer", "gyroscope"])
   rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -357,6 +363,7 @@ def main():
       basis, r["using"] = cal.basis()
       if basis is not None:
         r["horizon_row"] = horizon_row(basis)
+        r["ahead_col"] = ahead_col(basis)
         r["basis_rpy_deg"] = np.degrees(euler_from_rot(basis.T)).round(2).tolist()
       cal.state = r
       # a lasting record (10/23: the drive's calibration could not be checked afterwards, /dev/shm is gone)
