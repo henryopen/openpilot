@@ -552,27 +552,41 @@ def _write_json(path: Path, obj) -> None:
 
 
 NAV_RETRY_LAST = 3.0     # s：掉線後先每這麼久敲一次上次的位址（WiFi 閃一下多半還是同一個位址）
-# 10/27：導航的下一步也轉給車機（hud/server.py POST /nav，跟鍵盤同一把 token），讓 desire_helper 知道
-# 打燈那側路線要轉彎時不要換車道（selfdrive/mapd/turn_ahead.py）。只送 state 和下一步，送不到就算了。
+# 10/27：每秒把導航的下一步和亮著的手動字幕轉給車機（hud/server.py POST /nav，跟鍵盤同一把 token），
+# 讓 desire_helper 判斷打燈是轉彎還是換道（selfdrive/mapd/turn_ahead.py）；臨時停車／路況不熟的字幕亮著時
+# 打燈不判轉彎也不換道。導航只送 state 和下一步，送不到就算了。
 KEYPAD_TOKEN_FILE = Path.home() / ".keypad_token"
+LED_NOW_FILE = Path("/dev/shm/led_now.json")     # led_agent 寫的，manual_key＝亮著的手動字幕
+FORWARD_EVERY = 1.0
 
 
-def forward_nav(nav: dict) -> None:
-  host = _found
-  if not host:
-    return
-  try:
-    token = KEYPAD_TOKEN_FILE.read_text().strip()
-  except OSError:
-    return
-  body = json.dumps({"token": token, "nav": {"state": nav.get("state"), "step": nav.get("step")}}).encode("utf-8")
-  req = urllib.request.Request(f"http://{host}:{SP_HUD_PORT}/nav", data=body, method="POST",
-                               headers={"Content-Type": "application/json"})
-  try:
-    with urllib.request.urlopen(req, timeout=0.5):
+def forward_loop():
+  while True:
+    time.sleep(FORWARD_EVERY)
+    host = _found
+    if not host:
+      continue
+    try:
+      token = KEYPAD_TOKEN_FILE.read_text().strip()
+    except OSError:
+      continue
+    nav = {}
+    last = _nav_last
+    if last and time.monotonic() - float(last.get("mono", 0)) < 3:
+      n = last.get("nav") or {}
+      nav = {"state": n.get("state"), "step": n.get("step")}
+    try:
+      caption = json.loads(LED_NOW_FILE.read_text(encoding="utf-8")).get("manual_key")
+    except (OSError, ValueError, AttributeError):
+      caption = None
+    body = json.dumps({"token": token, "nav": nav, "caption": caption}).encode("utf-8")
+    req = urllib.request.Request(f"http://{host}:{SP_HUD_PORT}/nav", data=body, method="POST",
+                                 headers={"Content-Type": "application/json"})
+    try:
+      with urllib.request.urlopen(req, timeout=0.5):
+        pass
+    except Exception:
       pass
-  except Exception:
-    pass
 
 
 def nav_loop():
@@ -603,7 +617,6 @@ def nav_loop():
       fails = 0
       _nav_last = {"mono": time.monotonic(), "ip": _nav_ip, "nav": nav}
       _write_json(NAV_FILE, _nav_last)
-      forward_nav(nav)
       rv = nav.get("routeVer")
       if rv != route_ver:
         try:
@@ -624,6 +637,7 @@ def main():
   net_log(f"start: car network on {car_iface()} ({iface_map()})")   # which kernel name each card got this boot
   threading.Thread(target=discover_loop, daemon=True).start()
   threading.Thread(target=nav_loop, daemon=True).start()
+  threading.Thread(target=forward_loop, daemon=True).start()
   server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
   server.daemon_threads = True
   server.serve_forever()

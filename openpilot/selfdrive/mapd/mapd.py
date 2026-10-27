@@ -86,10 +86,13 @@ def main():
     # a turn coming on either side - OSM junctions and the phone's route - for desire_helper (see turn_ahead)
     now = time.monotonic()
     left = right = None
-    if jmap is not None and pos is not None and bearing is not None and now - pos_t < turn_ahead.FIX_FRESH_S:
+    osm_ok = jmap is not None and pos is not None and bearing is not None and now - pos_t < turn_ahead.FIX_FRESH_S
+    if osm_ok:
       left, right = jmap.turn_ahead(pos[0], pos[1], bearing, turn_ahead.REACH_M)
+    nav = turn_ahead.read_nav()
     try:
-      turn_ahead.write({"t": now, "L": left, "R": right, "nav": turn_ahead.nav_turn(turn_ahead.read_nav(), now)})
+      turn_ahead.write({"t": now, "osm": osm_ok, "L": left, "R": right, "nav": turn_ahead.nav_turn(nav, now),
+                        "caption": turn_ahead.caption_now(nav, now)})
     except OSError:
       pass
 

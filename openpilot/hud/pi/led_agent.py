@@ -269,7 +269,7 @@ def card_wifi_watch(card_down):
           (f"on air, signal {seen[0][1]} ch {seen[0][2]}" if seen else "not seen in a scan"))
 
 
-def mirror(img, key, text, card_ok, manual_left=None):
+def mirror(img, key, text, card_ok, manual_left=None, manual_key=None):
   """原子寫入（先寫暫存檔再 rename），HUD 不會讀到寫一半的圖。"""
   try:
     tmp = os.path.join(MIRROR_DIR, ".led_now.png")
@@ -277,7 +277,8 @@ def mirror(img, key, text, card_ok, manual_left=None):
     os.replace(tmp, os.path.join(MIRROR_DIR, "led_now.png"))
     tmp = os.path.join(MIRROR_DIR, ".led_now.json")
     with open(tmp, "w", encoding="utf-8") as f:
-      json.dump({"key": key, "text": text, "card": card_ok,
+      # manual_key（10/27）：亮著的手動字幕是哪一個，hud_agent 轉給車機（臨時停車／路況不熟時打燈不判轉彎也不換道）
+      json.dump({"key": key, "text": text, "card": card_ok, "manual_key": manual_key,
                  "manual": manual_left if manual_left is None or isinstance(manual_left, str)
                  else round(manual_left, 1)}, f, ensure_ascii=False)   # 秒數，或常駐字幕的 "sticky"
     os.replace(tmp, os.path.join(MIRROR_DIR, "led_now.json"))
@@ -381,7 +382,8 @@ def main():
     img = R.draw(screen, shown, car_now() or R.NO_TIME)
     if tick >= mirror_next:                        # HUD 鏡像：跟推給控制卡的是同一張圖
       mirror_next = tick + 1 / MIRROR_FPS
-      mirror(img, screen.key, text, card_ok, director.manual_left(tick))
+      left = director.manual_left(tick)
+      mirror(img, screen.key, text, card_ok, left, director.manual if left is not None else None)
 
     if led is not None and tick >= card_next:
       try:

@@ -495,27 +495,33 @@ def _produce():
           edges.update_from_model(sm["modelV2"], float(sm["carState"].vEgo))
         data["modelDataV2SP"] = {"leftLaneChangeEdgeBlock": edges.left_edge_detected,
                                  "rightLaneChangeEdgeBlock": edges.right_edge_detected}
-        # For the rear LED: what the car is about to do sideways. The lane change is the
-        # model's own state; the turn is desire_helper's condition for handing the model a
-        # turn desire, worked out from the same constants so the two cannot drift apart.
+        # For the rear LED and the HUD: what the car is about to do sideways. The lane change is the
+        # model's own state; the turn is what desire_helper decided (10/27, its TURN_HOLD_FILE): the turn
+        # desire given ('go': nav / osm / speed), a lane change held for a turn coming ('hold'), or a
+        # quiet caption (neither). Without the file (modeld not up yet) the old speed band.
         _meta = sm["modelV2"].meta
         _cs = sm["carState"]
         _one = _cs.leftBlinker != _cs.rightBlinker
-        _turning = (bool(sm["carControl"].latActive) and _one
-                    and LANE_TURN_SPEED_MIN <= float(_cs.vEgo) < LANE_TURN_SPEED_MAX)
-        # desire_helper's turn hold (10/27): a blinker over 20 km/h it took for a junction turn ('nav' / 'osm')
-        _hold = None
+        _go = _hold = None
+        _quiet = False
+        _h = None
         if _one:
           try:
             with open(TURN_HOLD_FILE) as _f:
               _h = json.load(_f)
-            _hold = _h.get("hold") if time.monotonic() - float(_h.get("t", 0)) < 60 else None
+            if time.monotonic() - float(_h.get("t", 0)) > 60:
+              _h = None
           except (OSError, ValueError, TypeError):
-            pass
+            _h = None
+        if _h is not None:
+          _go, _hold, _quiet = _h.get("go"), _h.get("hold"), bool(_h.get("quiet"))
+        else:
+          _go = "speed" if (_one and LANE_TURN_SPEED_MIN <= float(_cs.vEgo) < LANE_TURN_SPEED_MAX) else None
+        _turning = bool(sm["carControl"].latActive) and _one and bool(_go or _hold)
         data["intent"] = {"laneChangeState": str(_meta.laneChangeState),
                           "laneChangeDirection": str(_meta.laneChangeDirection),
-                          "turn": ("left" if _cs.leftBlinker else "right") if (_turning or _hold) else "",
-                          "turnHold": _hold or ""}
+                          "turn": ("left" if _cs.leftBlinker else "right") if _turning else "",
+                          "turnGo": _go or "", "turnHold": _hold or "", "quiet": _quiet}
         # The light watcher (yolo/tlwatchd.py): the OSM signal ahead, its read of the light, and
         # at a standstill whether it is finding / watching the lamps or has called the green.
         # Its file says when it was written on this device's monotonic clock; older than 1.5 s
@@ -642,8 +648,9 @@ class Handler(BaseHTTPRequestHandler):
   def do_POST(self):
     # The keypad on the PiBar - see selfdrive/keypad.py. Anyone on the hotspot can reach this
     # port, so a command has to carry the token in KEYPAD_TOKEN; without that file it is off.
-    # /nav (2026-10-27): the PiBar forwards the phone's NavDash route step, same token; written to
-    # turn_ahead.NAV_FILE with this machine's clock for mapd_bridge's turn check (display / lane change only).
+    # /nav (2026-10-27): the PiBar forwards, once a second, the phone's NavDash route step ({} when not navigating)
+    # and the rear-window caption showing (keypad / C3 voice), same token; written to turn_ahead.NAV_FILE with this
+    # machine's clock for mapd_bridge's turn / lane change check.
     if self.path not in ("/keypad", "/nav"):
       return self._status(404)
     try:
@@ -657,6 +664,7 @@ class Handler(BaseHTTPRequestHandler):
       token = str(body["token"])
       cmd = str(body["cmd"]) if self.path == "/keypad" else ""
       nav = body["nav"] if self.path == "/nav" else None
+      caption = body.get("caption") if self.path == "/nav" else None
     except (ValueError, KeyError, TypeError):
       return self._status(400)
     try:
@@ -667,12 +675,12 @@ class Handler(BaseHTTPRequestHandler):
     if not expected or not hmac.compare_digest(token, expected):
       return self._status(403)
     if self.path == "/nav":
-      if not isinstance(nav, dict):
+      if not isinstance(nav, dict) or not (caption is None or isinstance(caption, str)):
         return self._status(400)
       try:
         tmp = NAV_FILE + ".tmp"
         with open(tmp, "w", encoding="utf-8") as f:
-          json.dump({"mono": time.monotonic(), "nav": nav}, f, ensure_ascii=False)
+          json.dump({"mono": time.monotonic(), "nav": nav, "caption": caption}, f, ensure_ascii=False)
         os.replace(tmp, NAV_FILE)
       except OSError:
         return self._status(500)

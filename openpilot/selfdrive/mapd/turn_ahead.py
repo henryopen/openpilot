@@ -22,7 +22,9 @@ NAV_FILE = '/dev/shm/nav_c4.json'          # written by hud/server.py from what 
 CELL = 0.005                               # deg, ~550 m: the grid the junctions are looked up in
 LAT_M = 14.                                # a junction this far off our line is on another road
 BEHIND_M = -8.                             # just passed it (GPS lag, a wide junction) still counts
-ARM_MIN, ARM_MAX = 40, 140                 # deg off our heading: a road leaving to that side
+# deg off our heading: a road leaving to that side. 30-160 (10/27): 40-140 missed a back-right fork (144 deg) and
+# shallow slip roads; on 19 drives the wider window found 2 more turns and no more lane changes.
+ARM_MIN, ARM_MAX = 30, 160
 MAJOR = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'motorway_link', 'trunk_link',
          'primary_link', 'secondary_link', 'tertiary_link')
 NAV_MANEUVERS = ('turn', 'off_ramp', 'fork', 'roundabout', 'on_ramp')
@@ -101,6 +103,17 @@ def nav_turn(nav, now):
     if side is None:
       return None
     return side, max(0., float(step.get('dist') or 0))
+  except (TypeError, ValueError, AttributeError):
+    return None
+
+
+def caption_now(nav, now):
+  """The rear-window caption showing (keypad / C3 voice, forwarded with the route), or None."""
+  try:
+    if nav is None or now - float(nav.get('mono', 0)) > NAV_STALE_S:
+      return None
+    c = nav.get('caption')
+    return c if isinstance(c, str) else None
   except (TypeError, ValueError, AttributeError):
     return None
 
