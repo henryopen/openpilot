@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="zh-Hant-TW">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>鍵盤／語音說明</title>
+<style>
+  :root{
+    --bg:#0e1116; --card:#171c23; --line:#273040; --tx:#e8edf3; --dim:#8b98a8;
+    --blue:#3b82f6; --red:#ef4444; --green:#22c55e; --amber:#f59e0b; --cyan:#22cdf2; --violet:#a78bfa;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  html,body{margin:0;background:var(--bg);color:var(--tx);
+    font-family:"Noto Sans TC","Noto Sans CJK TC",system-ui,sans-serif;font-size:15px;line-height:1.5}
+  header{position:sticky;top:0;z-index:5;background:rgba(14,17,22,.96);backdrop-filter:blur(6px);
+    border-bottom:1px solid var(--line);padding:10px 14px 0}
+  h1{margin:0 0 8px;font-size:19px;letter-spacing:.5px}
+  h1 small{font-size:12px;color:var(--dim);font-weight:400;margin-left:6px}
+  .tabs{display:flex;gap:6px}
+  .tab{flex:1;text-align:center;padding:9px 0 10px;font-weight:700;color:var(--dim);
+    border-bottom:3px solid transparent;cursor:pointer;user-select:none}
+  .tab.on{color:var(--tx);border-color:var(--cyan)}
+  main{padding:14px 14px 40px}
+  .page{display:none}.page.on{display:block}
+  h2{font-size:14px;color:var(--dim);letter-spacing:1px;margin:18px 0 8px;font-weight:700}
+  h2:first-child{margin-top:4px}
+
+  /* ── 鍵盤實體圖 ── */
+  .pad{background:#0a0c10;border:1px solid #2b3442;border-radius:22px;padding:14px 12px 12px;
+    box-shadow:inset 0 2px 0 rgba(255,255,255,.04),0 6px 24px rgba(0,0,0,.45)}
+  .knobs{display:flex;justify-content:space-between;padding:0 10px 12px}
+  .knob{width:44%;display:flex;align-items:center;gap:10px;cursor:pointer}
+  .knob i{flex:0 0 auto;width:52px;height:52px;border-radius:50%;
+    background:radial-gradient(circle at 35% 30%,#4a5566,#1a2029 70%);border:2px solid #3a4556;position:relative}
+  .knob i:after{content:"";position:absolute;left:50%;top:5px;width:3px;height:12px;margin-left:-1.5px;
+    border-radius:2px;background:var(--c,#9aa6b4)}
+  .knob b{font-size:13px;line-height:1.3}
+  .knob span{display:block;font-size:11px;color:var(--dim);font-weight:400}
+  .knob.sel i{box-shadow:0 0 0 3px var(--cyan)}
+  .grid{display:grid;grid-template-columns:repeat(4,1fr);gap:7px}
+  .k{position:relative;aspect-ratio:1/0.92;border-radius:11px;padding:6px 6px 5px;cursor:pointer;
+    background:var(--kb,#1b222c);border:1.5px solid var(--kc,#334155);display:flex;flex-direction:column;justify-content:flex-end;
+    overflow:hidden}
+  .k em{position:absolute;top:4px;right:5px;font-style:normal;font-weight:800;font-size:13px;
+    min-width:20px;height:20px;line-height:20px;text-align:center;border-radius:6px;background:var(--kc);color:#fff}
+  .k b{font-size:12.5px;line-height:1.2;color:var(--kt,var(--tx))}
+  .k span{font-size:10px;color:var(--dim);line-height:1.2;margin-top:1px}
+  .k.sel{outline:3px solid var(--cyan);outline-offset:1px}
+  .k.car{--kc:#2563eb;--kb:#14213a}
+  .k.off{--kc:#dc2626;--kb:#2a1416}
+  .k.go{--kc:#16a34a;--kb:#11261a}
+  .k.nil{--kc:#64748b;--kb:#161b22;border-style:dashed}
+  .k.cap{--kc:#475569;--kb:#1a1f27}
+  .k.cap.r{--kt:#f87171}.k.cap.y{--kt:#fbbf24}.k.cap.g{--kt:#4ade80}
+  .row-tag{display:flex;justify-content:space-between;font-size:11px;color:var(--dim);margin:8px 2px 4px}
+  .row-tag:first-of-type{margin-top:0}
+
+  /* ── 點了之後的說明 ── */
+  .detail{margin-top:12px;background:var(--card);border:1px solid var(--line);border-left:4px solid var(--cyan);
+    border-radius:12px;padding:12px 14px;min-height:92px}
+  .detail .t{font-size:18px;font-weight:800}
+  .detail .t em{font-style:normal;font-size:13px;color:#fff;background:#334155;border-radius:6px;padding:1px 7px;margin-right:8px;vertical-align:2px}
+  .detail p{margin:6px 0 0;color:#cbd5e1}
+  .detail .hint{color:var(--dim);font-size:13px}
+
+  /* ── 清單 ── */
+  .list{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+  .it{display:flex;gap:10px;padding:10px 12px;border-top:1px solid var(--line);align-items:flex-start}
+  .it:first-child{border-top:0}
+  .it .key{flex:0 0 auto;min-width:30px;height:26px;padding:0 6px;border-radius:7px;background:#334155;color:#fff;
+    font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center}
+  .it .key.car{background:#2563eb}.it .key.off{background:#dc2626}.it .key.go{background:#16a34a}
+  .it .key.kn{background:#475569;font-size:11px}
+  .it .body{flex:1;min-width:0}
+  .it .nm{font-weight:700}
+  .it .ds{font-size:13px;color:#aab6c4}
+  .pill{display:inline-block;font-size:11px;font-weight:700;border-radius:5px;padding:0 6px;margin-left:6px;vertical-align:1px}
+  .pill.st{background:#1d4ed8;color:#fff}.pill.tm{background:#334155;color:#cbd5e1}
+  .pill.wip{background:#78350f;color:#fde68a}
+  .note{background:#1c1712;border:1px solid #4a3a1c;border-radius:12px;padding:10px 12px;margin-top:12px;font-size:13.5px;color:#e7d9bd}
+  .note li{margin:3px 0}.note ul{margin:0;padding-left:18px}
+
+  /* ── 語音 ── */
+  .wake{background:linear-gradient(135deg,#132235,#0f1a26);border:1px solid #23415f;border-radius:14px;padding:14px;text-align:center}
+  .wake .big{font-size:26px;font-weight:800;letter-spacing:2px}
+  .wake .big span{color:var(--cyan)}
+  .wake p{margin:6px 0 0;color:#9fb4c8;font-size:13px}
+  .vc{display:flex;gap:10px;padding:11px 12px;border-top:1px solid var(--line);align-items:center}
+  .vc:first-child{border-top:0}
+  .vc .say{flex:0 0 44%;font-weight:800;font-size:16px}
+  .vc .say small{display:block;font-size:11px;color:var(--dim);font-weight:400}
+  .vc .do{flex:1;font-size:13px;color:#cbd5e1}
+  .vc .do b{color:var(--tx)}
+  footer{color:#5b6777;font-size:11px;text-align:center;margin-top:22px}
+</style>
+</head>
+<body>
+<header>
+  <h1>鍵盤／語音說明<small>Custin C4 · 2026-10-27</small></h1>
+  <div class="tabs">
+    <div class="tab on" data-p="pKey">藍牙鍵盤</div>
+    <div class="tab" data-p="pVoice">C3 語音</div>
+  </div>
+</header>
+
+<main>
+<!-- ═════════════ 鍵盤 ═════════════ -->
+<section class="page on" id="pKey">
+  <h2>按鍵圖（點一下看說明）</h2>
+  <div class="pad">
+    <div class="knobs">
+      <div class="knob" data-k="kL" style="--c:#fbbf24"><i></i><b>左旋鈕<span>調 MAX ±10</span></b></div>
+      <div class="knob" data-k="kR" style="--c:#22cdf2"><i></i><b>右旋鈕<span>切右欄／網路設定</span></b></div>
+    </div>
+    <div class="row-tag"><span>第 1、2 排　控車（等於方向盤按鍵）</span></div>
+    <div class="grid">
+      <div class="k car" data-k="1"><em>1</em><b>MAIN ON</b><span>開 MAIN</span></div>
+      <div class="k off" data-k="2"><em>2</em><b>MAIN OFF</b><span>關 MAIN</span></div>
+      <div class="k car" data-k="3"><em>3</em><b>ENGAGE</b><span>接回</span></div>
+      <div class="k off" data-k="4"><em>4</em><b style="font-size:10.5px;letter-spacing:-.2px">DISENGAGE</b><span>放手</span></div>
+      <div class="k car" data-k="5"><em>5</em><b>SET −</b><span>−10／接回</span></div>
+      <div class="k car" data-k="6"><em>6</em><b>RES +</b><span>+10／接回</span></div>
+      <div class="k go" data-k="7"><em>7</em><b>起步</b><span>繼續走</span></div>
+      <div class="k nil" data-k="8"><em>8</em><b>叫醒</b><span>沒有功能</span></div>
+    </div>
+    <div class="row-tag"><span>第 3、4 排　後窗 LED 字幕（同鍵再按＝關）</span></div>
+    <div class="grid">
+      <div class="k cap r" data-k="9"><em>9</em><b>禮讓行人</b><span>常駐</span></div>
+      <div class="k cap r" data-k="0"><em>0</em><b>禮讓救護車</b><span>常駐</span></div>
+      <div class="k cap y" data-k="A"><em>A</em><b>前方事故</b><span>常駐</span></div>
+      <div class="k cap y" data-k="B"><em>B</em><b>準備靠邊</b><span>常駐</span></div>
+      <div class="k cap" data-k="C"><em>C</em><b>路況不熟</b><span>常駐</span></div>
+      <div class="k cap g" data-k="D"><em>D</em><b>謝謝禮讓</b><span>10 秒</span></div>
+      <div class="k cap" data-k="E"><em>E</em><b>不好意思</b><span>10 秒</span></div>
+      <div class="k cap y" data-k="F"><em>F</em><b>臨時停車</b><span>常駐</span></div>
+    </div>
+  </div>
+  <div class="detail" id="detail"><div class="hint">點上面任何一顆按鍵或旋鈕，這裡會顯示它的作用。</div></div>
+
+  <h2>全部按鍵一覽</h2>
+  <div class="list" id="keyList"></div>
+
+  <div class="note"><ul>
+    <li><b>每趟第一次接管</b>：先按方向盤 RES 或停著輕踩油門；之後到熄火前都能用鍵盤 3／5／6 接回。</li>
+    <li><b>鍵盤睡著</b>（閒置約 20 分鐘）時，第一、二下只會叫醒它 —— 先按 8。HUD 右上「鍵盤」燈是琥珀色＝睡著。</li>
+    <li><b>一次按一個鍵</b>，按太快會掉鍵；旋鈕轉太快也會掉格。</li>
+    <li>跟車停等時按 7 <b>不會動</b>（前車走 1 m 才放行）。</li>
+    <li>後窗字幕：常駐的要<b>再按同一顆</b>（或說「小白取消」）才會關；中途有減速、彎道、前車急煞等狀況會先插播，結束後字幕回來。</li>
+  </ul></div>
+</section>
+
+<!-- ═════════════ 語音 ═════════════ -->
+<section class="page" id="pVoice">
+  <div class="wake">
+    <div class="big"><span>小白</span>＋指令</div>
+    <p>C3 一直在聽，不用先喚醒；接不接管、停車熄火都能用。<br>HUD 中間會跳「C3 聽到 …」2.5 秒，下面一行寫結果。</p>
+  </div>
+
+  <h2>控車</h2>
+  <div class="list">
+    <div class="vc"><div class="say">小白開啟<small>＝鍵盤 1</small></div><div class="do"><b>MAIN ON</b>（開 MAIN）</div></div>
+    <div class="vc"><div class="say">小白關閉<small>＝鍵盤 2</small></div><div class="do"><b>MAIN OFF</b>（關 MAIN；接管中會一起放手）</div></div>
+    <div class="vc"><div class="say">小白接手<small>＝鍵盤 3</small></div><div class="do"><b>ENGAGE</b>：接回，上次的設定速度。每趟第一次要先按方向盤 RES 或停著輕踩油門。</div></div>
+    <div class="vc"><div class="say">小白放手<small>＝鍵盤 4</small></div><div class="do"><b>DISENGAGE</b>：放手（＝方向盤中間鍵暫停）</div></div>
+    <div class="vc"><div class="say">小白加速<small>xiǎo bái jiā sù</small></div><div class="do"><b>MAX +10</b>（同左旋鈕右轉）。MAIN 要開著；不會接回。</div></div>
+    <div class="vc"><div class="say">小白減速<small>xiǎo bái jiǎn sù</small></div><div class="do"><b>MAX −10</b>（同左旋鈕左轉）。MAIN 要開著；不會接回。</div></div>
+    <div class="vc"><div class="say">小白綠燈<small>xiǎo bái lǜ dēng</small></div><div class="do"><b>起步</b>（同鍵盤 7）<span class="pill wip">目前只顯示</span><br>等紅綠燈辨識確認準了才會真的起步。</div></div>
+  </div>
+
+  <h2>後窗 LED 字幕（再說一次同一句＝關掉）</h2>
+  <div class="list">
+    <div class="vc"><div class="say">小白謝謝<small>＝鍵盤 D</small></div><div class="do"><b>謝謝禮讓</b><span class="pill tm">10 秒</span></div></div>
+    <div class="vc"><div class="say">小白抱歉<small>＝鍵盤 E</small></div><div class="do"><b>不好意思</b>／抱歉<span class="pill tm">10 秒</span></div></div>
+    <div class="vc"><div class="say">小白臨時<small>＝鍵盤 F</small></div><div class="do"><b>臨時停車</b>／請由左側超車<span class="pill st">常駐</span></div></div>
+    <div class="vc"><div class="say">小白禮讓行人<small>＝鍵盤 9</small></div><div class="do"><b>禮讓行人</b>／請勿超車<span class="pill st">常駐</span></div></div>
+    <div class="vc"><div class="say">小白救護車<small>＝鍵盤 0</small></div><div class="do"><b>禮讓救護車</b>／請一同靠邊<span class="pill st">常駐</span></div></div>
+    <div class="vc"><div class="say">小白事故<small>＝鍵盤 A</small></div><div class="do"><b>前方事故</b>／請減速慢行<span class="pill st">常駐</span></div></div>
+    <div class="vc"><div class="say">小白靠邊<small>＝鍵盤 B</small></div><div class="do"><b>準備靠邊</b>／請小心超車<span class="pill st">常駐</span></div></div>
+    <div class="vc"><div class="say">小白不熟<small>＝鍵盤 C</small></div><div class="do"><b>路況不熟</b>／請見諒<span class="pill st">常駐</span></div></div>
+    <div class="vc"><div class="say">小白取消<small>xiǎo bái qǔ xiāo</small></div><div class="do"><b>關掉</b>目前顯示的任何字幕</div></div>
+  </div>
+
+  <div class="note"><ul>
+    <li>「小白」兩個字要清楚，後面<b>接著講</b>，中間不要停頓。</li>
+    <li>聽到的每一句 C3 都會留 4 秒錄音，認錯或沒反應可以拿來調整。</li>
+    <li>加速／減速在 MAIN 關著（或熄火待機）時沒有設定速度可改，HUD 會寫「待機中不會改速度」。</li>
+    <li>車上太吵聽不到時，鍵盤 9–F 一樣可以叫出字幕。</li>
+  </ul></div>
+</section>
+<footer>NavDash · 說明頁放在網站上（改說明不用重裝 App），沒網路時顯示 App 內建的版本 · 2026-10-27 更新</footer>
+</main>
+
+<script>
+const KEYS = {
+  '1': ['car','MAIN ON','開 MAIN。'],
+  '2': ['off','MAIN OFF','關 MAIN；接管中會一起放手。'],
+  '3': ['car','ENGAGE','接回，用上次的設定速度（＝方向盤中間鍵接回）。'],
+  '4': ['off','DISENGAGE','放手（＝方向盤中間鍵暫停）。'],
+  '5': ['car','SET −','接管中：設定速度 −10。沒接管：接回，設定速度取目前車速往上整十。'],
+  '6': ['car','RES +','接管中：設定速度 +10。沒接管：接回，用上次的設定速度。'],
+  '7': ['go','起步／繼續走','紅燈停住時起步；行進中模型莫名減速要停時按，繼續走（50 m 內有效）。跟車停等時不會動。'],
+  '8': ['','叫醒','沒有功能。鍵盤睡著時先按這顆叫醒，不會誤觸任何功能。'],
+  '9': ['','禮讓行人','後窗：禮讓行人／請勿超車。常駐，再按一次關。'],
+  '0': ['','禮讓救護車','後窗：禮讓救護車／請一同靠邊。常駐，再按一次關。'],
+  'A': ['','前方事故','後窗：前方事故／請減速慢行。常駐，再按一次關。'],
+  'B': ['','準備靠邊','後窗：準備靠邊／請小心超車。常駐，再按一次關。'],
+  'C': ['','路況不熟','後窗：路況不熟／請見諒。常駐，再按一次關。'],
+  'D': ['','謝謝禮讓','後窗：謝謝禮讓。顯示 10 秒。'],
+  'E': ['','不好意思','後窗：不好意思／抱歉。顯示 10 秒。'],
+  'F': ['','臨時停車','後窗：臨時停車／請由左側超車。常駐，再按一次關。'],
+  'kL': ['kn','左旋鈕','<b>轉</b>：順時針 3 格＝MAX +10、逆時針 3 格＝MAX −10（3 格才算一次，避免碰到就變）。沒接管也能調＝接回時恢復的速度，但不會接回。MAIN 要開著。<br><b>按下</b>：沒有功能。'],
+  'kR': ['kn','右旋鈕','<b>在 HUD 主畫面轉</b>：切換 HUD 右邊那一欄 導航 → 交通資訊 → 不顯示（逆轉反過來）。選的那個沒有內容（沒在導航、這條路沒有路況資料）時右欄會收起來，路面變寬；切換時畫面中間會跳 2 秒「右欄：…」。<br><b>在 HUD 主畫面按下</b>：打開網路設定頁（取代原本的觸控）。<br><b>在設定頁轉</b>：在「返回 HUD／重新連線 WiFi／各個網路」之間移動青色框。<br><b>在設定頁按下</b>：執行框到的那一顆。打開時框在「返回 HUD」，誤按再按一下就回去；60 秒沒動會自己回 HUD。'],
+};
+const LABEL = {kL:'左旋鈕', kR:'右旋鈕'};
+const det = document.getElementById('detail');
+function show(k){
+  const v = KEYS[k]; if(!v) return;
+  document.querySelectorAll('.k,.knob').forEach(e=>e.classList.toggle('sel', e.dataset.k===k));
+  det.innerHTML = `<div class="t">${LABEL[k]?'':`<em>${k}</em>`}${v[1]}</div><p>${v[2]}</p>`;
+}
+document.querySelectorAll('.k,.knob').forEach(e=>e.addEventListener('click', ()=>show(e.dataset.k)));
+const list = document.getElementById('keyList');
+['1','2','3','4','5','6','7','8','9','0','A','B','C','D','E','F','kL','kR'].forEach(k=>{
+  const [c,n,d] = KEYS[k];
+  const sticky = /常駐/.test(d) ? '<span class="pill st">常駐</span>' : (/10 秒/.test(d) ? '<span class="pill tm">10 秒</span>' : '');
+  list.insertAdjacentHTML('beforeend',
+    `<div class="it"><div class="key ${c}">${LABEL[k]?LABEL[k].replace('旋鈕',''):k}</div><div class="body"><div class="nm">${n}${sticky}</div><div class="ds">${d}</div></div></div>`);
+});
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click', ()=>{
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('on', x===t));
+  document.querySelectorAll('.page').forEach(p=>p.classList.toggle('on', p.id===t.dataset.p));
+  window.scrollTo(0,0);
+}));
+</script>
+</body>
+</html>
