@@ -98,16 +98,6 @@ ELEV_MIN_DEG = 0.0        # 10/25: on the Custin's dashboard (and the new finder
 REPEAT_AZ_DEG = 2.0       # a light is passed on once seen twice in a row: same colour, within this
 LIGHTS_FRESH_S = 3.0      # lights older than this are not shown (the 10/25 finder + colour runs ~1/s on C3, was 2.5/s)
 LIGHT_HOLD_S = 2.5        # one cycle without the light does not blank it: the last lights stay this long (HUD flicker)
-# c3objects (10/26): people / bicycles / motorcycles / cars / trucks / buses with a size-based distance. Passed on once
-# seen in two frames in a row (same group, bearing within OBJ_REPEAT_DEG, distance within OBJ_REPEAT_D), held
-# OBJ_HOLD_S, at most OBJ_MAX of the nearest - display only, like the lights.
-OBJS = "/dev/shm/c3obj/objs.json"
-OBJ_GROUP = {"person": "person", "bicycle": "rider", "motorcycle": "rider", "car": "vehicle", "truck": "vehicle",
-             "bus": "vehicle"}
-OBJ_REPEAT_DEG = 2.5
-OBJ_REPEAT_D = 0.25
-OBJ_HOLD_S = 1.0
-OBJ_MAX = 12
 # camera (x right, y down, z forward) from device (x forward, y right, z down)
 VIEW_FROM_DEVICE = np.array([[0., 1., 0.], [0., 0., 1.], [1., 0., 0.]])
 LOG_EVERY_S = 60.
@@ -316,31 +306,6 @@ def ahead_col(car_from_dev):
   return round(float(CX + FOCAL * ray_cam[0] / ray_cam[2]), 1) if ray_cam[2] > 0 else None
 
 
-def obj_dirs(objs, car_from_dev):
-  """c3objects boxes -> [{cls, d, az, lat, conf}]: bearing of the box centre in the car frame, lateral = d * tan(az)."""
-  out = []
-  dev_from_view = VIEW_FROM_DEVICE.T
-  for o in objs:
-    u, v = o["x"] + o["w"] / 2, o["y"] + o["h"] / 2
-    ray = car_from_dev @ (dev_from_view @ np.array([(u - CX) / FOCAL, (v - CY) / FOCAL, 1.]))
-    az = math.degrees(math.atan2(ray[1], ray[0]))
-    d = o.get("d")
-    out.append({"cls": o["cls"], "conf": o["conf"], "az": round(az, 1), "d": d,
-                "lat": None if d is None else round(d * math.tan(math.radians(az)), 2)})
-  return out
-
-
-def obj_repeat(cur, prev):
-  """The objects that were there in the previous frame too (same group, bearing and distance close)."""
-  def same(a, b):
-    if OBJ_GROUP[a["cls"]] != OBJ_GROUP[b["cls"]] or abs(a["az"] - b["az"]) > OBJ_REPEAT_DEG:
-      return False
-    if a["d"] is None or b["d"] is None:
-      return a["d"] is None and b["d"] is None
-    return abs(a["d"] - b["d"]) <= OBJ_REPEAT_D * max(a["d"], b["d"])
-  return [o for o in cur if any(same(o, q) for q in prev)]
-
-
 def main():
   sm = messaging.SubMaster(["accelerometer", "gyroscope"])
   rx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -354,7 +319,6 @@ def main():
   last_lights = None
   last_seen = 0.
   prev_frame = []
-  obj_ts, obj_prev, last_objs = None, [], ([], 0.)
   logged, last_log = None, 0.
   last_acc = last_sensord_kick = time.monotonic()
   while True:
@@ -457,23 +421,6 @@ def main():
         msg["voice"] = {"ok": False}
       if last_lights is not None and now - last_lights[2] < LIGHTS_FRESH_S:   # sends go out 2/s
         msg["lights"], msg["below"] = last_lights[0], last_lights[1]
-      try:
-        with open(OBJS) as f:
-          ob = json.load(f)
-        msg["obj_fps"], msg["obj_err"] = ob.get("fps"), ob.get("err", "")
-        if ob.get("ts") != obj_ts and basis is not None and not ob.get("idle"):
-          obj_ts = ob.get("ts")
-          cur = obj_dirs(ob.get("objs", []), basis)
-          seen = obj_repeat(cur, obj_prev)
-          obj_prev = cur
-          if seen or now - last_objs[1] > OBJ_HOLD_S:
-            last_objs = (seen, now)
-        if ob.get("idle"):
-          last_objs = ([], now)
-      except (OSError, ValueError):
-        msg["obj_err"] = "c3objects 沒有輸出"
-      if now - last_objs[1] <= OBJ_HOLD_S + 0.5:
-        msg["objs"] = sorted(last_objs[0], key=lambda o: 999 if o["d"] is None else o["d"])[:OBJ_MAX]
       try:
         tx.sendto(json.dumps(msg, ensure_ascii=False).encode(), C4)
       except OSError:
