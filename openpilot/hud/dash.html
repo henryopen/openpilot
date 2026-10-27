@@ -16,38 +16,39 @@
     -webkit-font-smoothing:antialiased}
   #dash{position:relative;width:100%;height:100%}
 
-  /* 版面（10/26 重排，使用者：「排版有點亂」）—— 固定分區，不再全部浮在路面上：
+  /* 版面（10/26 重排固定分區；10/27 使用者：「右邊導航沒開佔了一大片空白」「太集中在左側」「有些字體太小」）：
        頂部狀態列 0-36   ：左 接管狀態 chip ／ 右 時鐘＋連線燈號
-       左欄  0-262       ：車速（最大）、速限與下一個速限、設定速度、路名
-       中間  262-950     ：路面自己一個窗格；上面只放跟路有關的 —— 警示框、號誌牌、STOP、後窗 LED 鏡像
-       右欄  950-1280    ：導航卡、路況卡
-       底部資訊列 324-400 */
-  #road{position:absolute;left:262px;top:0;width:688px;height:400px;z-index:1}
+       左欄  0-262       ：車速、設定速度、路名（速限牌移到路面右側，左欄字放大）
+       中間  262-(1280-rw)：路面窗格；左上不放東西、正上方警示框、右側一欄 速限牌→STOP→號誌燈牌→C3 燈、左下 LED 鏡像
+       右欄  寬 rw=330   ：鍵盤右旋鈕切「導航／交通資訊／不顯示」；選的那個沒內容或選不顯示 → 右欄收掉（rw=0），路面撐滿
+       底部資訊列 324-400
+     全部字級 ≥16 px（10/27 前有 12-15 px 的標籤，車上看不清） */
+  :root{--rw:330px}
+  body.panehide{--rw:0px}
+  #road{position:absolute;left:262px;top:0;width:calc(1280px - 262px - var(--rw));height:400px;z-index:1}
   .ov{position:absolute;z-index:3;pointer-events:none;text-shadow:var(--sh)}
   .zone{position:absolute;z-index:2;background:#070b10}
   .ztop{left:0;right:0;top:0;height:36px;border-bottom:1px solid #16212c;background:rgba(5,9,13,.97)}
   .zleft{left:0;top:36px;width:262px;bottom:76px;border-right:1px solid #16212c}
-  .zright{right:0;top:36px;width:330px;bottom:76px;border-left:1px solid #16212c}
-  .zright .ph{position:absolute;left:0;right:0;top:118px;text-align:center;font-size:20px;font-weight:700;
-    letter-spacing:2px;color:#26333f}
-  body.infoon .zright .ph{display:none}
+  .zright{right:0;top:36px;width:var(--rw);bottom:76px;border-left:1px solid #16212c}
+  body.panehide .zright, body.panehide .infocol{display:none}
 
-  /* 左欄：車速區 */
+  /* 左欄：車速區（速限牌移走後，車速與設定速度放大） */
   .cnr{display:flex;flex-direction:column}
-  .cnrR{top:44px;left:18px;align-items:flex-start}   /* 車速 */
-  .cnrL{top:204px;left:18px;align-items:flex-start}  /* 設定速度 */
-  .cap{font-size:13px;letter-spacing:3px;color:var(--dim2);font-weight:700}
+  .cnrR{top:42px;left:18px;align-items:flex-start}   /* 車速 */
+  .cnrL{top:186px;left:18px;align-items:flex-start}  /* 設定速度 */
+  .cap{font-size:17px;letter-spacing:2px;color:var(--dim2);font-weight:700}
   .num{font-size:82px;font-weight:800;line-height:.92;font-variant-numeric:tabular-nums;
     letter-spacing:-3px;text-shadow:0 3px 16px rgba(0,0,0,.98),0 0 40px rgba(0,0,0,.85)}
-  #spdV{font-size:92px;margin-top:4px}
-  #maxV{font-size:54px;letter-spacing:-2px}
+  #spdV{font-size:112px;margin-top:2px}
+  #maxV{font-size:66px;letter-spacing:-2px}
   .num.blue{color:var(--blue)}
-  .maxrow{display:flex;align-items:baseline;gap:13px;margin-top:3px}
+  .maxrow{display:flex;align-items:baseline;gap:14px;margin-top:3px}
   /* 路名：左欄最底下一整行 */
-  #spdF{position:absolute;top:246px;left:0;width:228px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #spdF{position:absolute;top:238px;left:0;width:232px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   /* 巡航實際在追的設定速度。跟 MAX 一樣時只是附註，被路口停等之類壓下去時轉琥珀 —
      那是「車為什麼自己慢下來、慢了多少」畫面上唯一看得到的答案 */
-  .tgt{font-size:30px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--dim2);
+  .tgt{font-size:38px;font-weight:800;line-height:1;letter-spacing:-1px;color:var(--dim2);
     font-variant-numeric:tabular-nums}
   .tgt.cut{color:var(--amber)}
   /* 車機時間。路上看到怪事記一下，回來才找得到是哪一段 log。
@@ -55,36 +56,43 @@
      擠進第三個元素會讓它們隨著 tgt 的出現消失左右跳。
      暗掉＝車機時鐘還沒被 GPS/NTP 校到，那個時間對不上任何一段，不要抄 */
   /* 10/26 起放在頂部狀態列右邊、連線燈號前面 */
-  .clk{font-size:19px;font-weight:800;color:#c9d6e2;font-variant-numeric:tabular-nums;letter-spacing:.3px;
+  .clk{font-size:22px;font-weight:800;color:#c9d6e2;font-variant-numeric:tabular-nums;letter-spacing:.3px;
     margin-right:6px}
   .clk.stale{color:#41505d}
-  .sub{font-size:17px;color:var(--dim2);font-weight:600;margin-top:2px;letter-spacing:.4px}
+  .sub{font-size:21px;color:var(--dim2);font-weight:700;margin-top:2px;letter-spacing:.4px}
   .sub b{color:var(--txt);font-weight:800}
   .off .num{color:#5d7183}
 
-  /* 速限：左欄車速右邊；原始值大、下一個速限在它下面 */
-  .slbox{top:50px;left:174px;width:76px;display:flex;flex-direction:column;align-items:center;gap:8px}
-  .sl{width:74px;height:74px;border-radius:50%;background:#fbfbfb;border:7px solid #dd1f27;
-    display:flex;align-items:center;justify-content:center;font-size:33px;font-weight:800;
-    color:#0c0c0c;text-shadow:none;box-shadow:0 4px 22px rgba(0,0,0,.85)}
+  /* 路面右側一欄（10/27）：速限牌、STOP、號誌燈牌、C3 燈由上往下排、靠右對齊，沒有的不佔位。
+     原本速限牌在左欄、其他三個各自寫死 top，全擠在左邊；改成一欄後跟著右欄寬度 rw 移動。
+     號誌燈牌和 STOP 並排：三個疊起來最高會壓到底部列（燈牌字放大後會折三行） */
+  .rcol{top:44px;right:calc(var(--rw) + 12px);display:flex;flex-direction:column;align-items:flex-end;gap:8px;z-index:4}
+  .rcol .ov{position:relative;top:auto;right:auto;left:auto}
+  .rrow{display:flex;flex-direction:row;align-items:flex-start;gap:8px}
+  /* 速限：原始值大圈在最右、下一個速限在它左邊 */
+  .slbox{display:flex;flex-direction:row;align-items:center;gap:10px}
+  .sl{width:80px;height:80px;border-radius:50%;background:#fbfbfb;border:7px solid #dd1f27;
+    display:flex;align-items:center;justify-content:center;font-size:36px;font-weight:800;
+    color:#0c0c0c;text-shadow:none;box-shadow:0 4px 22px rgba(0,0,0,.85);flex:0 0 auto}
   .sl.off{filter:grayscale(1) brightness(.4)}
-  .sl.d3{font-size:26px;letter-spacing:-1px}   /* 三位數（100、110）要塞得進圈裡 */
+  .sl.d3{font-size:29px;letter-spacing:-1px}   /* 三位數（100、110）要塞得進圈裡 */
   .sl.txt{font-size:20px;letter-spacing:-.5px;filter:grayscale(1) brightness(.72)}
-  .slside{display:flex;flex-direction:column;gap:4px;font-weight:700;align-items:center}
+  .slside{display:flex;flex-direction:column;gap:4px;font-weight:700;align-items:flex-end}
   /* 速限是修正表（警政署測速點／TDX 速限牌）給的，不是 OSM 原值 */
-  .slsrc{display:none;font-size:14px;font-weight:800;letter-spacing:1px;color:#00d977;
-    padding:1px 6px;border:1px solid rgba(0,217,119,.5);border-radius:5px}
+  .slsrc{display:none;font-size:17px;font-weight:800;letter-spacing:1px;color:#00d977;
+    padding:1px 7px;border:1px solid rgba(0,217,119,.5);border-radius:5px;background:rgba(4,7,10,.8)}
   .slsrc.on{display:block}
-  .slnx{display:none;flex-direction:column;align-items:center;gap:2px;font-size:19px;color:var(--amber)}
+  .slnx{display:none;flex-direction:column;align-items:center;gap:2px;font-size:22px;color:var(--amber);
+    padding:2px 6px;border-radius:8px;background:rgba(4,7,10,.75);font-variant-numeric:tabular-nums}
   .slnx.on{display:flex}
-  .slnx .nxt{font-size:13px;font-weight:800;letter-spacing:1.5px;opacity:.8}
+  .slnx .nxt{font-size:17px;font-weight:800;letter-spacing:1px}
   .slnx .v{background:#fbfbfb;color:#0c0c0c;border:4px solid #dd1f27;border-radius:50%;
     width:46px;height:46px;display:flex;align-items:center;justify-content:center;
     font-size:21px;font-weight:800;text-shadow:none}
 
   /* 狀態 chips：頂部狀態列左邊一排（接管、縱向來源、雷達、速限調整、實驗模式、路口交接） */
-  .chips{top:5px;left:10px;display:flex;flex-direction:row;align-items:center;gap:6px;z-index:4}
-  .chip{padding:2px 11px;border-radius:5px;font-size:16px;font-weight:800;letter-spacing:.4px;line-height:22px;
+  .chips{top:4px;left:10px;display:flex;flex-direction:row;align-items:center;gap:6px;z-index:4}
+  .chip{padding:1px 10px;border-radius:5px;font-size:18px;font-weight:800;letter-spacing:.3px;line-height:24px;
     background:rgba(6,11,16,.82);border:1px solid var(--line);color:var(--dim2);text-shadow:none;white-space:nowrap}
   .chip.on{color:var(--green);border-color:rgba(47,212,90,.5);background:rgba(47,212,90,.12)}
   .chip.cy{color:var(--cyan);border-color:rgba(34,205,242,.45);background:rgba(34,205,242,.1)}
@@ -105,7 +113,7 @@
      experimentalMode（9/14 三趟 34669 幀該旗標全程 0%，這個圖示照亮）。9/15 加了文字
      標籤還是不夠：只要那個圖示在，畫面就在回答「是不是實驗模式」這個問題，而它答錯。
      駕駛要的是一眼分辨，所以留文字、不留圖。 */
-  .handoff{display:none;align-items:center;padding:2px 11px;line-height:22px;border:1px solid var(--amber);
+  .handoff{display:none;align-items:center;padding:1px 10px;line-height:24px;border:1px solid var(--amber);
     border-radius:5px;background:rgba(0,0,0,.55)}
 
   /* 實驗模式。2026-09-16 加回來，條件是 selfdriveState.experimentalMode 本身 —— 也就是
@@ -113,24 +121,24 @@
      計畫進 min()），所以以前共用一個圖示，結果畫面在回答「是不是實驗模式」而答錯：
      9/16 那趟 116 分鐘，experimentalMode 全程 0%，路口交接卻武裝了 73 次 329 秒。
      現在兩個各自顯示、顏色不同，同時亮也分得出來。 */
-  .expm{display:none;align-items:center;padding:2px 11px;line-height:22px;border:1px solid var(--blue);
+  .expm{display:none;align-items:center;padding:1px 10px;line-height:24px;border:1px solid var(--blue);
     border-radius:5px;background:rgba(0,0,0,.55)}
   .expm.on{display:flex}
-  .exlbl{font-size:16px;font-weight:800;color:var(--blue);letter-spacing:.5px}
-  .hflbl{font-size:16px;font-weight:800;color:var(--amber);letter-spacing:.5px;
+  .exlbl{font-size:18px;font-weight:800;color:var(--blue);letter-spacing:.5px}
+  .hflbl{font-size:18px;font-weight:800;color:var(--amber);letter-spacing:.5px;
     white-space:nowrap;text-shadow:0 0 8px rgba(0,0,0,.9);
     animation:hfpulse 1.6s ease-in-out infinite}
   .handoff.on{display:flex}
   @keyframes hfpulse{0%,100%{opacity:1}50%{opacity:.55}}
   @media (prefers-reduced-motion: reduce){ .hflbl{animation:none} }
 
-  /* 號誌燈牌、C3 看到的燈、STOP：路面窗格右側一欄（x 748-938），避開中線上的前車標記 */
-  .lit{top:172px;right:342px;max-width:190px;display:none;align-items:flex-start;gap:9px;
+  /* 號誌燈牌、C3 看到的燈、STOP：在路面右側那一欄（.rcol）裡，避開中線上的前車標記 */
+  .lit{max-width:232px;display:none;align-items:flex-start;gap:9px;
     padding:6px 13px 6px 9px;border-radius:8px;background:rgba(8,12,16,.82);
     border:1px solid rgba(255,255,255,.10)}
   .lit.on{display:flex}
-  .lit .dot{width:17px;height:17px;border-radius:50%;flex:0 0 auto;margin-top:3px}
-  .lit .txt{font-size:18px;font-weight:800;letter-spacing:.3px;line-height:1.25}
+  .lit .dot{width:19px;height:19px;border-radius:50%;flex:0 0 auto;margin-top:4px}
+  .lit .txt{font-size:22px;font-weight:800;letter-spacing:.3px;line-height:1.25;word-break:keep-all}
   .lit.red .dot{background:#ff2f2f;box-shadow:0 0 18px #ff2f2f} .lit.red .txt{color:#ff5c5c}
   .lit.amber .dot{background:#ffbe00;box-shadow:0 0 18px #ffbe00} .lit.amber .txt{color:#ffbe00}
   .lit.green .dot,.lit.arrow .dot{background:#00d977;box-shadow:0 0 18px #00d977}
@@ -152,16 +160,17 @@
   .tcard.warn{border-color:rgba(255,190,0,.75)} .tcard.warn .bd{color:#ffbe00}
   .tcard.slow{border-color:rgba(255,122,26,.75)} .tcard.slow .bd{color:#ff9a4d}
   .tcard.ok .bd{color:#9fe0b8}
-  /* 右欄：導航卡＋路況卡上下疊，誰沒有誰收起來；都沒有時右欄顯示淡字提示 */
+  /* 右欄：鍵盤右旋鈕選「導航」只放導航卡、選「交通資訊」只放路況卡（10/27）；選的那張沒內容右欄就收掉 */
+  body.pm-nav .tcard, body.pm-traffic .nav{display:none}
   .infocol{position:absolute;z-index:3;left:962px;top:46px;width:306px;display:flex;flex-direction:column;gap:8px;
     pointer-events:none}
 
   /* 連線燈號列（10/26 使用者：「有沒有連線的文字改用燈號」）。每顆燈都帶短標籤，不只靠顏色：
      綠＝正常、琥珀＝半正常（睡著／資料舊／粗標定）、紅＝斷線／沒回應、青＝語音正在聽。
      沒裝或沒在跑的模組整顆不顯示（跟以前的 chip 一樣），C3／路況這種「該在卻不在」的才亮紅 */
-  .stat{right:10px;top:5px;display:flex;align-items:center;gap:6px;pointer-events:none;z-index:4}
-  .lt{display:inline-flex;align-items:center;gap:6px;padding:2px 10px 2px 8px;line-height:22px;border-radius:13px;
-    background:rgba(10,16,22,.9);border:1px solid #1c2934;font-size:15px;font-weight:700;color:#a9bccd;
+  .stat{right:10px;top:4px;display:flex;align-items:center;gap:6px;pointer-events:none;z-index:4}
+  .lt{display:inline-flex;align-items:center;gap:6px;padding:1px 9px 1px 8px;line-height:24px;border-radius:13px;
+    background:rgba(10,16,22,.9);border:1px solid #1c2934;font-size:17px;font-weight:700;color:#b9cbdb;
     white-space:nowrap;text-shadow:none}
   .lt i{width:11px;height:11px;border-radius:50%;flex:0 0 auto;background:#55636f}
   .lt.ok i{background:#2fd45a;box-shadow:0 0 7px rgba(47,212,90,.9)}
@@ -169,40 +178,53 @@
   .lt.bad i{background:#ff3b3b;box-shadow:0 0 8px rgba(255,59,59,1)} .lt.bad{color:#ff8a8a;border-color:rgba(255,59,59,.45)}
   .lt.hi i{background:var(--cyan);box-shadow:0 0 8px var(--cyan)} .lt.hi{color:#8fe6f8}
   /* 點了進網路設定（待機畫面選 AP），跟以前左上角那行字一樣；外觀跟其他燈一樣，按的範圍用透明外框放大 */
-  .stat #netInfo{pointer-events:auto;position:relative;padding:2px 10px 2px 8px;margin:0}
+  .stat #netInfo{pointer-events:auto;position:relative;padding:1px 9px 1px 8px;margin:0}
   .stat #netInfo::after{content:"";position:absolute;inset:-12px -8px}
   /* C3（USB 連線的第二台）自己標定後看到的燈：只顯示；在號誌燈牌下面 */
-  .c3l{top:236px;right:342px;max-width:190px;display:none;align-items:center;gap:9px;
+  .c3l{max-width:250px;display:none;align-items:center;gap:9px;
     padding:5px 12px 5px 9px;border-radius:8px;background:rgba(8,12,16,.82);
     border:1px solid rgba(255,255,255,.10)}
   .c3l.on{display:flex}
-  .c3l .txt{font-size:16px;font-weight:700;letter-spacing:.3px;line-height:1.25;color:#8b9bab}
+  .c3l .txt{font-size:20px;font-weight:700;letter-spacing:.3px;line-height:1.25;color:#8b9bab;word-break:keep-all}
   .c3l.red .txt{color:#ff5c5c} .c3l.green .txt{color:#00d977} .c3l.amber .txt{color:#ffbe00}
   .c3l.hot{border-color:#ff7a1a} .c3l.hot .txt{color:#ff9a4d}
 
+  /* 路面左側的暫時說明 chip（打燈判斷、速限調整），在 LED 鏡像標籤上面 */
+  .tchips{left:274px;top:150px;display:flex;flex-direction:column;align-items:flex-start;gap:6px;z-index:4}
+  .tchips .chip{font-size:20px;line-height:28px;padding:1px 12px;background:rgba(6,11,16,.9)}
+  .tchips .chip.cy{background:rgba(6,30,38,.92)}
+
+  /* 右欄切換提示：轉旋鈕後在路面正中間顯示 2 秒 */
+  #paneToast{left:calc((262px + 1280px - var(--rw)) / 2);top:150px;transform:translateX(-50%);display:none;z-index:6;
+    padding:10px 26px;border-radius:12px;background:rgba(8,14,20,.94);border:2px solid var(--cyan);
+    font-size:30px;font-weight:800;color:#eef4fa;white-space:nowrap;text-shadow:none}
+  #paneToast.on{display:block}
+  #paneToast small{display:block;font-size:20px;font-weight:700;color:var(--dim2);text-align:center;margin-top:2px}
+
   /* 停止標誌 */
-  .stop{top:90px;right:342px;display:none;flex-direction:column;align-items:center}
+  .stop{display:none;flex-direction:column;align-items:center}
   .stop.on{display:flex}
   .stop.soon .oct{background:var(--amber)}
-  .oct{width:52px;height:52px;background:#dd1f27;color:#fff;font-size:15px;font-weight:900;
+  .oct{width:56px;height:56px;background:#dd1f27;color:#fff;font-size:16px;font-weight:900;
     clip-path:polygon(30% 0,70% 0,100% 30%,100% 70%,70% 100%,30% 100%,0 70%,0 30%);
     display:flex;align-items:center;justify-content:center;box-shadow:0 0 26px rgba(221,31,39,.8)}
-  .oct-d{margin-top:5px;font-size:24px;font-weight:800;color:#ff6b6b;font-variant-numeric:tabular-nums}
+  .oct-d{margin-top:4px;font-size:26px;font-weight:800;color:#ff6b6b;font-variant-numeric:tabular-nums}
 
   /* 警示／事件訊息：有訊息才出現，依 alertStatus 變色 */
-  /* 路面窗格（262-950）正上方置中 */
-  .alertbox{left:606px;transform:translateX(-50%);top:44px;max-width:676px;
-    padding:7px 22px;border-radius:8px;display:none;align-items:baseline;gap:9px;
-    background:rgba(7,11,16,.93);border:1.5px solid #26333f;text-align:center;z-index:5;
-    white-space:nowrap;overflow:hidden}
+  /* 路面窗格左緣到右側那一欄（速限牌約 190 px 寬）之間置中；一行放得下就一行（遮住遠方前車越少越好），放不下原因折到第二行。
+     中心 x＝(274 + 右界)/2，右界＝1280 − rw − 12 − 190 − 12 */
+  .alertbox{--ar:calc(1280px - var(--rw) - 214px);left:calc((274px + var(--ar)) / 2);transform:translateX(-50%);top:44px;
+    max-width:calc(var(--ar) - 274px);
+    padding:6px 20px 7px;border-radius:8px;display:none;flex-flow:row wrap;justify-content:center;align-items:baseline;column-gap:12px;
+    background:rgba(7,11,16,.93);border:1.5px solid #26333f;text-align:center;z-index:5;overflow:hidden}
   .alertbox.on{display:flex}
   .alertbox.warn{border-color:rgba(255,140,26,.8);background:rgba(38,21,4,.94)}
   .alertbox.crit{border-color:rgba(255,45,45,.95);background:rgba(46,7,7,.95);
     animation:acrit .55s infinite alternate}
   @keyframes acrit{from{box-shadow:0 0 0 rgba(255,45,45,0)}to{box-shadow:0 0 26px rgba(255,45,45,.6)}}
-  .a1{font-size:23px;font-weight:800;letter-spacing:.3px}
-  .a2{font-size:16px;color:#a9bccd;font-weight:600}
-  .a2:not(:empty)::before{content:"·";margin-right:9px;color:#55697c}
+  .a1{font-size:27px;font-weight:800;letter-spacing:.3px;white-space:nowrap}
+  .a2{font-size:21px;color:#c3d1dd;font-weight:700;line-height:1.25;min-width:0}
+  .a2:empty{display:none}
   .alertbox.warn .a1{color:var(--amber)} .alertbox.crit .a1{color:#ff6b6b}
   @media (prefers-reduced-motion: reduce){ .alertbox.crit{animation:none} }
 
@@ -210,7 +232,7 @@
   .bsd{position:absolute;top:36px;bottom:76px;width:96px;z-index:2;opacity:0;transition:opacity .1s}
   .bsd.on{opacity:1}
   .bsdL{left:262px;background:linear-gradient(90deg,rgba(255,45,45,.45),rgba(255,45,45,0))}
-  .bsdR{right:330px;background:linear-gradient(270deg,rgba(255,45,45,.45),rgba(255,45,45,0))}
+  .bsdR{right:var(--rw);background:linear-gradient(270deg,rgba(255,45,45,.45),rgba(255,45,45,0))}
 
   /* 底部資訊列：疊加、漸層淡入，不是實體分隔區 */
   .bar{position:absolute;left:0;right:0;bottom:0;height:76px;display:flex;z-index:3;
@@ -220,17 +242,17 @@
      縱向那格推到 274px 才開始，而縱向自己放不下來源標籤，溢出 35px 被隔壁的數字蓋掉。
      量出來的需求是 175/386/165/231/248，總和 1205 < 1280，剩下的都給油量那格。 */
   .m{flex:0 0 auto;min-width:0;display:flex;flex-direction:column;justify-content:flex-end;
-    padding:0 18px 9px;position:relative}
+    padding:0 16px 8px;position:relative}
   .m:nth-child(1){flex-basis:175px}
   .m:nth-child(2){flex-basis:386px}
   .m:nth-child(3){flex-basis:165px}
   .m:nth-child(4){flex-basis:231px}
   .m:nth-child(5){flex:1 1 auto}
   .m+.m::before{content:"";position:absolute;left:0;bottom:12px;width:1px;height:26px;background:#16212c}
-  .m .k{font-size:12px;letter-spacing:1.3px;color:var(--dim);white-space:nowrap;font-weight:600}
+  .m .k{font-size:16px;letter-spacing:.8px;color:var(--dim2);white-space:nowrap;font-weight:700}
   .m .v{font-size:35px;font-weight:800;font-variant-numeric:tabular-nums;line-height:1.05;
     white-space:nowrap;text-shadow:var(--sh)}
-  .m .v u{text-decoration:none;font-size:12.5px;color:var(--dim2);font-weight:600;margin-left:3px}
+  .m .v u{text-decoration:none;font-size:17px;color:var(--dim2);font-weight:600;margin-left:3px}
   /* 加速上限來源要在行進間瞄一眼就讀到，單位不用 - 所以只放大這個 */
   .m .v u.src{font-size:22px;margin-left:7px}
   /* 浮筒讀數是拿來對照主數字的參考值，不是主角 —— 跟來源標籤同級
@@ -265,7 +287,7 @@
   .apbtn:disabled { opacity:.45 }
   /* 鍵盤右旋鈕框到的那一顆（10/26：觸控接頭在車上不穩，這頁改用旋鈕） */
   #netRow button.ksel { outline:3px solid var(--cyan); outline-offset:3px; box-shadow:0 0 18px rgba(34,205,242,.55); }
-  #knobHint { position:absolute; right:18px; top:12px; font-size:16px; color:#5a6b7c; letter-spacing:1px; }
+  #knobHint { position:absolute; right:18px; top:12px; font-size:20px; color:#5a6b7c; letter-spacing:1px; }
 
   /* 後窗 LED 鏡像：led_agent 推給控制卡的同一張 256x64 圖，駕駛在車裡看不到後窗。
      10/26 起放路面窗格左下角（正上方留給警示框）；1 倍、像素不模糊。
@@ -273,11 +295,11 @@
   .ledm{top:246px;left:272px;width:256px;height:64px;image-rendering:pixelated;
     border:1px solid #1d2a36;border-radius:3px;background:#000;display:none;z-index:4}
   .ledm.on{display:block}
-  .ledtag{top:228px;left:272px;width:256px;text-align:left;font-size:12px;font-weight:700;
+  .ledtag{top:222px;left:272px;width:520px;text-align:left;font-size:16px;font-weight:700;
     letter-spacing:1px;color:#5f7488;display:none;z-index:4}
   .ledtag.on{display:block}
   /* 手動字幕（鍵盤第 3、4 排）顯示中：標籤變青色並倒數，鏡像加青框 —— 駕駛知道屏上是自己按的字 */
-  .ledtag.man{color:var(--cyan);font-size:14px}
+  .ledtag.man{color:var(--cyan)}
   .ledm.man{border:2px solid var(--cyan)}
 
   /* 導航卡（2026-10-20）：車機 D531 上 NavDash（Google 導航）的結果，Pi 的 hud_agent 每秒讀一次給 /nav.json。
@@ -295,8 +317,8 @@
   .nav .hd{display:flex;align-items:baseline;gap:8px;font-size:20px;font-weight:700;color:#cfe3f2;white-space:nowrap}
   .nav .hd .dst{overflow:hidden;text-overflow:ellipsis;min-width:0;flex:1 1 auto}
   .nav .hd .eta{flex:0 0 auto;font-size:24px;font-weight:800;color:var(--txt);font-variant-numeric:tabular-nums}
-  .nav .hd .eta small{font-size:16px;color:var(--dim2);margin-left:2px}
-  .nav .hd .km{flex:0 0 auto;font-size:18px;color:var(--dim2);font-variant-numeric:tabular-nums}
+  .nav .hd .eta small{font-size:18px;color:var(--dim2);margin-left:2px}
+  .nav .hd .km{flex:0 0 auto;font-size:20px;color:var(--dim2);font-variant-numeric:tabular-nums}
   .nav.stale .hd .eta{color:var(--amber)}
   .nav .r1{display:flex;align-items:center;gap:10px}
   .nav svg.arw{width:64px;height:64px;flex:0 0 auto}
@@ -310,7 +332,7 @@
     display:flex;align-items:center;justify-content:center}
   .nav .ln.rec{border-color:var(--cyan);background:rgba(34,205,242,.16)}
   .nav .ln svg{width:23px;height:23px}
-  .nav .nx{font-size:19px;color:var(--dim2);font-weight:700;white-space:nowrap}
+  .nav .nx{font-size:21px;color:var(--dim2);font-weight:700;white-space:nowrap}
   .nav .nx b{color:#cfe3f2}
   .nav .nx svg{width:20px;height:20px;vertical-align:-3px}
 </style>
@@ -339,15 +361,13 @@
   <!-- 分區底色 -->
   <div class="zone ztop"></div>
   <div class="zone zleft"></div>
-  <div class="zone zright"><div class="ph">未導航</div></div>
+  <div class="zone zright"></div>
 
   <!-- 頂部狀態列：左 接管狀態，右 時鐘＋連線燈號（<b> 是標籤，<i> 是燈） -->
   <div class="ov chips">
     <span class="chip on" id="cEng">ENGAGED</span>
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip cy" id="cRad">雷達確認 2</span>
-    <span class="chip wait" id="cSLA" style="display:none"></span>
-    <span class="chip cy" id="cTurn" style="display:none"></span>
     <div class="expm" id="exBox"><span class="exlbl">實驗模式</span></div>
     <div class="handoff" id="hfBox"><span class="hflbl">路口交接</span></div>
   </div>
@@ -367,13 +387,6 @@
     <div class="cap">車速 km/h</div>
     <div class="num" id="spdV">54</div>
     <div class="sub" id="spdF">—</div>
-  </div>
-  <div class="ov slbox">
-    <div class="sl" id="sl">--</div>
-    <div class="slside">
-      <div class="slsrc" id="slSrc">官方</div>
-      <div class="slnx" id="slNx"><span class="nxt">接著</span><span class="v" id="slNxV">--</span><span id="slNxD">--</span></div>
-    </div>
   </div>
   <div class="ov cnr cnrL" id="paneL">
     <div class="cap">設定速度</div>
@@ -397,10 +410,29 @@
   <img class="ov ledm" id="ledMir" alt="">
   <div class="ov ledtag" id="ledTag">後窗 LED</div>
 
-  <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
-  <div class="ov c3l" id="c3Box"><span class="txt" id="c3Txt">—</span></div>
-
-  <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
+  <!-- 路面左側：只在有事時出現的說明（打燈的轉彎／換道判斷、速限調整了設定速度）。10/27 從頂部列搬下來，
+       頂部列只放常駐狀態，字放大後才不會跟右邊的燈號撞在一起 -->
+  <div class="ov tchips">
+    <span class="chip cy" id="cTurn" style="display:none"></span>
+    <span class="chip wait" id="cSLA" style="display:none"></span>
+  </div>
+  <!-- 路面右側一欄：速限牌（下一個速限在它左邊）→ 號誌燈牌＋STOP 並排 → C3 燈，沒有的不佔位 -->
+  <div class="ov rcol" id="rCol">
+    <div class="slbox">
+      <div class="slside">
+        <div class="slsrc" id="slSrc">官方</div>
+        <div class="slnx" id="slNx"><span class="nxt">接著</span><span class="v" id="slNxV">--</span><span id="slNxD">--</span></div>
+      </div>
+      <div class="sl" id="sl">--</div>
+    </div>
+    <div class="rrow">
+      <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
+      <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
+    </div>
+    <div class="ov c3l" id="c3Box"><span class="txt" id="c3Txt">—</span></div>
+  </div>
+  <!-- 鍵盤右旋鈕切右欄時，在路面中間講現在切到哪一個 -->
+  <div class="ov" id="paneToast"></div>
 
 
   <div class="bar">
@@ -437,10 +469,31 @@ function setLt(id, st, label){
   el.style.display=''; el.className='lt '+st;
   if(label!==undefined){ const b=el.querySelector('b'); if(b && b.textContent!==label) b.textContent=label; }
 }
-/* 左上資訊欄有卡片時，警示框往右讓 */
+/* 右欄（10/27 使用者：「右邊導航沒開佔了一大片空白」「右鍵旋轉…切換導航面板，可以切交通資訊跟導航還有不顯示」）：
+   PANE＝'nav' 只放導航卡、'traffic' 只放路況卡、'off' 不顯示。選的那張沒有內容（沒在導航／這條路沒路況資料）
+   右欄也收掉，路面窗格往右撐滿（畫布寬度跟著改，比例尺用同一個公式）。選擇記在 localStorage，重開頁面還在。 */
+const PANES=['nav','traffic','off'], PANE_NAME={nav:'導航', traffic:'交通資訊', off:'不顯示'};
+let PANE = PANES.includes(localStorage.getItem('hudPane')) ? localStorage.getItem('hudPane') : 'nav';
+function paneHasContent(){
+  return PANE==='nav' ? $('navCard').classList.contains('on')
+       : PANE==='traffic' ? $('trafCard').classList.contains('on') : false;
+}
 function updateInfoCol(){
-  const on = $('navCard').classList.contains('on') || $('trafCard').classList.contains('on');
-  document.body.classList.toggle('infoon', on);
+  const b=document.body;
+  PANES.forEach(k=>b.classList.toggle('pm-'+k, k===PANE));
+  b.classList.toggle('panehide', !paneHasContent());
+  fitRoad();
+}
+let paneToastT=null;
+function cyclePane(step){
+  PANE = PANES[(PANES.indexOf(PANE)+step+PANES.length)%PANES.length];
+  try{ localStorage.setItem('hudPane', PANE); }catch(e){}
+  updateInfoCol();
+  const why = PANE==='off' ? '' : paneHasContent() ? '' : (PANE==='nav' ? '目前沒在導航，先收起來' : '這條路目前沒有路況資料，先收起來');
+  const t=$('paneToast');
+  t.innerHTML = '右欄：'+PANE_NAME[PANE] + (why ? `<small>${why}</small>` : '');
+  t.classList.add('on');
+  clearTimeout(paneToastT); paneToastT=setTimeout(()=>t.classList.remove('on'), 2200);
 }
 function applyBsd(F){
   $('bsdL').classList.toggle('on', !!F.bsdL);
@@ -452,7 +505,14 @@ const cv=document.getElementById('road'), cx=cv.getContext('2d');
 let W=cv.width; const H=cv.height, EGO_Y=H-76, VP_Y=42;   // = 底部資訊列頂端，路面與它切齊
 let SAMPLE_D=[0,5,10,15,20,25,30,40,50,60,75,90,110];
 const DMAX=100, MPP_BASE=85, W_BASE=1280;
-const MPP=MPP_BASE*W/W_BASE;   // 路面窗格 688 px（10/26 版面），比例尺跟著縮、路面佔比不變
+let MPP=MPP_BASE*W/W_BASE;   // 比例尺跟著路面窗格寬度縮放、路面佔比不變（右欄開著 688 px、收起來 1018 px）
+// 畫布寬度跟著 CSS 的路面窗格寬度走（右欄開／收）。只在寬度真的變了才改 —— 改 canvas.width 會清空畫面，
+// 下一個 rAF 會重畫
+function fitRoad(){
+  const w=Math.round(cv.getBoundingClientRect().width);
+  if(w>0 && w!==cv.width){ cv.width=w; W=w; MPP=MPP_BASE*W/W_BASE; }
+}
+updateInfoCol();   // 一載入就套用上次選的右欄（不等導航／路況第一次回來）
 function proj(d){ const t=Math.min(Math.max(d,0)/DMAX,1);
   return { y: EGO_Y-(EGO_Y-VP_Y)*Math.pow(t,0.55), s: 1-0.72*Math.pow(t,0.46) }; }
 function px(d,y){ const p=proj(d); return { x: W/2 + y*MPP*p.s, y:p.y, s:p.s }; }  // device frame: 右為正
@@ -717,7 +777,8 @@ function renderTL(tl, la){
   box.className='ov lit on '+cls;
   // 10/25：燈色改由 C3 判（C4 不再跑看燈模型），C3 沒資料時才退回 C4 自己的 → 標出這次是誰判的
   const src = tl.src==='c3' ? '・C3' : '';
-  document.getElementById('litTxt').textContent=txt+src+(tl.mode==='approach'?act:'');
+  // 字放大後會折行：CSS 用 keep-all 不在字中間斷，「・」後面補零寬空白讓它可以在那裡換行（10/27）
+  document.getElementById('litTxt').textContent=(txt+src+(tl.mode==='approach'?act:'')).replace(/・/g, '・\u200b');
 }
 
 /* TDX 即時路況：前方 3 km 內的事故／施工（同方向）最優先，其次前方慢路段，再來是本段車速。
@@ -776,7 +837,7 @@ function renderC3(c3){
     if((c3.temp||0)>=85){ cls='hot'; txt+=`・C3 ${Math.round(c3.temp)}°C`; }
   }
   box.className='ov c3l on '+cls;
-  document.getElementById('c3Txt').textContent=txt;
+  document.getElementById('c3Txt').textContent=txt.replace(/・/g, '・\u200b');   // 同號誌燈牌：只在「・」與空白處換行
 }
 
 /* C3 語音（c3link/c3voice.py，10/18；10/23 起會作用，接手與否都可以）：聽到的指令在畫面正中間跳 2.5 秒
@@ -1417,7 +1478,7 @@ async function refreshApRow(){
 refreshApRow(); setInterval(refreshApRow, 20000);
 
 // 鍵盤右旋鈕操作這一頁（Pi 本機 keypad_agent 寫的 /knob_menu.json，同源；10/26 觸控接頭在車上不穩）：
-// HUD 主畫面時按下＝開這頁（跟點 WiFi 燈一樣），轉動沒作用；這頁上轉＝在「返回 HUD／重新連線／各個網路」間移動、
+// HUD 主畫面時按下＝開這頁（跟點 WiFi 燈一樣），轉動＝切右欄（10/27，見 cyclePane）；這頁上轉＝在「返回 HUD／重新連線／各個網路」間移動、
 // 按下＝執行框到的那一顆（就是 click，跟手點走同一段）。開頁時框在「返回 HUD」，所以誤按一下、再按一下就回去；
 // 用旋鈕開的頁 60 秒沒動就自己回 HUD（開車時 HUD 不能一直被蓋著）。
 (()=>{
@@ -1433,6 +1494,8 @@ refreshApRow(); setInterval(refreshApRow, 20000);
   function handle(a){
     lastAct=Date.now();
     if(!shown()){
+      // 10/27：HUD 主畫面（不在待機／網路頁）轉旋鈕＝切右欄 導航→交通資訊→不顯示
+      if(a==='next' || a==='prev'){ cyclePane(a==='next' ? 1 : -1); return; }
       if(a!=='press') return;
       manualStandby=true;
       showStandbyScreen('AP 設定 — 選好按「返回 HUD」','ok');
