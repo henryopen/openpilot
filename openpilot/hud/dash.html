@@ -805,7 +805,7 @@ function renderC3Voice(c3){
 }
 /* 10/24 使用者：停車（openpilot 待機）也要能用 C3 語音。待機時整片待機畫面蓋住 HUD，聽到的那句改寫在待機畫面上
    4 秒；跟上面共用 c3vSeen，切回行駛畫面不會再跳一次。字幕（謝謝／抱歉／臨時）待機時照樣上後窗；
-   加速／減速要 MAIN 開著才有設定速度可改，待機時不會有作用，照實講。 */
+   控車指令（加減速、MAIN、接手放手）待機時都不會有作用，照實講。 */
 let sbvHide=0;
 function standbyVoice(c3){
   const el=document.getElementById('standby-voice'); if(!el) return;
@@ -816,7 +816,7 @@ function standbyVoice(c3){
       c3vSeen=v.n;
       if(v.ago!=null && v.ago<5){
         const car = v.res==='sent';   // 加速／減速：C4 收到了，但待機時沒有設定速度可改
-        const r = car ? ['待機中不會改速度','#ffbe00'] : (C3V_RES[v.res] || ['沒送到 '+String(v.res||'').replace(/[<>&]/g,''),'#ff5a5a']);
+        const r = car ? ['待機中不會作用','#ffbe00'] : (C3V_RES[v.res] || ['沒送到 '+String(v.res||'').replace(/[<>&]/g,''),'#ff5a5a']);
         el.innerHTML='🎤 C3 聽到 '+String(v.last||'').replace(/[<>&]/g,'')+`・<span style="color:${r[1]}">${r[0]}</span>`;
         sbvHide=Date.now()+4000;
       }

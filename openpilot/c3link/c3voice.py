@@ -13,6 +13,7 @@ From 10/23 they act, the same way the PiBar keypad does:
   加速 / 減速  max_up / max_down (MAX +-10, like the left knob: engaged or not, never an engage), POSTed with the
                keypad token to C4's HUD server over the USB link (http://10.44.0.2:8902/keypad), which hands it to
                card / plannerd (selfdrive/keypad.py). Once, 0.5 s timeout, no retry - like the keypad.
+  開啟 / 關閉  main_on / main_off; 接手 / 放手  engage / disengage (10/27) - keypad keys 1-4, the same way.
   captions (謝謝 ...)  rear-window captions: nothing sent from here; the PiBar's led_agent sees the hit in C4's
                HUD stream (c3.voice) and presses the caption key itself.
   綠燈         go (moves a stopped car): only with the flag file GO_FLAG; without it display only. A false hit at
@@ -51,7 +52,12 @@ C4_KEYPAD = 'http://10.44.0.2:8902/keypad'                # C4 over the USB link
 TOKEN_FILE = os.path.join(HERE, 'keypad_token')          # a copy of C4's /data/keypad_token
 GO_FLAG = os.path.join(HERE, 'VOICE_GO')                 # present = 小白綠燈 really sends go
 SEND_TIMEOUT = 0.5
-CAR = {'小白加速': 'max_up', '小白減速': 'max_down', '小白綠燈': 'go'}
+# 10/27, the driver: "C3的語音蠻穩的" - MAIN and engage / disengage too, the same commands as keypad keys 1-4
+# (C4 decides as it does for the keypad: engage only where the panda still allows it). Offline on C3 (SAPI zh-TW at
+# three speeds + the 21 clips from the car): the four new words 12/12, none heard as another, and "我先接手一下 /
+# 放手讓它開 / 開啟冷氣 / 關閉車窗" hit nothing.
+CAR = {'小白加速': 'max_up', '小白減速': 'max_down', '小白綠燈': 'go',
+       '小白開啟': 'main_on', '小白關閉': 'main_off', '小白接手': 'engage', '小白放手': 'disengage'}
 # acted on by the PiBar's led_agent. 10/26: all eight keypad captions (the touch screen's jobs went to the keypad's
 # right knob, the captions to the voice; the keypad keys stay as the backup), and 取消 turns off whichever is showing.
 LED = ('小白謝謝', '小白抱歉', '小白臨時', '小白禮讓行人', '小白救護車', '小白事故', '小白靠邊', '小白不熟')
