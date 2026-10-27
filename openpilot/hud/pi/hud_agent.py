@@ -552,6 +552,27 @@ def _write_json(path: Path, obj) -> None:
 
 
 NAV_RETRY_LAST = 3.0     # s：掉線後先每這麼久敲一次上次的位址（WiFi 閃一下多半還是同一個位址）
+# 10/27：導航的下一步也轉給車機（hud/server.py POST /nav，跟鍵盤同一把 token），讓 desire_helper 知道
+# 打燈那側路線要轉彎時不要換車道（selfdrive/mapd/turn_ahead.py）。只送 state 和下一步，送不到就算了。
+KEYPAD_TOKEN_FILE = Path.home() / ".keypad_token"
+
+
+def forward_nav(nav: dict) -> None:
+  host = _found
+  if not host:
+    return
+  try:
+    token = KEYPAD_TOKEN_FILE.read_text().strip()
+  except OSError:
+    return
+  body = json.dumps({"token": token, "nav": {"state": nav.get("state"), "step": nav.get("step")}}).encode("utf-8")
+  req = urllib.request.Request(f"http://{host}:{SP_HUD_PORT}/nav", data=body, method="POST",
+                               headers={"Content-Type": "application/json"})
+  try:
+    with urllib.request.urlopen(req, timeout=0.5):
+      pass
+  except Exception:
+    pass
 
 
 def nav_loop():
@@ -582,6 +603,7 @@ def nav_loop():
       fails = 0
       _nav_last = {"mono": time.monotonic(), "ip": _nav_ip, "nav": nav}
       _write_json(NAV_FILE, _nav_last)
+      forward_nav(nav)
       rv = nav.get("routeVer")
       if rv != route_ver:
         try:

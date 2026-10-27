@@ -347,6 +347,7 @@
     <span class="chip src" id="cSrc">定速</span>
     <span class="chip cy" id="cRad">雷達確認 2</span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
+    <span class="chip cy" id="cTurn" style="display:none"></span>
     <div class="expm" id="exBox"><span class="exlbl">實驗模式</span></div>
     <div class="handoff" id="hfBox"><span class="hflbl">路口交接</span></div>
   </div>
@@ -897,6 +898,12 @@ function render(F){
   // 實驗模式 —— 駕駛自己設的那個，跟上面的路口交接是兩回事
   const ex=$('exBox');
   if(ex) ex.className='expm'+(F.exp?' on':'');
+  // 打燈但判成路口轉彎、不換道（desire_helper 10/27：導航同側要轉，或 OSM 路口＋打燈後有減速）
+  const tc=$('cTurn');
+  if(tc){
+    if(F.turnHold){ tc.style.display=''; tc.textContent=`${F.turnSide==='left'?'左':'右'}轉・不換道（${F.turnHold==='nav'?'導航':'地圖'}）`; }
+    else tc.style.display='none';
+  }
   const sla=$('cSLA');
   if(F.slaAge>=0 && F.slaAge<8 && F.slaTarget>0){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
@@ -1258,6 +1265,7 @@ function fromSSE(J){
     bsdL: !!cs.leftBlindspot,  bsdR: !!cs.rightBlindspot,
     blkL: !!msp.leftLaneChangeEdgeBlock, blkR: !!msp.rightLaneChangeEdgeBlock,
     blinkL: !!cs.leftBlinker,  blinkR: !!cs.rightBlinker,
+    turnHold: ((J.intent||{}).turnHold)||'', turnSide: ((J.intent||{}).turn)||'',
     aT: ct.aTarget||0, aMax: ct.aCruiseMax||0, aMaxSrc: ct.aCruiseMaxSrc||'',
     tq: ct.torque||0, sat: !!ct.sat,
     lDes: (ct.curvature||0)*v*v,   // 目標橫向加速度 = v^2 * 曲率

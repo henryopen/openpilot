@@ -18,6 +18,7 @@ from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.mapd import turn_ahead
 from openpilot.selfdrive.mapd.speed_limit import KPH_TO_MS, OFF_FLAG, load_fixes, lookup
 
 MAPD_ROOT = "/data/media/0/osm"
@@ -42,7 +43,13 @@ def main():
 
   fixes = load_fixes()
   cloudlog.info("mapd: %d speed limit corrections", len(fixes))
-  pos = None              # last good (lat, lon)
+  pos, pos_t = None, 0.   # last good (lat, lon), when
+  try:
+    jmap = turn_ahead.JunctionMap()
+    cloudlog.info("mapd: %d junctions for turn_ahead", len(jmap.lat))
+  except (OSError, ValueError, KeyError) as e:
+    jmap = None
+    cloudlog.warning(f"mapd: no junction map for turn_ahead ({e})")
   bearing = None          # last heading while moving (deg), for the direction-dependent sign stretches
   fix_off = os.path.exists(OFF_FLAG)
   logged_fix = False
@@ -61,7 +68,7 @@ def main():
         "longitude": float(gps.longitude),
         "bearing": float(gps.bearingDeg),
       }))
-      pos = (float(gps.latitude), float(gps.longitude))
+      pos, pos_t = (float(gps.latitude), float(gps.longitude)), time.monotonic()
       if gps.speed > MIN_HEADING_SPEED:   # the GPS heading means nothing standing still: keep the last moving one
         bearing = float(gps.bearingDeg)
       if not logged_fix:
@@ -75,6 +82,16 @@ def main():
     hit = None if (fix_off or pos is None) else lookup(fixes, road, *pos, bearing)
     mem_params.put("MapSpeedLimitFixed", {"limit": hit[0] * KPH_TO_MS if hit else osm, "osm": osm, "road": road,
                                           "fix": hit[1] if hit else -1, "t": time.monotonic()})
+
+    # a turn coming on either side - OSM junctions and the phone's route - for desire_helper (see turn_ahead)
+    now = time.monotonic()
+    left = right = None
+    if jmap is not None and pos is not None and bearing is not None and now - pos_t < turn_ahead.FIX_FRESH_S:
+      left, right = jmap.turn_ahead(pos[0], pos[1], bearing, turn_ahead.REACH_M)
+    try:
+      turn_ahead.write({"t": now, "L": left, "R": right, "nav": turn_ahead.nav_turn(turn_ahead.read_nav(), now)})
+    except OSError:
+      pass
 
     rk.keep_time()
 

@@ -29,10 +29,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from openpilot.cereal import custom, log, messaging
 from openpilot.common.params import Params
 from openpilot.common.time_helpers import system_time_valid
-from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN
+from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN, TURN_HOLD_FILE
 from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
 from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
 from openpilot.selfdrive.mapd.speed_limit import effective_limit
+from openpilot.selfdrive.mapd.turn_ahead import NAV_FILE
 from openpilot.selfdrive.modeld.constants import ModelConstants
 from openpilot.hud.radar_tracker import TargetTracker, relevant
 from openpilot.hud.fuel_tracker import FuelTracker
@@ -502,9 +503,19 @@ def _produce():
         _one = _cs.leftBlinker != _cs.rightBlinker
         _turning = (bool(sm["carControl"].latActive) and _one
                     and LANE_TURN_SPEED_MIN <= float(_cs.vEgo) < LANE_TURN_SPEED_MAX)
+        # desire_helper's turn hold (10/27): a blinker over 20 km/h it took for a junction turn ('nav' / 'osm')
+        _hold = None
+        if _one:
+          try:
+            with open(TURN_HOLD_FILE) as _f:
+              _h = json.load(_f)
+            _hold = _h.get("hold") if time.monotonic() - float(_h.get("t", 0)) < 60 else None
+          except (OSError, ValueError, TypeError):
+            pass
         data["intent"] = {"laneChangeState": str(_meta.laneChangeState),
                           "laneChangeDirection": str(_meta.laneChangeDirection),
-                          "turn": ("left" if _cs.leftBlinker else "right") if _turning else ""}
+                          "turn": ("left" if _cs.leftBlinker else "right") if (_turning or _hold) else "",
+                          "turnHold": _hold or ""}
         # The light watcher (yolo/tlwatchd.py): the OSM signal ahead, its read of the light, and
         # at a standstill whether it is finding / watching the lamps or has called the green.
         # Its file says when it was written on this device's monotonic clock; older than 1.5 s
@@ -631,17 +642,21 @@ class Handler(BaseHTTPRequestHandler):
   def do_POST(self):
     # The keypad on the PiBar - see selfdrive/keypad.py. Anyone on the hotspot can reach this
     # port, so a command has to carry the token in KEYPAD_TOKEN; without that file it is off.
-    if self.path != "/keypad":
+    # /nav (2026-10-27): the PiBar forwards the phone's NavDash route step, same token; written to
+    # turn_ahead.NAV_FILE with this machine's clock for mapd_bridge's turn check (display / lane change only).
+    if self.path not in ("/keypad", "/nav"):
       return self._status(404)
     try:
       length = int(self.headers.get("Content-Length", 0))
     except ValueError:
       return self._status(400)
-    if not 0 < length <= 512:
+    if not 0 < length <= (8192 if self.path == "/nav" else 512):
       return self._status(400)
     try:
       body = json.loads(self.rfile.read(length))
-      cmd, token = str(body["cmd"]), str(body["token"])
+      token = str(body["token"])
+      cmd = str(body["cmd"]) if self.path == "/keypad" else ""
+      nav = body["nav"] if self.path == "/nav" else None
     except (ValueError, KeyError, TypeError):
       return self._status(400)
     try:
@@ -651,6 +666,17 @@ class Handler(BaseHTTPRequestHandler):
       return self._status(403)
     if not expected or not hmac.compare_digest(token, expected):
       return self._status(403)
+    if self.path == "/nav":
+      if not isinstance(nav, dict):
+        return self._status(400)
+      try:
+        tmp = NAV_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+          json.dump({"mono": time.monotonic(), "nav": nav}, f, ensure_ascii=False)
+        os.replace(tmp, NAV_FILE)
+      except OSError:
+        return self._status(500)
+      return self._json({"ok": True})
     if not keypad.post(cmd):
       return self._status(400)
     self._json({"ok": True})
