@@ -16,15 +16,14 @@
     -webkit-font-smoothing:antialiased}
   #dash{position:relative;width:100%;height:100%}
 
-  /* 版面（10/26 重排固定分區；10/27 使用者：「右邊導航沒開佔了一大片空白」「太集中在左側」「有些字體太小」）：
-       頂部狀態列 0-36   ：左 接管狀態 chip ／ 右 時鐘＋連線燈號
-       左欄  0-262       ：車速、設定速度、路名（速限牌移到路面右側，左欄字放大）
-       中間  262-(1280-rw)：路面窗格；只放跟開車有關的：前車、路線、右側一欄 速限牌→號誌燈牌＋STOP，緊急警示在正上方
-       右欄  寬 rw=330   ：卡片由上往下疊：導航或交通資訊（鍵盤右旋鈕切「導航／交通資訊／不顯示」）→ 訊息卡（一般警示、
-                          轉彎指令、靠左、速限調整）→ 後窗 LED 卡（貼底）。沒內容的卡不佔位；三種都沒有右欄才收掉（rw=0）
-       （10/29 使用者：「導航下面那部份都是空白浪費」「C3 辨識燈號的為什麼要兩個」「左邊一些訊息顯示跟 LED 的是不是可以做個
-        卡片，不然這樣很亂，訊息也不是常會出現，也是長空白一塊在那」）
-       底部資訊列 324-400
+  /* 版面（10/29 重做；10/29 使用者：「亂不是亂上面下面，是你排版很奇怪，左邊跟右邊的不一致，我就叫你要跳脫原本的重新想；
+     那個前方號誌一定要放那裡嗎，你要就左右平均」）：
+       頂部狀態列 0-36   ：左 接管狀態 chip ／ 右 時鐘＋連線燈號（不動）
+       左欄  0-300       ：「我的車」—— 車速卡（車速＋設定速度並排、路名）、後窗 LED 卡（貼底）
+       中間  300-980     ：路面，只畫路與前車；訊息（警示＋只在有事時出現的提示）浮在正上方，有才出現
+       右欄  980-1280    ：「前方」—— 導航或交通資訊卡（鍵盤右旋鈕切），前方卡（速限牌、接著的速限、STOP、號誌燈號）
+       兩欄同寬、同樣的卡片、上下對齊，固定不收（路面寬度不再跳）；沒導航時前方卡撐滿、字放大
+       底部資訊列 324-400（不動）
      全部字級 ≥16 px（10/27 前有 12-15 px 的標籤，車上看不清） */
   :root{--rw:330px}
   body.panehide{--rw:0px}
@@ -167,28 +166,16 @@
   body.pm-nav .tcard, body.pm-traffic .nav, body.pm-off .nav, body.pm-off .tcard{display:none}
   .infocol{position:absolute;z-index:3;left:962px;top:46px;bottom:84px;width:306px;display:flex;flex-direction:column;gap:8px;
     pointer-events:none}
-  /* 訊息卡（10/29）：一般警示（緊急的仍在路面正上方）＋只在有事時出現的提示，沒有就整張收起來 */
-  .mcard{display:none;flex-direction:column;gap:5px;padding:7px 12px 9px;border-radius:12px;
-    background:rgba(6,14,20,.90);border:2px solid rgba(147,168,187,.35);text-shadow:var(--sh)}
-  .mcard.on{display:flex}
-  .mcard.warn{border-color:rgba(255,140,26,.8)}
-  .mcard .m1{font-size:24px;font-weight:800;line-height:1.2;color:var(--txt)}
-  .mcard.warn .m1{color:var(--amber)}
-  .mcard .m2{font-size:20px;font-weight:700;line-height:1.25;color:#c3d1dd}
-  .mcard .m1:empty, .mcard .m2:empty{display:none}
-  .mcard .tchips{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
-  .mcard .tchips:not(:has(.chip:not([style*="display: none"]))){display:none}
-  /* 後窗 LED 卡（10/29 從路面左下搬來）：貼在右欄最底下 */
-  .lcard{display:none;flex-direction:column;gap:5px;padding:7px 12px 9px;border-radius:12px;margin-top:auto;
+  /* 後窗 LED 卡（10/29 從路面左下搬來）：左欄車速卡下面 */
+  .lcard{display:none;flex-direction:column;align-items:center;gap:5px;padding:8px 12px;border-radius:12px;flex:0 0 auto;
     background:rgba(6,14,20,.90);border:2px solid rgba(147,168,187,.35)}
   .lcard.on{display:flex}
   .lcard .ledtag{position:static;width:auto;display:block}
   .lcard .ledtag:not(.man){display:none}      /* 標題只在手動字幕倒數時才出；連線狀態由燈號列的「後窗 LED」燈講 */
   .lcard .ledm{position:static}
-  /* 右欄高度只有 270 px：放不下時依序 收 LED 卡 → 收導航車道列 → 訊息第二行縮成一行（fitCol） */
+  /* 欄高只有 278 px：右欄放不下時先收導航的車道列，左欄放不下時收 LED 卡（fitCol） */
   .lcard.squeeze{display:none}
   .nav.compact .r2{display:none}
-  .mcard.tight .m2{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
 
   /* 連線燈號列（10/26 使用者：「有沒有連線的文字改用燈號」）。每顆燈都帶短標籤，不只靠顏色：
      綠＝正常、琥珀＝半正常（睡著／資料舊／粗標定）、紅＝斷線／沒回應、青＝語音正在聽。
@@ -360,6 +347,64 @@
   .nav .nx{font-size:21px;color:var(--dim2);font-weight:700;white-space:nowrap}
   .nav .nx b{color:#cfe3f2}
   .nav .nx svg{width:20px;height:20px;vertical-align:-3px}
+
+  /* ═════ 10/29 版面 v2：左右兩欄同寬 300、同樣的卡片 ═════ */
+  :root{--side:300px;--rw:300px}
+  body.panehide{--rw:300px}
+  #road{left:var(--side);width:calc(1280px - 2 * var(--side))}
+  .zleft{width:var(--side)} .zright{width:var(--side)}
+  body.panehide .zright{display:block} body.panehide .infocol{display:flex}
+  .side{position:absolute;z-index:3;top:42px;bottom:80px;width:calc(var(--side) - 16px);display:flex;flex-direction:column;
+    gap:8px;pointer-events:none}
+  .sideL{left:8px} .sideR{left:auto;right:8px}
+  .card{border-radius:12px;background:rgba(6,14,20,.90);border:2px solid rgba(147,168,187,.35);padding:8px 12px;
+    text-shadow:var(--sh)}
+  .nav{width:auto}
+  /* 車速卡：車速、設定速度並排，路名在下；撐滿 LED 卡以外的高度 */
+  .spdcard{display:flex;flex-direction:column;justify-content:center;gap:8px;flex:1 1 auto;min-height:0}
+  .spdrow{display:flex;align-items:flex-end;justify-content:space-between;gap:8px}
+  .spdcard .cnr{display:flex;flex-direction:column;align-items:flex-start}
+  #paneL{align-items:flex-end}
+  #spdV{font-size:96px;margin-top:2px}
+  #maxV{font-size:58px}
+  .spdcard .maxrow{gap:8px}
+  .spdcard .tgt{font-size:30px}
+  #spdF{position:static;width:auto;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 前方卡：速限牌、接著、STOP 一列，號誌燈號在下；沒導航時撐滿欄、字放大 */
+  .ahead{display:flex;flex-direction:column;justify-content:center;gap:8px;flex:1 1 auto;min-height:0}
+  .ahead .ov{position:relative;top:auto;right:auto;left:auto}
+  .arow{display:flex;align-items:center;gap:10px}
+  .arow .slside{align-items:flex-start}
+  .ahead .sl{width:56px;height:56px;font-size:26px;border-width:5px}
+  .ahead .sl.d3{font-size:22px}
+  /* 第一列 速限牌＋「接著 40・231 m」＋STOP（靠右）；第二列 號誌燈號用滿整個寬（右欄只有 278 px，導航卡還要放） */
+  .ahead .slnx{flex-direction:row;align-items:center;gap:5px;padding:0;background:none;white-space:nowrap;font-size:20px}
+  .ahead .slnx .v{width:38px;height:38px;font-size:17px;border-width:3px}
+  .arow{gap:8px}
+  .arow .stop{margin-left:auto;flex:0 0 auto;gap:1px}
+  .ahead .oct{width:36px;height:36px;font-size:11px}
+  .ahead .oct-d{margin-top:0;font-size:18px;white-space:nowrap}
+  .ahead{padding:6px 10px;gap:6px}
+  /* 號誌燈號、C3 的燈已經在前方卡裡，不再自己一層框 */
+  .ahead .lit, .ahead .c3l{max-width:none;padding:0;background:none;border:none;gap:7px}
+  .ahead .lit .txt{font-size:20px;line-height:1.2}
+  .ahead .lit .dot{width:16px;height:16px;margin-top:3px}
+  .sideR.nonav .ahead .sl{width:100px;height:100px;font-size:46px;border-width:8px}
+  .sideR.nonav .ahead .slnx{flex-direction:column}
+  .sideR.nonav .ahead .slnx .v{width:52px;height:52px;font-size:23px;border-width:4px}
+  .sideR.nonav .ahead .oct{width:54px;height:54px;font-size:15px}
+  .sideR.nonav .ahead .oct-d{font-size:24px}
+  .sideR.nonav .ahead .sl.d3{font-size:38px}
+  .sideR.nonav .ahead .lit .txt{font-size:25px}
+  /* 路面正上方的訊息：警示框＋提示（橫排），以路面中線置中 */
+  .topmsg{left:640px;top:44px;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:6px;
+    max-width:640px;z-index:5}
+  .topmsg .alertbox{position:static;left:auto;transform:none;max-width:640px}
+  /* 只在有事時出現的提示放路面下方中間（自己車頭前，遠處前車畫在上方，不會被蓋到） */
+  .tchips.bottom{position:absolute;left:640px;bottom:84px;top:auto;transform:translateX(-50%);display:flex;flex-direction:row;
+    flex-wrap:wrap;justify-content:center;gap:6px;z-index:5;pointer-events:none}
+  #paneToast{left:640px}
+  .bsdL{left:var(--side)} .bsdR{right:var(--side)}
 </style>
 </head>
 <body>
@@ -378,7 +423,7 @@
 </div>
 
 <div id="dash">
-  <!-- 路面：中間窗格 262-950 -->
+  <!-- 路面：中間窗格 300-980 -->
   <canvas id="road" width="688" height="400"></canvas>
   <div class="bsd bsdL" id="bsdL"></div>
   <div class="bsd bsdR" id="bsdR"></div>
@@ -407,56 +452,46 @@
     <span class="lt" id="netInfo" style="display:none"><i></i><b>WiFi</b></span>
   </div>
 
-  <!-- 左欄：車速、速限、設定速度、路名 -->
-  <div class="ov cnr cnrR" id="paneR">
-    <div class="cap">車速 km/h</div>
-    <div class="num" id="spdV">54</div>
-    <div class="sub" id="spdF">—</div>
-  </div>
-  <div class="ov cnr cnrL" id="paneL">
-    <div class="cap">設定速度</div>
-    <div class="maxrow">
-      <div class="num blue" id="maxV">60</div>
-      <div class="tgt" id="tgtV"></div>
-    </div>
-  </div>
-
-  <!-- 右欄：導航卡、路況卡 -->
-  <div class="infocol" id="infoCol">
-    <div class="nav" id="navCard"></div>
-    <div class="tcard" id="trafCard"><div class="hd"><span class="t" id="trafHd">前方路況</span><span class="dd" id="trafD"></span></div><div class="bd" id="trafTxt"></div></div>
-    <div class="mcard" id="msgCard">
-      <div class="m1" id="msg1"></div>
-      <div class="m2" id="msg2"></div>
-      <!-- 只在有事時出現的說明（打燈的轉彎／換道判斷、速限調整了設定速度、最右車道靠左） -->
-      <div class="tchips" id="msgChips">
-        <span class="chip cy" id="cTurn" style="display:none"></span>
-        <span class="chip wait" id="cSLA" style="display:none"></span>
-        <span class="chip cy" id="cLaneOff" style="display:none"></span>
+  <!-- 左欄「我的車」：車速卡、後窗 LED 卡 -->
+  <div class="side sideL" id="sideL">
+    <div class="card spdcard">
+      <div class="spdrow">
+        <div class="cnr" id="paneR"><div class="cap">車速 km/h</div><div class="num" id="spdV">54</div></div>
+        <div class="cnr" id="paneL"><div class="cap">設定速度</div>
+          <div class="maxrow"><div class="num blue" id="maxV">60</div><div class="tgt" id="tgtV"></div></div></div>
       </div>
+      <div class="sub" id="spdF">—</div>
     </div>
     <div class="lcard" id="ledCard"><div class="ledtag" id="ledTag">後窗 LED</div><img class="ledm" id="ledMir" alt=""></div>
   </div>
 
-  <!-- 路面上只放跟路有關的：緊急警示（正上方）、號誌燈牌＋STOP（右上）；一般警示、提示、後窗 LED 在右欄卡片 -->
-  <div class="ov alertbox" id="alertBox">
-    <div class="a1" id="alert1"></div>
-    <div class="a2" id="alert2"></div>
-  </div>
-  <!-- 路面右側一欄：速限牌（下一個速限在它左邊）→ 號誌燈牌＋STOP 並排 → C3 燈，沒有的不佔位 -->
-  <div class="ov rcol" id="rCol">
-    <div class="slbox">
-      <div class="slside">
-        <div class="slsrc" id="slSrc">官方</div>
-        <div class="slnx" id="slNx"><span class="nxt">接著</span><span class="v" id="slNxV">--</span><span id="slNxD">--</span></div>
+  <!-- 右欄「前方」：導航／路況卡、前方卡（速限牌、接著、STOP、號誌燈號；C3 自己的燈只在沒號誌燈號時出現） -->
+  <div class="side sideR infocol" id="infoCol">
+    <div class="nav" id="navCard"></div>
+    <div class="tcard" id="trafCard"><div class="hd"><span class="t" id="trafHd">前方路況</span><span class="dd" id="trafD"></span></div><div class="bd" id="trafTxt"></div></div>
+    <div class="card ahead" id="rCol">
+      <div class="arow">
+        <div class="sl" id="sl">--</div>
+        <div class="slside">
+          <div class="slsrc" id="slSrc">官方</div>
+          <div class="slnx" id="slNx"><span class="nxt">接著</span><span class="v" id="slNxV">--</span><span id="slNxD">--</span></div>
+        </div>
+        <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
       </div>
-      <div class="sl" id="sl">--</div>
-    </div>
-    <div class="rrow">
       <div class="ov lit" id="litBox"><span class="dot"></span><span class="txt" id="litTxt">—</span></div>
-      <div class="ov stop" id="stopBox"><div class="oct">STOP</div><div class="oct-d" id="stopD">—</div></div>
+      <div class="ov c3l" id="c3Box"><span class="txt" id="c3Txt">—</span></div>
     </div>
-    <div class="ov c3l" id="c3Box"><span class="txt" id="c3Txt">—</span></div>
+  </div>
+
+  <!-- 路面正上方：警示，有才出現 -->
+  <div class="ov topmsg" id="topMsg">
+    <div class="alertbox" id="alertBox"><div class="a1" id="alert1"></div><div class="a2" id="alert2"></div></div>
+  </div>
+  <!-- 路面下方中間：只在有事時出現的提示（打燈的轉彎判斷、速限調整、最右車道靠左） -->
+  <div class="tchips bottom" id="msgChips">
+      <span class="chip cy" id="cTurn" style="display:none"></span>
+      <span class="chip wait" id="cSLA" style="display:none"></span>
+      <span class="chip cy" id="cLaneOff" style="display:none"></span>
   </div>
   <!-- 鍵盤右旋鈕切右欄時，在路面中間講現在切到哪一個 -->
   <div class="ov" id="paneToast"></div>
@@ -508,20 +543,17 @@ function paneHasContent(){
 function updateInfoCol(){
   const b=document.body;
   PANES.forEach(k=>b.classList.toggle('pm-'+k, k===PANE));
-  // 後窗 LED 卡平常只是跟著別的卡一起出現（時鐘／平穩行駛不值得為它開一欄）；手動字幕倒數中才單獨撐開右欄
-  const ledAlone = $('ledCard').classList.contains('on') && $('ledTag').classList.contains('man');
-  b.classList.toggle('panehide', !(paneHasContent() || $('msgCard').classList.contains('on') || ledAlone));
+  // 兩欄固定（10/29 v2）；選的那張沒內容時前方卡撐滿、字放大
+  $('infoCol').classList.toggle('nonav', !paneHasContent());
   fitRoad();
   fitCol();
 }
 function fitCol(){
-  const col=$('infoCol'), nav=$('navCard'), lc=$('ledCard'), mc=$('msgCard');
-  if(!col) return;
-  lc.classList.remove('squeeze'); nav.classList.remove('compact'); mc.classList.remove('tight');
-  const over=()=>col.scrollHeight>col.clientHeight+1;
-  if(over()) lc.classList.add('squeeze');
-  if(over()) nav.classList.add('compact');
-  if(over()) mc.classList.add('tight');
+  const R=$('infoCol'), L=$('sideL'), nav=$('navCard'), lc=$('ledCard');
+  if(!R || !L) return;
+  nav.classList.remove('compact'); lc.classList.remove('squeeze');
+  if(R.scrollHeight>R.clientHeight+1) nav.classList.add('compact');
+  if(L.scrollHeight>L.clientHeight+1) lc.classList.add('squeeze');
 }
 let paneToastT=null;
 function cyclePane(step){
@@ -869,19 +901,20 @@ function renderC3(c3){
     // 10/24：有這趟或上一趟的標定就照用、不標「標定中」（它在重新收資料時也是用好的標定，只是字在跳）
     const tag = c3.using==='coarse' ? `（粗標定 ${prog}）` : '';
     const L=(c3.lights||[]).filter(l=>Math.abs(l.az)<=12).sort((a,b)=>(b.conf||0)-(a.conf||0));
-    if(!c3.using){ txt=`C3 標定中 ${prog}`; }
+    // 標定中／沒看到燈：燈號列的「C3」燈已經講了，卡片不出（10/29 v2）；辨識停止仍要講
+    if(!c3.using){ txt=''; }
     else if(c3.det_err){ txt='C3 辨識停止'+tag; cls='hot'; }
     else if(L.length){
       const l=L[0], z=String(l.zh||l.cls||'');
       cls = /紅|red/i.test(z) ? 'red' : /綠|green/i.test(z) ? 'green' : /黃|yellow|amber/i.test(z) ? 'amber' : '';
       const side = Math.abs(l.az)<1 ? '正前' : (l.az>0?'右':'左')+Math.abs(l.az).toFixed(0)+'°';
       txt=`C3 ${z} ${Math.round((l.conf||0)*100)}%・${side}${tag}`;
-    } else { txt='C3 前方無燈'+tag; }
+    } else { txt=''; }
     if((c3.temp||0)>=85){ cls='hot'; txt+=`・C3 ${Math.round(c3.temp)}°C`; }
   }
   // 號誌燈牌亮著時它已經講了燈色和「C3」來源，不再另放一張（10/29 使用者：「C3 辨識燈號的為什麼要兩個」）；
   // 只有地圖上沒有號誌、C3 卻看到燈時才單獨出現
-  if($('litBox').classList.contains('on')){ box.className='ov c3l'; return; }
+  if(!txt || $('litBox').classList.contains('on')){ box.className='ov c3l'; return; }
   box.className='ov c3l on '+cls;
   document.getElementById('c3Txt').textContent=txt.replace(/・/g, '・\u200b');   // 同號誌燈牌：只在「・」與空白處換行
 }
@@ -1026,20 +1059,15 @@ function render(F){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
   } else sla.style.display='none';
   // 警示／事件訊息（selfdriveState.alertText1/2 就是 openpilot event 轉出來的文字）
-  // 緊急（critical，例如「立即接管」）仍在路面正上方大字；其他的放右欄訊息卡（10/29）
+  // 路面正上方（10/29 v2）：警示依 alertStatus 變色，下面接著只在有事時出現的提示
   const ab=$('alertBox');
   const t1=(F.alert1||'').trim(), t2=(F.alert2||'').trim();
-  const crit = F.alertStatus==='critical';
-  if((t1||t2) && crit){ ab.className='ov alertbox on crit'; set('alert1',t1); set('alert2',t2); }
-  else ab.className='ov alertbox';
-  const mc=$('msgCard'), msgOn=(t1||t2) && !crit;
-  const mtxt=(msgOn ? t1+'|'+t2 : '');
-  set('msg1', msgOn ? t1 : ''); set('msg2', msgOn ? t2 : '');
-  const chipsOn=[...$('msgChips').children].some(c=>c.style.display!=='none');
-  const mcCls='mcard'+((msgOn||chipsOn)?' on':'')+(msgOn && F.alertStatus==='userPrompt'?' warn':'');
-  if(mc.className.replace(' tight','')!==mcCls){ mc.className=mcCls; updateInfoCol(); }
-  else if(mtxt!==window.__mtxt){ fitCol(); }
-  window.__mtxt=mtxt;
+  if(t1||t2){
+    ab.className='alertbox on'+(F.alertStatus==='critical'?' crit' : F.alertStatus==='userPrompt'?' warn':'');
+    set('alert1',t1); set('alert2',t2);
+  } else ab.className='alertbox';
+  // 前方卡的內容（號誌、STOP、接著的速限）會變多變少：每 0.4 秒重算一次兩欄放不放得下（fitCol）
+  if(Date.now()-(window.__fitT||0)>400){ window.__fitT=Date.now(); fitCol(); }
   const sb=$('stopBox');
   // 模型看到前方會停就先亮（琥珀、距離倒數），shouldStop 確定要停才轉紅。
   // 模型的預測會閃，亮過就保持 1 秒，距離用 EMA 壓抖。
@@ -1663,7 +1691,7 @@ if(new URLSearchParams(location.search).has('play')){
       tag.textContent = '後窗 LED'
                       + (sticky ? '・手動字幕 常駐中（再按同鍵關閉）'
                          : isMan ? `・手動字幕 剩 ${Math.ceil(man)} 秒（再按同鍵取消）` : '');
-      if(tag.classList.contains('man')!==isMan){ tag.classList.toggle('man', isMan); updateInfoCol(); }
+      if(tag.classList.contains('man')!==isMan){ tag.classList.toggle('man', isMan); fitCol(); }
       img.classList.toggle('man', isMan);
       img.classList.add('on'); tag.classList.add('on'); fails=0;
       if(!lc.classList.contains('on')){ lc.classList.add('on'); updateInfoCol(); }
