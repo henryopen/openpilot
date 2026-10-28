@@ -24,6 +24,15 @@ and the watcher's file fresh:
 Simulated on the recorded approaches with the classifier's real calls: 40-55 km/h reds start slowing
 at a median 104 m and need 0.77 m/s^2 instead of braking late; 2 of 129 greens get a needless slowdown.
 
+Yellow (2026-10-28, the driver: "黃燈你認為可以就做吧"): C3 passes one only where a light turned yellow (tlwatchd calls
+it 'yellow'). At the first yellow of a signal it is decided once, and held until that signal is passed or the call is
+no longer yellow / red: stop if braking to STOP_ZONE short of the signal needs at most YELLOW_STOP_A, else carry on
+as for a green - a yellow too close to stop for is driven through, as a driver does. A stop is then the red's: slow
+towards V_FLOOR_RED, and under MIN_SPEED at least no throttle (10/28 14:36:56: a yellow read as green at 24 km/h,
+the car pulled from 25 to 33 km/h through it and braked at about -2.2 when the red was seen 2.5 s late). On that
+drive's 11 yellows 7 would have been stopped for (needing 0.15-1.8 m/s^2), 4 driven through (9-11 m out, needing
+4.8-7.9).
+
 It is a limit on cruise, like the corner: the planner takes the lower of the two, so it can only ever
 take speed off. Off unless FLAG exists, so it can ride along in shadow while the watcher's calls are
 checked against real drives; `mode` says what it would be doing either way.
@@ -51,6 +60,7 @@ LEAD_IGNORE = 80.0               # m: a car nearer than this sets the pace
 INTENT_FRAC = 0.6
 INTENT_FRAMES = 20               # 1 s at 20 Hz. 0.5 s let a dip the model takes crossing a junction slow us for
                                  # the next signal (10/14 18:53: -1.2 at 61 m on a green)
+YELLOW_STOP_A = 2.0              # m/s^2: a yellow this gentle to stop for is stopped for
 SLOW_START_MIN = 25.0            # m: a slowdown only starts this far out. Nearer is inside the junction, where an
                                  # 'early' slowdown is neither early nor gentle (10/14 17:16: -1.2 at 9 m); the stop
                                  # logic owns that. Replayed: 10/14 needless slows 3 -> 1 (with INTENT_FRAMES 20),
@@ -68,6 +78,7 @@ class LightAhead:
     self.slowing = False         # it was slowing on the last tick, for this same signal
     self._osm_prev = None
     self.a_shadow = None
+    self.yellow = None           # 'stop' / 'go' for the signal being approached, decided at its first yellow
     self._out_mode, self._out_t = None, 0.
 
   def _read(self):
@@ -86,7 +97,7 @@ class LightAhead:
       try:
         tmp = OUT + '.tmp'
         with open(tmp, 'w') as f:
-          json.dump({'t': now, 'mode': self.mode, 'on': self.enabled,
+          json.dump({'t': now, 'mode': self.mode, 'on': self.enabled, 'yellow': self.yellow,
                      'a': None if self.a_shadow is None else round(self.a_shadow, 2)}, f)
         os.replace(tmp, OUT)
       except OSError:
@@ -103,6 +114,9 @@ class LightAhead:
     passed = osm_now is not None and self._osm_prev is not None and osm_now > self._osm_prev + 25.
     self.slowing = self.mode == 'slow' and not passed
     self._osm_prev = osm_now
+    light = self.state.get('light') if self.state is not None else None
+    if passed or osm_now is None or light not in ('yellow', 'red'):
+      self.yellow = None
     self.a_limit, self.mode, self.a_shadow = None, '', None
 
     vmin = min(md.velocity.x) if len(md.velocity.x) else v_ego
@@ -110,9 +124,20 @@ class LightAhead:
 
     s = self.state
     if (not engaged or s is None or s.get('mode') != 'approach' or s.get('osm_m') is None
-        or blinker or v_ego < MIN_SPEED or (lead.present and float(lead.dRel) < LEAD_IGNORE)):
+        or blinker or (lead.present and float(lead.dRel) < LEAD_IGNORE)):
       return
     light = s.get('light')
+    if light == 'yellow' and self.yellow is None:
+      need = v_ego ** 2 / (2. * max(float(s['osm_m']) - STOP_ZONE, 1.))
+      self.yellow = 'stop' if need <= YELLOW_STOP_A else 'go'
+    if light == 'yellow':
+      light = 'red' if self.yellow == 'stop' else 'go'
+    if v_ego < MIN_SPEED:
+      if light == 'red' and self.yellow == 'stop':
+        self.mode, self.a_shadow = 'slow', A_COAST     # slow already: at least no more throttle into it
+        if self.enabled:
+          self.a_limit = A_COAST
+      return
     if light == 'go':
       return
     d = max(float(s['osm_m']) - STOP_ZONE, 5.)

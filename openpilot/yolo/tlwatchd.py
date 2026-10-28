@@ -52,6 +52,11 @@ wait, GO on C3 needs a red seen earlier in this wait and then go held C3_GO_HOLD
 against real drives. No fresh C3 (cable out, C3 down) -> C4's own models as before. 'src' in the logs and the HUD
 state says which one decided.
 
+Yellow (2026-10-28): C3 passes a yellow only where a light it saw green turned yellow (c3lights YELLOW_*). Its
+probability rides as a fourth entry of p ([none, red, go, yellow] - C4's own classifier has no yellow, three entries
+as before); a yellow there zeroes go like a red does, so no GO and no 'go' call while it shows. LightCall calls it
+'yellow' (red before yellow before go); light_ahead decides stop or carry on at the first one.
+
   tlwatchd.py                      live
   tlwatchd.py --replay <route dir glob>   replay recorded segments (fcamera.hevc + rlog), timed as live
 """
@@ -182,7 +187,8 @@ class LightCall:
     self.call, self.until = 'unknown', 0.
 
   def update(self, p, t):
-    c = 'red' if p[1] >= LIGHT_P else ('go' if p[2] >= LIGHT_P else None)
+    yellow = len(p) > 3 and p[3] >= LIGHT_P
+    c = 'red' if p[1] >= LIGHT_P else ('yellow' if yellow else ('go' if p[2] >= LIGHT_P else None))
     if c is not None and c == self.last:
       self.call, self.until = c, t + LIGHT_HOLD
     self.last = c
@@ -214,8 +220,9 @@ def snap(out, band, name):
 
 
 def c3_read(now):
-  """C3's call on the light ahead as [none, red, go] like the classifier's, or None when C3 is not there / not reading.
-  red = the most confident red within C3_AZ_DEG; go = the most confident green ball there, 0 while any red is there."""
+  """C3's call on the light ahead as [none, red, go, yellow], or None when C3 is not there / not reading.
+  red = the most confident red within C3_AZ_DEG; go = the most confident green ball there, 0 while any red or yellow
+  is there; yellow = the most confident yellow there (C3 passes one only where a light turned yellow)."""
   try:
     with open(C3_FILE) as f:
       j = json.load(f)
@@ -226,9 +233,10 @@ def c3_read(now):
   front = [lt for lt in (j.get('lights') or []) if abs(float(lt.get('az', 99))) <= C3_AZ_DEG]
   red = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_red'], default=0.)
   go = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_green'], default=0.)
-  if red > 0:
+  yellow = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_yellow'], default=0.)
+  if red > 0 or yellow > 0:
     go = 0.
-  return [round(1. - max(red, go), 3), round(red, 3), round(go, 3)]
+  return [round(1. - max(red, go, yellow), 3), round(red, 3), round(go, 3), round(yellow, 3)]
 
 
 def classify(sess, band):

@@ -32,8 +32,8 @@ full finder only once a second - the car does not move, so neither do the lights
 instead of one finder cycle. Moving, every cycle is the full finder as before.
 
 Output /dev/shm/c3det/det.json as before - boxes in half-resolution coordinates, cls light_red / light_green /
-light_green_arrow (no yellow, see PASS_ON), zh, conf (the colour's probability), det (the finder's score) - for c3calib, which
-turns them into car-frame directions for C4's HUD. Only while C4 is driving (c3calib's "driving"), else idle.
+light_green_arrow / light_yellow (a yellow only where a light turned yellow, see YELLOW_*), zh, conf (the colour's
+probability), det (the finder's score) - for c3calib, which turns them into car-frame directions for C4's HUD. Only while C4 is driving (c3calib's "driving"), else idle.
 
   c3lights.py                       live (VisionIPC road camera)
   c3lights.py --frames DIR OUT.json offline on JPEG frames (full 1928x1208), same code: ROW0 env or the default band
@@ -71,6 +71,15 @@ CLS_NAMES = ['green', 'green_arrow', 'off', 'pedestrian', 'red', 'yellow']   # l
 # roadside yellow markers. A yellow lasts 3 s, C3 reads ~1/s and wants a light twice - it would barely show anyway.
 # Without it: frames with only false lights 51 -> 43 of 269, colour right 85 -> 86%, a light shown 85 -> 80%.
 PASS_ON = {'red': 'light_red', 'green': 'light_green', 'green_arrow': 'light_green_arrow'}
+# Yellow back (10/28, the driver: "黃燈你認為可以就做吧") - only where a light turned yellow: a box read yellow counts if
+# a green (or the yellow it already became) was read at about the same place in the image within YELLOW_AFTER_S. That
+# leaves out what the 10/25 cut was about - striped posts, curve chevrons, yellow signs, bus lamps never were green -
+# and the flashing yellows, which never turn from green. 10/28 drive (C3 route 000002d0, keyframes every 1.5 s over
+# every approach, 1781 frames, judged by eye): any yellow 200 calls, mostly not lights or flashing yellows; this rule
+# 22 events: 11 a light turning yellow (14:36:57 among them, where the car had sped up through the yellow), 4 wrong
+# (3 of them with C4 already calling red), 7 too blurred to tell.
+YELLOW_AFTER_S = 3.1
+YELLOW_HEAD_PX = 40.               # full res; or 2.5 box widths, whichever is more: the same head a cycle later
 TRACK_V = 0.3                      # m/s (C4's vEgo through c3calib): stopped
 TRACK_PERIOD = 0.1                 # s: stopped with lights found, their colour this often ...
 FIND_EVERY_S = 1.0                 # ... and the full finder this often (a light that appears / goes / was missed)
@@ -167,18 +176,45 @@ def colours(cls, frame, boxes):
   return [cls.run(None, {name: x[None]})[0][0] for x in xs]   # the export has a fixed batch of 1
 
 
-def dets_from(boxes, scores, probs):
-  """Full-res boxes, finder scores and colour probabilities -> det.json entries (half-res), dropped count."""
-  dets, dropped = [], 0
+class YellowGate:
+  """Where a green (or a yellow let through) was read lately, to let a yellow through at the same head (YELLOW_*)."""
+  def __init__(self):
+    self.seen = []      # (t, xc, yc, w) full res
+
+  def turned(self, box, now):
+    x1, y1, x2, y2 = box
+    xc, yc, w = (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1
+    for t, x, y, wp in self.seen:
+      tol = max(YELLOW_HEAD_PX, 2.5 * max(w, wp))
+      if now - t <= YELLOW_AFTER_S and abs(xc - x) < tol and abs(yc - y) < tol:
+        return True
+    return False
+
+  def note(self, boxes, now):
+    self.seen = [s for s in self.seen if now - s[0] <= YELLOW_AFTER_S] + \
+                [(now, (x1 + x2) / 2, (y1 + y2) / 2, x2 - x1) for x1, y1, x2, y2 in boxes]
+
+
+def dets_from(boxes, scores, probs, gate=None, now=0.):
+  """Full-res boxes, finder scores and colour probabilities -> det.json entries (half-res), dropped count.
+  gate (YellowGate, live only): a yellow passes where a light turned yellow; without it no yellow, as before."""
+  dets, dropped, keep = [], 0, []
   for (x1, y1, x2, y2), score, p in zip(boxes, scores, probs, strict=True):
     k = int(np.argmax(p))
     name, pc = CLS_NAMES[k], float(p[k])
-    if name not in PASS_ON or pc < COLOR_MIN:
+    if name == 'yellow' and pc >= COLOR_MIN and gate is not None and gate.turned((x1, y1, x2, y2), now):
+      c = 'light_yellow'
+    elif name not in PASS_ON or pc < COLOR_MIN:
       dropped += 1
       continue
-    c = PASS_ON[name]
+    else:
+      c = PASS_ON[name]
+    if c in ('light_green', 'light_green_arrow', 'light_yellow'):
+      keep.append((x1, y1, x2, y2))
     dets.append({'x': round(x1 / 2, 1), 'y': round(y1 / 2, 1), 'w': round((x2 - x1) / 2, 1), 'h': round((y2 - y1) / 2, 1),
                  'cls': c, 'zh': ZH[c], 'conf': round(pc, 3), 'det': round(score, 3)})
+  if gate is not None:
+    gate.note(keep, now)
   return dets, dropped
 
 
@@ -202,6 +238,7 @@ class Reader:
     self.det, self.cls = det, cls
     self.boxes, self.scores, self.t_find = [], [], -1e9
     self.n_shown = 0
+    self.gate = YellowGate()   # a yellow only where a light turned yellow (YELLOW_*)
     self.went_dark = False     # all tracked lights stopped showing a colour (the lit lamp moved, e.g. to a lamp of the
                                # head the finder did not box): find again at once instead of after FIND_EVERY_S
 
@@ -215,7 +252,7 @@ class Reader:
       bot = int(min(FULL_H, max(y2 + (y2 - y1) * TRACK_PAD for _, y1, _, y2 in self.boxes) + 2))
       rgb, r0 = rows(top, bot)
       probs = colours(self.cls, rgb, [(x1, y1 - r0, x2, y2 - r0) for x1, y1, x2, y2 in self.boxes])
-      dets, dropped = dets_from(self.boxes, self.scores, probs)
+      dets, dropped = dets_from(self.boxes, self.scores, probs, self.gate, now)
       self.went_dark = not dets and self.n_shown > 0     # every tracked light dark: whatever is lit now is elsewhere
       return dets, {'mode': 'track', 'found': len(self.boxes), 'dropped': dropped, 'det_ms': 0,
                     'cls_ms': round((time.perf_counter() - t0) * 1000)}
@@ -226,7 +263,7 @@ class Reader:
     self.boxes = [(x1 + col0, y1 + row0, x2 + col0, y2 + row0) for x1, y1, x2, y2, _ in found]
     self.scores, self.t_find = [f[4] for f in found], now
     probs = colours(self.cls, rgb, [(x1, y1 - r0, x2, y2 - r0) for x1, y1, x2, y2 in self.boxes])
-    dets, dropped = dets_from(self.boxes, self.scores, probs)
+    dets, dropped = dets_from(self.boxes, self.scores, probs, self.gate, now)
     self.n_shown, self.went_dark = len(dets), False
     return dets, {'mode': 'find', 'found': len(found), 'dropped': dropped, 'det_ms': round((t1 - t0) * 1000),
                   'cls_ms': round((time.perf_counter() - t1) * 1000)}

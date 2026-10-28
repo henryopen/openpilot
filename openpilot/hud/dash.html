@@ -768,6 +768,10 @@ function renderTL(tl, la){
     const d = Math.round(tl.osm_m);
     const p=tl.p||[0,0,0];
     if(tl.mode==='approach' && tl.light==='red'){ cls='red'; txt=`${what} ${d}m 紅燈 ${pc(p[1])}`; }
+    // 10/28：C3 只在「看過是綠、同一顆變黃」才報黃燈；light_ahead 第一次看到就決定停（−2.0 內停得下）或通過
+    else if(tl.mode==='approach' && tl.light==='yellow'){
+      const yd = la && la.yellow==='stop' ? '・停' : la && la.yellow==='go' ? '・通過' : '';
+      cls='amber'; txt=`${what} ${d}m 黃燈 ${pc(p[3]||0)}${yd}`; }
     else if(tl.mode==='approach' && tl.light==='go'){ cls='green'; txt=`${what} ${d}m 綠燈 ${pc(p[2])}`; }
     else if(tl.mode==='approach'){ cls='off'; txt=`${what} ${d}m 判斷中`; }
     else { cls='off'; txt=`${what} ${d}m`; }
