@@ -33,7 +33,8 @@ instead of one finder cycle. Moving, every cycle is the full finder as before.
 
 Output /dev/shm/c3det/det.json as before - boxes in half-resolution coordinates, cls light_red / light_green /
 light_green_arrow / light_yellow (a yellow only where a light turned yellow, see YELLOW_*), zh, conf (the colour's
-probability), det (the finder's score) - for c3calib, which turns them into car-frame directions for C4's HUD. Only while C4 is driving (c3calib's "driving"), else idle.
+probability), det (the finder's score) - for c3calib, which turns them into car-frame directions for C4's HUD.
+Only while C4 is driving (c3calib's "driving"), else idle.
 
   c3lights.py                       live (VisionIPC road camera)
   c3lights.py --frames DIR OUT.json offline on JPEG frames (full 1928x1208), same code: ROW0 env or the default band
