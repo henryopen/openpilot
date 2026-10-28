@@ -127,6 +127,36 @@ def is_chase(lead):
     return False
   v_ego = float(lead.vLead) - float(lead.vRel)
   return float(lead.vLead) > v_ego + CHASE_DV and float(lead.aLeadK) > CHASE_A
+# The second lead that is the first one again (2026-10-28). The driver: "前車那麼遠 他一減速我們也減速".
+# radard's leadTwo is the model's leadsV3[1]; on 10/28 it set the accel on 1037 frames under -0.3, and on 89% of
+# them it was the car leadOne already is - within SAME_CAR_DM in range and SAME_CAR_DY sideways - but read by
+# vision alone while leadOne had the radar: e.g. 12:12:41 at 107 km/h, the radar car 73 m off at 111 km/h and
+# pulling away, the same car from vision 66 m at 95 km/h, and the MPC braked to -1.05 for 4 s. So where the two
+# are that close, leadTwo is taken to be leadOne - one car, its best reading. Vision's range is out by up to a
+# fifth that far off (12:12:43: 61 m against the radar's 75), so the range test is the larger of SAME_CAR_DM and
+# SAME_CAR_FRAC of it; over those 1035 frames that takes in 97%, and none was more than 0.5 m to the side (P95).
+# A car in the next lane (over a metre to the side) or one that has come in between is still its own lead.
+# Replayed, that still braked at 12:12:45 / 12:22:40 / 12:23:57 / 13:31:37: radard's leadTwo flips between the
+# radar's copy and vision's every few frames, and one frame missing the test (vision 17 m short, or 12 m *beyond*
+# the radar car) was enough - lead_view takes a lead's speed at once when it drops and only slowly when it rises
+# (RISE_TAU), so that one slow frame held leadTwo slow for a second and the MPC braked for it. So: a second lead
+# that is not nearer than the first by more than the tolerance is the same car (one further off cannot be what
+# we reach first); a vision-only one that stops matching is still taken as the same car for SAME_CAR_HOLD_S; and
+# while it is the same car it gets the first lead's own view, filter and all, not a second filter of its own.
+SAME_CAR_DM = 8.0      # m, 0 = off
+SAME_CAR_FRAC = 0.2
+SAME_CAR_DY = 1.0      # m
+SAME_CAR_HOLD_S = 0.5
+
+
+def same_car(one, two):
+  if SAME_CAR_DM <= 0. or not one.present or not two.present:
+    return False
+  d1 = float(one.dRel)
+  return (float(two.dRel) - d1 > -max(SAME_CAR_DM, SAME_CAR_FRAC * d1)
+          and abs(float(two.yRel) - float(one.yRel)) < SAME_CAR_DY)
+
+
 GAP_FAR_FRAC = 0.6
 GAP_FAR_MIN = 4.0      # m
 GAP_TTC = 5.0          # s
@@ -161,6 +191,7 @@ class LeadView:
     self.cnt = {}
     self.last_d = {}
     self.last_src = {}
+    self.apart = 0          # frames leadTwo has not been leadOne's car - see SAME_CAR_*
 
   def _raw_decel(self, key, lead):
     d = float(lead.dRel)
@@ -209,7 +240,16 @@ class LeadView:
     return _Lead(lead, vLead=f, vRel=f - v_ego, aLeadK=a_lead, leaving=leaving)
 
   def update(self, radar_state):
-    return _Radar(radar_state, self._lead("one", radar_state.leadOne), self._lead("two", radar_state.leadTwo))
+    one, two = radar_state.leadOne, radar_state.leadTwo
+    # see SAME_CAR_*
+    self.apart = 0 if same_car(one, two) else self.apart + 1
+    if SAME_CAR_DM > 0. and one.present and two.present and (self.apart == 0 or (
+       not two.radar and self.apart * DT_MDL <= SAME_CAR_HOLD_S)):
+      view = self._lead("one", one)
+      for s in (self.v_lead, self.hist, self.cnt, self.last_d, self.last_src):
+        s.pop("two", None)
+      return _Radar(radar_state, view, view)
+    return _Radar(radar_state, self._lead("one", one), self._lead("two", two))
 
   @staticmethod
   def _band(lead):
