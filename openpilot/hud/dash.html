@@ -19,8 +19,11 @@
   /* 版面（10/26 重排固定分區；10/27 使用者：「右邊導航沒開佔了一大片空白」「太集中在左側」「有些字體太小」）：
        頂部狀態列 0-36   ：左 接管狀態 chip ／ 右 時鐘＋連線燈號
        左欄  0-262       ：車速、設定速度、路名（速限牌移到路面右側，左欄字放大）
-       中間  262-(1280-rw)：路面窗格；左上不放東西、正上方警示框、右側一欄 速限牌→STOP→號誌燈牌→C3 燈、左下 LED 鏡像
-       右欄  寬 rw=330   ：鍵盤右旋鈕切「導航／交通資訊／不顯示」；選的那個沒內容或選不顯示 → 右欄收掉（rw=0），路面撐滿
+       中間  262-(1280-rw)：路面窗格；只放跟開車有關的：前車、路線、右側一欄 速限牌→號誌燈牌＋STOP，緊急警示在正上方
+       右欄  寬 rw=330   ：卡片由上往下疊：導航或交通資訊（鍵盤右旋鈕切「導航／交通資訊／不顯示」）→ 訊息卡（一般警示、
+                          轉彎指令、靠左、速限調整）→ 後窗 LED 卡（貼底）。沒內容的卡不佔位；三種都沒有右欄才收掉（rw=0）
+       （10/29 使用者：「導航下面那部份都是空白浪費」「C3 辨識燈號的為什麼要兩個」「左邊一些訊息顯示跟 LED 的是不是可以做個
+        卡片，不然這樣很亂，訊息也不是常會出現，也是長空白一塊在那」）
        底部資訊列 324-400
      全部字級 ≥16 px（10/27 前有 12-15 px 的標籤，車上看不清） */
   :root{--rw:330px}
@@ -161,9 +164,31 @@
   .tcard.slow{border-color:rgba(255,122,26,.75)} .tcard.slow .bd{color:#ff9a4d}
   .tcard.ok .bd{color:#9fe0b8}
   /* 右欄：鍵盤右旋鈕選「導航」只放導航卡、選「交通資訊」只放路況卡（10/27）；選的那張沒內容右欄就收掉 */
-  body.pm-nav .tcard, body.pm-traffic .nav{display:none}
-  .infocol{position:absolute;z-index:3;left:962px;top:46px;width:306px;display:flex;flex-direction:column;gap:8px;
+  body.pm-nav .tcard, body.pm-traffic .nav, body.pm-off .nav, body.pm-off .tcard{display:none}
+  .infocol{position:absolute;z-index:3;left:962px;top:46px;bottom:84px;width:306px;display:flex;flex-direction:column;gap:8px;
     pointer-events:none}
+  /* 訊息卡（10/29）：一般警示（緊急的仍在路面正上方）＋只在有事時出現的提示，沒有就整張收起來 */
+  .mcard{display:none;flex-direction:column;gap:5px;padding:7px 12px 9px;border-radius:12px;
+    background:rgba(6,14,20,.90);border:2px solid rgba(147,168,187,.35);text-shadow:var(--sh)}
+  .mcard.on{display:flex}
+  .mcard.warn{border-color:rgba(255,140,26,.8)}
+  .mcard .m1{font-size:24px;font-weight:800;line-height:1.2;color:var(--txt)}
+  .mcard.warn .m1{color:var(--amber)}
+  .mcard .m2{font-size:20px;font-weight:700;line-height:1.25;color:#c3d1dd}
+  .mcard .m1:empty, .mcard .m2:empty{display:none}
+  .mcard .tchips{display:flex;flex-direction:column;align-items:flex-start;gap:6px}
+  .mcard .tchips:not(:has(.chip:not([style*="display: none"]))){display:none}
+  /* 後窗 LED 卡（10/29 從路面左下搬來）：貼在右欄最底下 */
+  .lcard{display:none;flex-direction:column;gap:5px;padding:7px 12px 9px;border-radius:12px;margin-top:auto;
+    background:rgba(6,14,20,.90);border:2px solid rgba(147,168,187,.35)}
+  .lcard.on{display:flex}
+  .lcard .ledtag{position:static;width:auto;display:block}
+  .lcard .ledtag:not(.man){display:none}      /* 標題只在手動字幕倒數時才出；連線狀態由燈號列的「後窗 LED」燈講 */
+  .lcard .ledm{position:static}
+  /* 右欄高度只有 270 px：放不下時依序 收 LED 卡 → 收導航車道列 → 訊息第二行縮成一行（fitCol） */
+  .lcard.squeeze{display:none}
+  .nav.compact .r2{display:none}
+  .mcard.tight .m2{display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
 
   /* 連線燈號列（10/26 使用者：「有沒有連線的文字改用燈號」）。每顆燈都帶短標籤，不只靠顏色：
      綠＝正常、琥珀＝半正常（睡著／資料舊／粗標定）、紅＝斷線／沒回應、青＝語音正在聽。
@@ -400,22 +425,23 @@
   <div class="infocol" id="infoCol">
     <div class="nav" id="navCard"></div>
     <div class="tcard" id="trafCard"><div class="hd"><span class="t" id="trafHd">前方路況</span><span class="dd" id="trafD"></span></div><div class="bd" id="trafTxt"></div></div>
+    <div class="mcard" id="msgCard">
+      <div class="m1" id="msg1"></div>
+      <div class="m2" id="msg2"></div>
+      <!-- 只在有事時出現的說明（打燈的轉彎／換道判斷、速限調整了設定速度、最右車道靠左） -->
+      <div class="tchips" id="msgChips">
+        <span class="chip cy" id="cTurn" style="display:none"></span>
+        <span class="chip wait" id="cSLA" style="display:none"></span>
+        <span class="chip cy" id="cLaneOff" style="display:none"></span>
+      </div>
+    </div>
+    <div class="lcard" id="ledCard"><div class="ledtag" id="ledTag">後窗 LED</div><img class="ledm" id="ledMir" alt=""></div>
   </div>
 
-  <!-- 路面上只放跟路有關的：警示框（正上方）、號誌燈牌＋C3 看到的燈＋STOP（右上）、後窗 LED 鏡像（左下） -->
+  <!-- 路面上只放跟路有關的：緊急警示（正上方）、號誌燈牌＋STOP（右上）；一般警示、提示、後窗 LED 在右欄卡片 -->
   <div class="ov alertbox" id="alertBox">
     <div class="a1" id="alert1"></div>
     <div class="a2" id="alert2"></div>
-  </div>
-  <img class="ov ledm" id="ledMir" alt="">
-  <div class="ov ledtag" id="ledTag">後窗 LED</div>
-
-  <!-- 路面左側：只在有事時出現的說明（打燈的轉彎／換道判斷、速限調整了設定速度）。10/27 從頂部列搬下來，
-       頂部列只放常駐狀態，字放大後才不會跟右邊的燈號撞在一起 -->
-  <div class="ov tchips">
-    <span class="chip cy" id="cTurn" style="display:none"></span>
-    <span class="chip wait" id="cSLA" style="display:none"></span>
-    <span class="chip cy" id="cLaneOff" style="display:none"></span>
   </div>
   <!-- 路面右側一欄：速限牌（下一個速限在它左邊）→ 號誌燈牌＋STOP 並排 → C3 燈，沒有的不佔位 -->
   <div class="ov rcol" id="rCol">
@@ -482,8 +508,20 @@ function paneHasContent(){
 function updateInfoCol(){
   const b=document.body;
   PANES.forEach(k=>b.classList.toggle('pm-'+k, k===PANE));
-  b.classList.toggle('panehide', !paneHasContent());
+  // 後窗 LED 卡平常只是跟著別的卡一起出現（時鐘／平穩行駛不值得為它開一欄）；手動字幕倒數中才單獨撐開右欄
+  const ledAlone = $('ledCard').classList.contains('on') && $('ledTag').classList.contains('man');
+  b.classList.toggle('panehide', !(paneHasContent() || $('msgCard').classList.contains('on') || ledAlone));
   fitRoad();
+  fitCol();
+}
+function fitCol(){
+  const col=$('infoCol'), nav=$('navCard'), lc=$('ledCard'), mc=$('msgCard');
+  if(!col) return;
+  lc.classList.remove('squeeze'); nav.classList.remove('compact'); mc.classList.remove('tight');
+  const over=()=>col.scrollHeight>col.clientHeight+1;
+  if(over()) lc.classList.add('squeeze');
+  if(over()) nav.classList.add('compact');
+  if(over()) mc.classList.add('tight');
 }
 let paneToastT=null;
 function cyclePane(step){
@@ -841,6 +879,9 @@ function renderC3(c3){
     } else { txt='C3 前方無燈'+tag; }
     if((c3.temp||0)>=85){ cls='hot'; txt+=`・C3 ${Math.round(c3.temp)}°C`; }
   }
+  // 號誌燈牌亮著時它已經講了燈色和「C3」來源，不再另放一張（10/29 使用者：「C3 辨識燈號的為什麼要兩個」）；
+  // 只有地圖上沒有號誌、C3 卻看到燈時才單獨出現
+  if($('litBox').classList.contains('on')){ box.className='ov c3l'; return; }
   box.className='ov c3l on '+cls;
   document.getElementById('c3Txt').textContent=txt.replace(/・/g, '・\u200b');   // 同號誌燈牌：只在「・」與空白處換行
 }
@@ -985,13 +1026,20 @@ function render(F){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
   } else sla.style.display='none';
   // 警示／事件訊息（selfdriveState.alertText1/2 就是 openpilot event 轉出來的文字）
+  // 緊急（critical，例如「立即接管」）仍在路面正上方大字；其他的放右欄訊息卡（10/29）
   const ab=$('alertBox');
   const t1=(F.alert1||'').trim(), t2=(F.alert2||'').trim();
-  if(t1||t2){
-    ab.className='ov alertbox on'+(F.alertStatus==='critical'?' crit'
-                                 : F.alertStatus==='userPrompt'?' warn':'');
-    set('alert1',t1); set('alert2',t2);
-  } else ab.className='ov alertbox';
+  const crit = F.alertStatus==='critical';
+  if((t1||t2) && crit){ ab.className='ov alertbox on crit'; set('alert1',t1); set('alert2',t2); }
+  else ab.className='ov alertbox';
+  const mc=$('msgCard'), msgOn=(t1||t2) && !crit;
+  const mtxt=(msgOn ? t1+'|'+t2 : '');
+  set('msg1', msgOn ? t1 : ''); set('msg2', msgOn ? t2 : '');
+  const chipsOn=[...$('msgChips').children].some(c=>c.style.display!=='none');
+  const mcCls='mcard'+((msgOn||chipsOn)?' on':'')+(msgOn && F.alertStatus==='userPrompt'?' warn':'');
+  if(mc.className.replace(' tight','')!==mcCls){ mc.className=mcCls; updateInfoCol(); }
+  else if(mtxt!==window.__mtxt){ fitCol(); }
+  window.__mtxt=mtxt;
   const sb=$('stopBox');
   // 模型看到前方會停就先亮（琥珀、距離倒數），shouldStop 確定要停才轉紅。
   // 模型的預測會閃，亮過就保持 1 秒，距離用 EMA 壓抖。
@@ -1597,7 +1645,9 @@ if(new URLSearchParams(location.search).has('play')){
 (()=>{
   const img=document.getElementById('ledMir'), tag=document.getElementById('ledTag');
   let fails=0, busy=false;
-  function hide(){ img.classList.remove('on'); tag.classList.remove('on'); }
+  const lc=document.getElementById('ledCard');
+  function hide(){ img.classList.remove('on'); tag.classList.remove('on');
+                   if(lc.classList.contains('on')){ lc.classList.remove('on'); updateInfoCol(); } }
   async function poll(){
     if(busy) return; busy=true;
     try{
@@ -1613,9 +1663,10 @@ if(new URLSearchParams(location.search).has('play')){
       tag.textContent = '後窗 LED'
                       + (sticky ? '・手動字幕 常駐中（再按同鍵關閉）'
                          : isMan ? `・手動字幕 剩 ${Math.ceil(man)} 秒（再按同鍵取消）` : '');
-      tag.classList.toggle('man', isMan);
+      if(tag.classList.contains('man')!==isMan){ tag.classList.toggle('man', isMan); updateInfoCol(); }
       img.classList.toggle('man', isMan);
       img.classList.add('on'); tag.classList.add('on'); fails=0;
+      if(!lc.classList.contains('on')){ lc.classList.add('on'); updateInfoCol(); }
     }catch(e){ if(++fails>=3){ hide(); setLt('ltLed', null); } }
     finally{ busy=false; }
   }
