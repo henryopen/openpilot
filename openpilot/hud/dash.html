@@ -415,6 +415,7 @@
   <div class="ov tchips">
     <span class="chip cy" id="cTurn" style="display:none"></span>
     <span class="chip wait" id="cSLA" style="display:none"></span>
+    <span class="chip cy" id="cLaneOff" style="display:none"></span>
   </div>
   <!-- 路面右側一欄：速限牌（下一個速限在它左邊）→ 號誌燈牌＋STOP 並排 → C3 燈，沒有的不佔位 -->
   <div class="ov rcol" id="rCol">
@@ -972,6 +973,13 @@ function render(F){
     else if(F.turnQuiet && (F.blinkL||F.blinkR)){ tc.style.display=''; tc.textContent='字幕中・打燈不轉彎不換道'; }
     else tc.style.display='none';
   }
+  // 最右側車道靠左（lane_offset 10/29）：模型看到的畫面往右平移，車子就往左開這麼多
+  const lof=$('cLaneOff');
+  if(lof){
+    const o=(F.lo&&!F.lo.disabled)?(+F.lo.offset||0):0;
+    if(o>0.01){ lof.style.display=''; lof.textContent=`最右車道・靠左 ${o.toFixed(2)} m`; }
+    else lof.style.display='none';
+  }
   const sla=$('cSLA');
   if(F.slaAge>=0 && F.slaAge<8 && F.slaTarget>0){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
@@ -1308,6 +1316,7 @@ function fromSSE(J){
     tl: J.tlwatch||null,   // 看燈服務（tlwatchd）：前方號誌、燈色、停等看燈
     c3: J.c3||null,   // C3（USB 線上的第二台）：自己的標定狀態、看到的燈（車身座標方位）—— 只顯示
     tx: J.tdxTraffic||null,   // TDX 即時路況（tdx_traffic）：前方事件、路段車速、國道車道車速 —— 只顯示
+    lo: J.laneOffset||null,   // 最右側車道靠左（lane_offset）：offset 是目前往左的公尺數
     la: J.lightAhead||null,   // 規劃程式對號誌的處置（light_ahead）：滑行／提早減速，on=false 是觀察
     // ENGAGED＝縱向真的在作用。踩煞車（行進中）／踩油門時 OP 狀態是 overriding：enabled 還是 true，
     // 但縱向已經交給駕駛，放開才接回。09-23 這段一直顯示 ENGAGED，駕駛以為 OP 還在控制，
@@ -1359,7 +1368,10 @@ function fromSSE(J){
                   id:(L.id!=null?'r'+L.id:(i===0?'lead':null))});
   });
   F.stopA = (mv && mv.stopAhead) || 0;
-  if(mv && mv.lanes){ F.lanes=mv.lanes; F.edges=mv.edges; F.path=mv.path;
+  // lane_offset 開著時模型的線都偏了 offset（模型以為車在正中），畫的時候加回去（同 sunnypilot model_renderer）
+  const lo_o=(J.laneOffset&&!J.laneOffset.disabled)?(+J.laneOffset.offset||0):0, lo_sh=a=>lo_o?(a||[]).map(y=>y+lo_o):a;
+  if(mv && mv.lanes){ F.lanes=lo_o?mv.lanes.map(l=>({...l,y:lo_sh(l.y)})):mv.lanes;
+                      F.edges=lo_o?(mv.edges||[]).map(e=>({...e,y:lo_sh(e.y)})):mv.edges; F.path=lo_sh(mv.path);
                       if(mv.d && mv.d.length) SAMPLE_D=mv.d; }
   return F;
 }

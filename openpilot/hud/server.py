@@ -542,6 +542,15 @@ def _produce():
             data["lightAhead"] = _la
         except (OSError, ValueError):
           pass
+        # the rightmost lane's offset to the left (selfdrive/modeld/lane_offset.py): the model sees a shifted camera,
+        # so its lane lines / edges / path come out shifted by this much - the page adds it back when drawing
+        try:
+          with open("/dev/shm/lane_offset.json") as _f:
+            _lo = json.load(_f)
+          if time.monotonic() - float(_lo.get("t", 0)) < 2.5:
+            data["laneOffset"] = _lo
+        except (OSError, ValueError):
+          pass
         # TDX live road conditions ahead (selfdrive/mapd/tdx_traffic.py): events, section speeds, the freeway
         # detectors' lanes. Display only. Written every 2 s; older than 10 s means it is not running.
         try:
