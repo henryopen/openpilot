@@ -32,6 +32,7 @@ from openpilot.selfdrive.modeld.fill_model_msg import fill_model_msg, fill_drivi
 from openpilot.common.file_chunker import open_file_chunked
 from openpilot.selfdrive.modeld.constants import ModelConstants, Plan
 from openpilot.selfdrive.modeld.helpers import usbgpu_present, usbgpu_compiled, modeld_pkl_path, get_tg_input_devices, load_oob
+from openpilot.selfdrive.modeld.lane_offset import LaneOffset, apply_offset
 
 PROCESS_NAME = "openpilot.selfdrive.modeld.modeld"
 SEND_RAW_PRED = os.getenv('SEND_RAW_PRED')
@@ -306,6 +307,10 @@ def main(demo=False):
   model_transform_main = np.zeros((3, 3), dtype=np.float32)
   model_transform_extra = np.zeros((3, 3), dtype=np.float32)
   extrinsics_calibration_seen = False
+  # the rightmost lane's offset to the left - see lane_offset
+  lane_off, LO = 0., LaneOffset()
+  main_intrinsics = extra_intrinsics = None
+  cam_height = 1.22
   buf_main, buf_extra = None, None
   meta_main = FrameMeta()
   meta_extra = FrameMeta()
@@ -371,6 +376,7 @@ def main(demo=False):
       has_wide_camera = use_extra_client or main_wide_camera
       extra_intrinsics = dc.wide_road.intrinsics if has_wide_camera else dc.narrow_road.intrinsics
       model_transform_extra = get_warp_matrix(device_from_calib_euler, extra_intrinsics, True).astype(np.float32)
+      cam_height = sm['extrinsicsCalibration'].height[0] if len(sm['extrinsicsCalibration'].height) else 1.22
       extrinsics_calibration_seen = True
 
     traffic_convention = np.zeros(2)
@@ -391,7 +397,11 @@ def main(demo=False):
     frame_drop_ratio = frames_dropped / (1 + frames_dropped)
 
     bufs = {name: buf_extra if 'big' in name else buf_main for name in model.vision_input_names}
-    transforms = {name: model_transform_extra if 'big' in name else model_transform_main for name in model.vision_input_names}
+    tfm_main, tfm_extra = model_transform_main, model_transform_extra
+    if lane_off != 0. and main_intrinsics is not None:
+      tfm_main = apply_offset(model_transform_main, main_intrinsics, cam_height, lane_off)
+      tfm_extra = apply_offset(model_transform_extra, extra_intrinsics, cam_height, lane_off)
+    transforms = {name: tfm_extra if 'big' in name else tfm_main for name in model.vision_input_names}
     frame_delay = DT_MDL # compensate for time passed since the frame was captured: current_time - timestamp_eof is 50ms on average
     action_delay = DT_MDL / 2 # middle of the interval between model output (current state) and next frame (expected state)
     lat_action_t = lat_delay + frame_delay + action_delay
@@ -441,6 +451,11 @@ def main(demo=False):
       DH.update(sm['carState'], sm['carControl'].latActive, lane_change_prob, left_edge, right_edge)
       modelv2_send.modelV2.meta.laneChangeState = DH.lane_change_state
       modelv2_send.modelV2.meta.laneChangeDirection = DH.lane_change_direction
+      try:
+        lane_off = LO.update(modelv2_send.modelV2, sm['carState'], DH.lane_change_state, v_ego)
+      except Exception:
+        cloudlog.exception("lane_offset failed")
+        lane_off = 0.
 
       fill_driving_model_data(drivingdata_send, modelv2_send)
       fill_pose_msg(posenet_send, model_output, meta_main.frame_id, vipc_dropped_frames, meta_main.timestamp_eof, extrinsics_calibration_seen)
