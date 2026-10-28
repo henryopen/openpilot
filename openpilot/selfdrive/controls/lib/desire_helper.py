@@ -70,8 +70,14 @@ HOLD_WATCH_S = 2.0
 HOLD_SLOWING = 1 * CV.KPH_TO_MS
 TURN_SLOW_SPEED = 20 * CV.KPH_TO_MS
 TURN_NEAR_M = 60.
-TURN_TT_SPEED = 25 * CV.KPH_TO_MS
+# 10/28 (the driver: "轉彎門檻可以放寬"): 25 -> 30 km/h. That day's turns taken at 25-35 km/h got the desire 1.2-2.7 s
+# before the turn point or never (13:19:59 at 25.6 km/h became a lane change first). On 21 drives (10/12-10/28, 132
+# turns, 120 lane changes, 27 pull-overs): turns given it under 3.5 s before the turn point 18 -> 8, given 109 -> 110,
+# lane changes wrongly given it 8 -> 9, pull-overs 17 -> 16 - with TURN_MIN_S: the lane changes it wrongly caught at
+# 25-30 km/h were all signalled 9-28 m before a junction, a turn there no car takes at that speed.
+TURN_TT_SPEED = 30 * CV.KPH_TO_MS
 TURN_TT_S = 6.0
+TURN_MIN_S = 2.0                                 # at TURN_SLOW_SPEED and over, a junction closer in time is passed
 QUIET_CAPTIONS = ('m_temp_stop', 'm_unfamiliar')
 OSM_OFF_FLAG = '/data/turn_osm_off'
 TURN_HOLD_FILE = '/dev/shm/turn_hold.json'     # for the HUD: turn / hold / quiet and why, rewritten when it changes
@@ -81,7 +87,10 @@ def _turn_due(d, v_ego):
   """A turn desire is due at d metres to the turn (OSM junction or route step) at v_ego."""
   if d is None or v_ego < LANE_TURN_SPEED_MIN:
     return False
-  return (v_ego < TURN_SLOW_SPEED and d <= TURN_NEAR_M) or (v_ego < TURN_TT_SPEED and d / max(v_ego, 1.0) <= TURN_TT_S)
+  if v_ego < TURN_SLOW_SPEED and d <= TURN_NEAR_M:
+    return True
+  tt = d / max(v_ego, 1.0)
+  return v_ego < TURN_TT_SPEED and tt <= TURN_TT_S and (v_ego < TURN_SLOW_SPEED or tt >= TURN_MIN_S)
 
 
 class DesireHelper:
