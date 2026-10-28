@@ -84,7 +84,10 @@ C3_GO = BASE / 'C3_GO'          # GO on C3's call is pressed only with this too 
 C3_FILE = '/dev/shm/c3lights.json'
 C3_FRESH_S = 1.5                # c3_relay rewrites it twice a second while C3 sends
 C3_AZ_DEG = 12.0                # the HUD's "in front" for C3's lights
-C3_GO_HOLD_S = 1.5              # go (green ball, no red) held this long before a GO on C3's call
+C3_GO_HOLD_S = 0.5              # go (green ball, no red) held this long before a GO on C3's call: two readings in a row
+# (C3 sends twice a second). Was 1.5 until 2026-10-28, the driver: green to moving took 4-5 s (14:37: C3 green at
+# 34.4, GO 35.9, moving 37.6). Over the 17 C3-read waits on C4 so far no green spell ended in red; the red-first and
+# no-red / no-yellow-with-the-green guards are unchanged.
 MODEL_DET = '/data/yolo/c4band1_1344x352.int8v2.onnx'
 MODEL_CLS = '/data/yolo/tlcls_v2_1344x352.onnx'
 
