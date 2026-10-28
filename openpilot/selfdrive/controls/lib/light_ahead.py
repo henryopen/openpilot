@@ -19,8 +19,13 @@ and the watcher's file fresh:
   red known, or the model means to slow (INTENT_FRAC, for INTENT_FRAMES)
                      slow down evenly towards V_FLOOR by STOP_ZONE short of the signal, no firmer than
                      A_EARLY_MAX; the stop itself stays with stop_for_lights / the junction handoff
-  otherwise, inside COAST_FROM
-                     no throttle: A_COAST, about what the car does on its own off the pedal (-0.27)
+  otherwise          nothing. Until 2026-10-28 this coasted (A_COAST, -0.25) from 150 m out whenever the light
+                     was not yet known green. Taken out, the driver: "滑行為什麼是 -0.25 不是 0，這樣真的讓人坐得很
+                     不舒服". On 10/28's two drives it coasted 41 times (163 s) and the car stopped at that signal
+                     in none of them; it cut straight from +0.5..+0.9 to -0.25 in 11 (7-10 m/s^3), switched on and
+                     off with each signal on the map (13:37:46-13:39:18 seven times), and -0.25 is not coasting on
+                     this car: off the throttle it slows 0.10-0.24, so the SCC tops it up with the brakes (TCS13
+                     BrakeLight on 33% / 68% of -0.20..-0.30 requests at 80-93 / 40-60 km/h).
 Simulated on the recorded approaches with the classifier's real calls: 40-55 km/h reds start slowing
 at a median 104 m and need 0.77 m/s^2 instead of braking late; 2 of 129 greens get a needless slowdown.
 
@@ -49,7 +54,6 @@ FLAG = '/data/light_ahead_on'
 STATE = '/dev/shm/tlwatch.json'
 OUT = '/dev/shm/light_ahead.json'  # what it is doing, for the HUD: written on a change and once a second
 STALE = 1.0                      # s: an older file means the watcher is not running
-COAST_FROM = 150.0               # m to the signal
 STOP_ZONE = 15.0                 # m: the OSM node is mid-junction, the stop line about this far short
 A_COAST = -0.25                  # m/s^2, off the throttle
 A_EARLY_MAX = -1.2               # firmest early slowdown; anything harder is the stop logic's call
@@ -74,7 +78,7 @@ class LightAhead:
     self.state = None
     self.intent_frames = 0
     self.a_limit = None
-    self.mode = ''               # '', 'coast', 'slow' - what it is (or in shadow would be) doing
+    self.mode = ''               # '' or 'slow' - what it is (or in shadow would be) doing
     self.slowing = False         # it was slowing on the last tick, for this same signal
     self._osm_prev = None
     self.a_shadow = None
@@ -145,8 +149,6 @@ class LightAhead:
       v_floor = V_FLOOR_RED if light == 'red' else V_FLOOR
       a = -(v_ego ** 2 - v_floor ** 2) / (2. * d)
       self.mode, a = 'slow', float(np.clip(a, A_EARLY_MAX, A_COAST))
-    elif float(s['osm_m']) <= COAST_FROM:
-      self.mode, a = 'coast', A_COAST
     else:
       return
     self.a_shadow = a
