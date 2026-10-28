@@ -685,7 +685,11 @@ class Handler(BaseHTTPRequestHandler):
       except OSError:
         return self._status(500)
       return self._json({"ok": True})
-    if not keypad.post(cmd):
+    # one journal line per keypad / C3 voice command (the journal is kept on /data since 10/28), so a command that
+    # "did nothing" can be told apart: never arrived here, refused here, or passed on to card / plannerd
+    ok = keypad.post(cmd)
+    print(f"keypad {cmd} from {self.client_address[0]}: {'passed on' if ok else 'unknown command'}", flush=True)
+    if not ok:
       return self._status(400)
     self._json({"ok": True})
 

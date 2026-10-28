@@ -86,7 +86,8 @@ def send(cmd):
   except urllib.error.HTTPError as e:
     return f'http {e.code}'
   except Exception as e:  # no USB link, C4 not up: the driver sees it on the HUD
-    return f'no link ({type(e).__name__})'
+    # the reason too (10/28: two "no link (URLError)" at 14:20 could not be told apart - refused, timed out, no route)
+    return f'no link ({type(e).__name__}: {getattr(e, "reason", e)})'[:120]
 
 
 def act(tag):
