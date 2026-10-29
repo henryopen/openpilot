@@ -23,6 +23,7 @@ the lead does move a metre or more - traffic crawling - it lets go and the car f
 right: 14 of the shorter "false" starts in the wider set had a lead that moved 1.1-9.3 m.
 """
 from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.long_mpc import STOP_DISTANCE
 
 ARM_SPEED = 0.3        # m/s - where should_stop takes over anyway; the approach is left to the MPC
 ARM_MAX_GAP = 9.0      # m - same reach as the gate this replaces
@@ -56,7 +57,42 @@ CRAWL_GAP = 3.5        # m
 # rolled on 2.4-2.7 m past a near-still car.
 CLOSE_SPEED = 2.0      # m/s
 CLOSE_DECEL = 0.8      # m/s^2
-CLOSE_GAP = 3.0        # m
+CLOSE_GAP = STOP_DISTANCE   # m - was 3.0, see "The stop distance is the line" below
+
+# The stop distance is the line (2026-10-30). The driver: "跟前車的距離是最後底線，不管什麼都不該在前進",
+# and "stop_distance 設定裡面就不能在前進". On 10/29's four drives the car rolled to within 4 m of a lead
+# 23 times, down to 0.9 / 1.6 / 1.8 / 2.3 m, the same way each time: what went on CAN (sendcan SCC12, the
+# car's TCS13) shows that once should_stop takes the controller into its stopping state the SCC12 carries
+# StopReq, and from then on the car stops on its own at about -0.2 whatever aReq says - 17:45:32 asked
+# -2.01 for 2 s and got -0.13..-0.27, rolling from 3.4 m to 0.9 m. Before StopReq (PID, the same aReq
+# without it) it follows: 19:06:12-13 asked -0.62..-0.93 at 3.7-5.5 km/h and got -0.45..-0.51. The arms
+# above were built on should_stop stopping the car at about CLOSE_DECEL; this car does not do that, so
+# the arm put it into its slowest stop earlier. And the release let go on 1 m of the lead's movement
+# alone: 17:45:28 at 4.8 m, 18:36:24 at 5.9, 19:03:44 at 5.4, after which the car surged (+0.25 asked,
+# +1.63 done), the lead stopped again and the car rolled in.
+# So, under GAP_SPEED with a lead that is not pulling away (radarState leadOne, the planner's lead):
+#  * no release while the lead is within STOP_DISTANCE (the MPC's stop distance, the driver's 5.0);
+#  * within STOP_DISTANCE no throttle, and while still rolling brake as a request in PID - at least
+#    GAP_BRAKE_MIN (the car does not act on less at this pace), more if stopping short of GAP_STOP_AT
+#    needs it, up to GAP_BRAKE_MAX;
+#  * held by an arm above while still rolling: the same braking, aimed at stopping at STOP_DISTANCE,
+#    and should_stop (StopReq) only once under ARM_SPEED, where the car's own stop has nothing left to
+#    cover (0.3 m/s at -0.2 is 0.2 m);
+#  * outside the line, behind a lead that is not going: brake early if stopping behind it at
+#    STOP_DISTANCE, were it to stop from here, would take more than GAP_BRAKE_MIN;
+#  * from a standstill behind a crawling lead, no throttle until GAP_LAUNCH_MARGIN past the line.
+GAP_SPEED = 3.0        # m/s - stop-and-go pace; above it a lead this close is a cut-in, the MPC's
+GAP_LEAVING = 0.3      # m/s - lead faster than us by this: it is going, no braking (still no throttle)
+GAP_BRAKE_MIN = 0.8    # m/s^2
+GAP_BRAKE_MAX = 2.0    # m/s^2 - the controller's stopping decel (CP.stopAccel)
+GAP_STOP_AT = 2.0      # m - inside the line: stop before this, as soon as the car can
+GAP_LEAD_DECEL = 1.0   # m/s^2 - how hard a lead at this pace is taken to stop, at least
+# Pulling away, the car surges for about a second whatever is asked (10/29: +0.13..+0.44 asked, +0.88 /
+# +1.63 / +1.72 done), 0.5-1 m more than asked. Behind a lead only crawling (19:03:44, 4 km/h) that took a
+# start at 5.4-6.0 m to 1.8 m. So from a standstill, behind a lead slower than GAP_LAUNCH_LEAD_V, wait
+# for STOP_DISTANCE + GAP_LAUNCH_MARGIN; a lead actually driving off opens that within a second anyway.
+GAP_LAUNCH_MARGIN = 1.5    # m
+GAP_LAUNCH_LEAD_V = 2.0    # m/s
 
 # The pull away after a release. While held, the MPC keeps planning from zero and keeps wanting to
 # close in, so on release its plan went straight out: +0.47-0.72 in the first frames against 0.00 on
@@ -79,6 +115,7 @@ class StandstillHold:
     # reference, and the car would never get going.
     self.need_move = False
     self.launch_t = None
+    self.gap_wait = False    # kept stopped by gap_limit last frame
     self.reset()
 
   def _release(self) -> None:
@@ -143,10 +180,51 @@ class StandstillHold:
       self.lost_t = 0.0
       d = self.d_filter.update(float(lead.dRel))
       self.moved = d + (self.odo - self.ref_odo) - self.ref_d
-      if self.moved >= RELEASE_M:
+      if self.moved >= RELEASE_M and d >= STOP_DISTANCE:
         self._release()
     else:
       self.lost_t += self.dt
       if self.lost_t >= LOST_GRACE:
         self._release()
     return self.active
+
+  def gap_limit(self, enabled: bool, v_ego: float, lead, held: bool) -> float:
+    """Ceiling on the accel from the stop distance - see "The stop distance is the line". inf when it
+    has nothing to say, 0 for no throttle, negative for a brake request (meant to be sent without
+    should_stop, which the caller only sets under ARM_SPEED). Kept stopped by it and then let go, the
+    car pulls away on the release ramp (launch_cap): the MPC wants the whole gap at once by then
+    (+1.0 behind a lead already at 8-10 km/h, which this car makes 2-3 at walking pace)."""
+    a = self._gap_limit(enabled, v_ego, lead, held)
+    waiting = enabled and v_ego < ARM_SPEED and a <= 0.
+    if self.gap_wait and not waiting and enabled and v_ego < ARM_SPEED and not held:
+      self.launch_t = 0.0
+    self.gap_wait = waiting
+    return a
+
+  @staticmethod
+  def _gap_limit(enabled: bool, v_ego: float, lead, held: bool) -> float:
+    if not enabled or not lead.present or v_ego >= GAP_SPEED:
+      return float('inf')
+    d = float(lead.dRel)
+    leaving = float(lead.vLead) - v_ego > GAP_LEAVING
+    if v_ego < ARM_SPEED and d < STOP_DISTANCE + GAP_LAUNCH_MARGIN and float(lead.vLead) < GAP_LAUNCH_LEAD_V:
+      return 0.     # not pulling away into the car's surge behind a lead that is only crawling
+    if d < STOP_DISTANCE:
+      if v_ego < ARM_SPEED or (leaving and not held):
+        return 0.
+      room = max(d - GAP_STOP_AT, 0.5)
+    elif held and v_ego >= ARM_SPEED:
+      room = max(d - STOP_DISTANCE, 0.5)
+    elif not leaving and v_ego >= ARM_SPEED:
+      # outside the line, a lead that is not going: if it stopped from here (at its own decel, at least
+      # GAP_LEAD_DECEL), would stopping behind it at STOP_DISTANCE take more than GAP_BRAKE_MIN? Then
+      # brake now - the car answers about 0.4 s late, and the MPC asked -0.4 for the first half second
+      # of 10/29 19:06:35 (8 km/h, 7 m, the lead stopping in 1.3 s), which put the car at 2.5 m.
+      vl = max(float(lead.vLead), 0.)
+      lead_stop = vl ** 2 / (2. * max(-float(lead.aLeadK), GAP_LEAD_DECEL))
+      room = max(d + lead_stop - STOP_DISTANCE, 0.5)
+      if v_ego ** 2 / (2. * room) < GAP_BRAKE_MIN:
+        return float('inf')
+    else:
+      return float('inf')
+    return -min(max(GAP_BRAKE_MIN, v_ego ** 2 / (2. * room)), GAP_BRAKE_MAX)

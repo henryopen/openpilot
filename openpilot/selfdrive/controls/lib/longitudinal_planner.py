@@ -21,7 +21,7 @@ from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.light_ahead import LightAhead
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
-from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold
+from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold, ARM_SPEED as STANDSTILL_HOLD_ARM_SPEED
 from openpilot.selfdrive.controls.lib.lead_view import LeadView, is_chase
 from openpilot.selfdrive.controls.lib.stop_for_lights import StopForLights, MAX_DECEL as STOP_MAX_DECEL, STOPPED as STOPPED_SPEED
 from openpilot.selfdrive.controls.lib.junction_handoff import JunctionHandoff
@@ -749,11 +749,16 @@ class LongitudinalPlanner:
 
     # Stopped behind a car that has not gone: stay stopped, and in the stopping state, until it
     # has moved 1 m on its own - see standstill_hold.
-    if self.standstill_hold.update(not reset_state, v_ego, radar.leadOne, sm['carState'].gasPressed):
+    # Still rolling when it holds: brake with a request rather than should_stop, whose StopReq this car
+    # answers with its own -0.2 stop - see standstill_hold's "The stop distance is the line".
+    held = self.standstill_hold.update(not reset_state, v_ego, radar.leadOne, sm['carState'].gasPressed)
+    if held:
       output_a_target = min(output_a_target, 0.0)
-      self.output_should_stop = True
+      if v_ego < STANDSTILL_HOLD_ARM_SPEED:
+        self.output_should_stop = True
     else:
       output_a_target = min(output_a_target, self.standstill_hold.launch_cap(v_ego))
+    output_a_target = min(output_a_target, self.standstill_hold.gap_limit(not reset_state, v_ego, radar.leadOne, held))
 
     # no throttle towards a lead we are already closing on - see COAST_*
     if COAST_TTC > 0. and not reset_state and output_a_target > 0. and self.plan_reason in (PlanReason.cruise, PlanReason.lead):
