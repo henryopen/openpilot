@@ -25,6 +25,17 @@ BEHIND_M = -8.                             # just passed it (GPS lag, a wide jun
 # deg off our heading: a road leaving to that side. 30-160 (10/27): 40-140 missed a back-right fork (144 deg) and
 # shallow slip roads; on 19 drives the wider window found 2 more turns and no more lane changes.
 ARM_MIN, ARM_MAX = 30, 160
+# Only junctions on our road (2026-10-30). The driver: "OSM 跟導航都沒路口 OP 為什麼要下 turn desire" - 10/29 17:46:02,
+# right blinker at 19.5 km/h going up the ramp onto the viaduct: OSM's nearest junction with a road to the right
+# was 47 m ahead and 7 m to the side on the road below (its arms 255 / 76 / 61 deg, none the way we drive, 151), and
+# the next one was on the other carriageway of the divided road. So a junction counts only when one of its arms
+# leads back the way we came (ON_ROAD_DEG): one-way into the junction, or two-way with the way ahead open or no way
+# ahead (a T). A back arm one may drive out along while the way ahead is closed is the other carriageway: a left
+# turn crosses the median to it (Taiwan drives on the right) - 10/29 13:55:01's left turn onto the ramp is mapped
+# there - a right turn never leaves from it. Every blinker with lateral on, 21 routes 10/12-10/29
+# (E:/Temp/d1030/onroad_eval.py): turns given the desire 105 -> 105 of 124, lane changes given it 29 -> 26 of 156,
+# unclear 14 -> 12 of 61, 17:46:02 no longer.
+ON_ROAD_DEG = 35.
 MAJOR = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'motorway_link', 'trunk_link',
          'primary_link', 'secondary_link', 'tertiary_link')
 NAV_MANEUVERS = ('turn', 'off_ramp', 'fork', 'roundabout', 'on_ramp')
@@ -80,10 +91,20 @@ class JunctionMap:
       f = self.first[k]
       sl = slice(f, f + self.count[k])
       ok = self.out[sl]
+      arms = self.brg[sl]
+      # is the junction on our road? (see ON_ROAD_DEG)
+      back = np.abs((arms - (brg + 180.) + 540) % 360 - 180) <= ON_ROAD_DEG
+      fwd = np.abs((arms - brg + 540) % 360 - 180) <= ON_ROAD_DEG
+      ours = back.any() and ((~ok[back]).any() or not fwd.any() or ok[fwd].any())
+      other = back.any() and not ours
+      if not (ours or other):
+        continue
       if classes is not None:
         ok = ok & classes[self.cls[sl]]
-      rel = (self.brg[sl] - brg + 540) % 360 - 180          # + = to the right
+      rel = (arms - brg + 540) % 360 - 180          # + = to the right
       for side, m in (('R', (rel >= ARM_MIN) & (rel <= ARM_MAX)), ('L', (rel <= -ARM_MIN) & (rel >= -ARM_MAX))):
+        if other and side == 'R':
+          continue
         if (m & ok).any() and (best[side] is None or d < best[side]):
           best[side] = float(d)
     return best['L'], best['R']
