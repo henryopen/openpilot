@@ -56,6 +56,12 @@ def main():
   except Exception:
     rmem = None
     cloudlog.exception("mapd: no road memory")
+  try:
+    bmem = road_memory.BlinkMemory()
+    cloudlog.info("mapd: blinker memory %d blinkers", len(bmem))
+  except Exception:
+    bmem = None
+    cloudlog.exception("mapd: no blinker memory")
   alt, vacc, gspeed = None, None, 0.
   bearing = None          # last heading while moving (deg), for the direction-dependent sign stretches
   fix_off = os.path.exists(OFF_FLAG)
@@ -97,10 +103,17 @@ def main():
     osm_ok = jmap is not None and pos is not None and bearing is not None and now - pos_t < turn_ahead.FIX_FRESH_S
     if osm_ok:
       left, right = jmap.turn_ahead(pos[0], pos[1], bearing, turn_ahead.REACH_M)
+    # what the driver did after a blinker here before - turned or changed lanes (road_memory.BlinkMemory)
+    mem = None
+    if bmem is not None and pos is not None and bearing is not None and now - pos_t < turn_ahead.FIX_FRESH_S:
+      try:
+        mem = bmem.lookup(pos[0], pos[1], bearing)
+      except Exception:
+        cloudlog.exception("mapd: blinker memory lookup failed")
     nav = turn_ahead.read_nav()
     try:
       turn_ahead.write({"t": now, "osm": osm_ok, "L": left, "R": right, "nav": turn_ahead.nav_turn(nav, now),
-                        "caption": turn_ahead.caption_now(nav, now)})
+                        "caption": turn_ahead.caption_now(nav, now), "mem": mem})
     except OSError:
       pass
 

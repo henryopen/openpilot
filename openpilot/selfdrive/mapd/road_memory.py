@@ -2,9 +2,17 @@
 """Road memory: how fast this car has been driven here before, as a cap on cruise ahead (2026-10-30, the driver's
 call on 10-29: "依照我們開過的路加減速...來修正模型的不足"; 10-30: "路段記憶要做"; "你做記憶要考慮到GPS跟圖資的準度").
 
-Bends only (2026-10-30, the driver: "我開車都不會超速 所以速度記憶主要還是要用在轉彎 每天路況都不同速度學習跟本沒用"):
-a point caps cruise only where the road bends under BEND_R (curvature from the trace's own GPS headings over
-+-BEND_HALF points). On the straights the speed is the traffic's that day, not the road's.
+Bends only, and only the driver's own speed (2026-10-30, the driver: "我開車都不會超速 所以速度記憶主要還是要用在轉彎
+每天路況都不同速度學習跟本沒用"; "過彎速度你就看我接手有操作的時候速度是多少"): a point caps cruise only near a bend tighter
+than BEND_R (curvature from the trace's own GPS headings over +-BEND_HALF points, BEND_NEAR points either side) and
+only where the speed was the driver's - driving it themselves, on the throttle, or in the AFTER_BRAKE_S after
+letting the brake go (what they braked it down to). A bend openpilot took without the driver touching anything has
+no memory and no cap. The first try took openpilot's own free speed in the bends: replaying 10/28's mountain road
+against itself, of 37 driver brakes near a bend it would have slowed for 3 - the brakes are where openpilot was too
+fast, and those seconds were left out.
+
+Blinkers (BlinkMemory, same traces): where each blinker came on, which side, and whether the car then turned or
+changed lanes; desire_helper takes what the driver did there before (turn_ahead's 'mem').
 
 The cases it is for: the mountain road's chain of bends, where cruise winds back up to the set speed between two
 bends and arrives at the next too fast (10/28: SCC to 1.3-2.0 m/s^2 between bends, the driver braking), and any
@@ -12,24 +20,20 @@ bend or slope the model and curve_speed do not slow for the way the driver does.
 
 Learning (road_memd, offroad, after a drive): every logged drive becomes a trace, one point every STEP_M along it
 (GPS position, altitude, heading, speed, and what was going on: the lead, the last / next stop, the blinker, the
-pedals). A point's speed counts ("free", worked out when the memory is loaded - see free_mask - so the rules can
-change without reading the logs again) only when it was the speed the road set: no slower car holding us (within
-LEAD_FREE_S and not pulling away by LEAD_AWAY), not slowing to a stop (PRE_STOP_S) or pulling away from one
-(POST_STOP_S), no blinker near (a junction turn or a lane change, BLINK_S), the driver on neither pedal, and not in
-the PRE_BRAKE_S before the driver braked while openpilot drove (openpilot too fast there - the speed after the
-brake is the driver's). 10-30's first version took any car within 40 m / 3 s as holding us: 23% of the road was
-free and, a day left out, the others answered on 1.8% of it (10.6% had two other days' traces).
+pedals, whether openpilot drove), plus every blinker and what followed it. Which points count is worked out when the
+memory is loaded (driver_mask, bend_mask), so the rules can change without reading the logs again: the driver's
+speed (above) near a bend, and the road's - no slower car holding us (within LEAD_FREE_S and not pulling away by
+LEAD_AWAY), not slowing to a stop (PRE_STOP_S) or pulling away from one (POST_STOP_S), no blinker near (BLINK_S).
 
 Using it (mapd_bridge, twice a second): the traces that pass within MATCH_M of us, heading within MATCH_DEG and
 altitude within ALT_M (the GPS cannot tell lanes apart at 1.3-1.8 m, nor a viaduct from the road below it without
-the altitude), followed AHEAD_M forward; per BIN_M of road ahead the fastest free speed of each day, and of those
-the fastest (a cap only from what every day drove slower than: one day's pedestrian or a slow car the radar did
-not hold is not a cap), from at least MIN_DAYS different days. The speed allowed now is the lowest over the bins
+the altitude), followed AHEAD_M forward; per BIN_M of road ahead the fastest counted speed of each day, and of those
+the fastest (the driver later taking a bend faster - on the throttle - lifts its cap), where at least MIN_DAYS days
+agree on where that bin is (a turn-off one day does not cap the road ahead). The speed allowed now is the lowest over the bins
 of what still slows to that bin's cap (plus MARGIN) at A_COMFORT, never under V_FLOOR. Written to OUT_FILE for
 the planner (road_memory_limit) and the HUD.
 
-Shadow until /data/road_mem_on exists (road_memory_limit.ON_FLAG). Nothing is learned from a day's first drive
-alone: a road needs MIN_DAYS days.
+Shadow until /data/road_mem_on exists (road_memory_limit.ON_FLAG).
 """
 import datetime
 import glob
@@ -58,6 +62,11 @@ PRE_STOP_S = 6.
 POST_STOP_S = 4.
 BLINK_S = 6.
 PRE_BRAKE_S = 4.
+AFTER_BRAKE_S = 2.0             # s after the driver lets the brake go: the speed they braked it down to
+BLINK_MIN_S = 1.0
+BLINK_LOOK_S = 25.
+BLINK_TURN_DEG = 50.
+BLINK_LANE_DEG = 20.
 STOP_V = 1.0                    # m/s
 BREAK_M = 30.                   # a gap this long in a trace (no fix, stopped) ends the forward walk
 
@@ -66,7 +75,7 @@ MATCH_DEG = 25.
 ALT_M = 6.
 AHEAD_M = 200.
 BIN_M = 10.
-MIN_DAYS = 2
+MIN_DAYS = 1                    # one drive's own correction in a bend is the driver's call there
 AGREE_M = 15.                   # m: two days' points for the same bin ahead are on the same road
 A_COMFORT = 1.0                 # m/s^2
 # s: the planner follows the allowed speed with a lag (road_memory_limit TAU 1.5 s, plus the twice-a-second lookup), so the
@@ -80,6 +89,8 @@ CELL = 20.                      # m, the lookup grid
 # of the road) it spreads 33-103 km/h with the traffic.
 BEND_R = 200.
 BEND_HALF = 3                   # points (STEP_M each) either side the heading change is taken over
+BEND_NEAR = 6                   # points: the braking for a bend starts on the way in
+BLINK_MATCH_M = 50.             # a blinker this near, heading within MATCH_DEG, same side, is "here"
 TW = datetime.timezone(datetime.timedelta(hours=8))
 
 
@@ -97,9 +108,9 @@ def extract_route(route, log_root=LOG_ROOT):
   """One drive -> dict of arrays, one point every STEP_M while moving with a good fix, or None."""
   from openpilot.tools.lib.logreader import LogReader
   segs = sorted(int(d.rsplit('--', 1)[1]) for d in os.listdir(log_root) if d.startswith(route + '--'))
-  cols = {k: [] for k in ('t', 'lat', 'lon', 'alt', 'brg', 'hacc', 'vacc', 'v', 'gas', 'brake', 'en', 'lead_d', 'lead_v',
-                          'blink', 'unix')}
-  st = {'v': 0., 'gas': False, 'brake': False, 'en': False, 'lead_d': 1e3, 'lead_v': 0., 'blink': False}
+  cols = {k: [] for k in ('t', 'lat', 'lon', 'alt', 'brg', 'hacc', 'vacc', 'gspeed', 'v', 'gas', 'brake', 'en', 'lead_d',
+                          'lead_v', 'bl', 'br', 'unix')}
+  st = {'v': 0., 'gas': False, 'brake': False, 'en': False, 'lead_d': 1e3, 'lead_v': 0., 'bl': False, 'br': False}
   for s in segs:
     p = os.path.join(log_root, f'{route}--{s}', 'rlog.zst')
     if not os.path.exists(p):
@@ -111,7 +122,7 @@ def extract_route(route, log_root=LOG_ROOT):
         w = m.which()
         if w == 'carState':
           c = m.carState
-          st.update(v=c.vEgo, gas=c.gasPressed, brake=c.brakePressed, blink=c.leftBlinker or c.rightBlinker)
+          st.update(v=c.vEgo, gas=c.gasPressed, brake=c.brakePressed, bl=c.leftBlinker, br=c.rightBlinker)
         elif w == 'selfdriveState':
           st['en'] = m.selfdriveState.enabled
         elif w == 'radarState':
@@ -128,8 +139,9 @@ def extract_route(route, log_root=LOG_ROOT):
           cols['brg'].append(g.bearingDeg)
           cols['hacc'].append(g.horizontalAccuracy)
           cols['vacc'].append(g.verticalAccuracy)
+          cols['gspeed'].append(g.speed)
           cols['unix'].append(g.unixTimestampMillis * 1e-3)
-          for k in ('v', 'gas', 'brake', 'en', 'lead_d', 'lead_v', 'blink'):
+          for k in ('v', 'gas', 'brake', 'en', 'lead_d', 'lead_v', 'bl', 'br'):
             cols[k].append(st[k])
     except Exception:  # a corrupt segment loses that minute, not the drive
       continue
@@ -163,7 +175,10 @@ def extract_route(route, log_root=LOG_ROOT):
   stopped = v < STOP_V
   op_brake = (a['brake'] > 0.5) & (a['en'] > 0.5)
   stop_since, stop_until = since_until(stopped)
-  blink_since, blink_until = since_until(a['blink'] > 0.5)
+  blink = (a['bl'] > 0.5) | (a['br'] > 0.5)
+  blink_since, blink_until = since_until(blink)
+  brake = a['brake'] > 0.5
+  brake_since, _ = since_until(brake)
   good = (v >= MIN_SPEED) & (a['hacc'] <= MAX_H_ACC)
   # one point every STEP_M along the road
   x, y = _xy(a['lat'], a['lon'])
@@ -186,14 +201,48 @@ def extract_route(route, log_root=LOG_ROOT):
   out['s'] = np.asarray(s_keep, np.float32)
   out['lead_d'] = a['lead_d'][keep].astype(np.float32)
   out['lead_v'] = a['lead_v'][keep].astype(np.float32)
-  out['pedal'] = ((a['gas'] > 0.5) | (a['brake'] > 0.5))[keep]
+  out['pedal'] = ((a['gas'] > 0.5) | brake)[keep]
+  out['gas'] = (a['gas'] > 0.5)[keep]
+  out['after_brk'] = (~brake & (brake_since <= AFTER_BRAKE_S))[keep]   # the speed the driver braked it down to
   out['stop_since'] = stop_since[keep].astype(np.float32)
   out['stop_until'] = stop_until[keep].astype(np.float32)
   out['blink_near'] = np.minimum(blink_since, blink_until)[keep].astype(np.float32)
   out['brk_soon'] = near(op_brake, 0., PRE_BRAKE_S)[keep]
   out['en'] = a['en'][keep] > 0.5            # not used to drive: for replaying a drive against the other days
+  out.update(blink_events(a))
   day = datetime.datetime.fromtimestamp(float(np.median(a['unix'])), TW).strftime('%Y-%m-%d')
   return out, day
+
+
+def blink_events(a):
+  """Every blinker of a drive (one side on for >= BLINK_MIN_S, gaps under 2 s are one), where it came on and what the
+  car then did: the heading within BLINK_LOOK_S turned past BLINK_TURN_DEG that way = a turn (1), stayed within
+  BLINK_LANE_DEG = a lane change (0), else unclear (-1, not used)."""
+  t = a['t']
+  ev = {k: [] for k in ('blk_lat', 'blk_lon', 'blk_brg', 'blk_side', 'blk_out')}
+  for side, key in ((0, 'bl'), (1, 'br')):
+    on = np.flatnonzero(a[key] > 0.5)
+    if not len(on):
+      continue
+    for run in np.split(on, np.flatnonzero(np.diff(t[on]) > 2.0) + 1):
+      if t[run[-1]] - t[run[0]] < BLINK_MIN_S:
+        continue
+      i0 = run[0]
+      w = np.flatnonzero((t >= t[i0] - 1) & (t <= t[i0] + BLINK_LOOK_S) & (a['gspeed'] > 1.5))
+      if len(w) < 5 or a['hacc'][i0] > MAX_H_ACC or a['gspeed'][i0] < 1.0:
+        continue
+      h = np.degrees(np.unwrap(np.radians(a['brg'][w])) - math.radians(a['brg'][w[0]]))
+      peak = h[np.argmax(np.abs(h))]
+      if abs(peak) > BLINK_TURN_DEG:
+        out = 1 if (peak > 0) == (side == 1) else -1
+      else:
+        out = 0 if abs(peak) < BLINK_LANE_DEG else -1
+      ev['blk_lat'].append(a['lat'][i0])
+      ev['blk_lon'].append(a['lon'][i0])
+      ev['blk_brg'].append(a['brg'][i0])
+      ev['blk_side'].append(side)
+      ev['blk_out'].append(out)
+  return {k: np.asarray(v, np.float64 if k in ('blk_lat', 'blk_lon') else np.float32) for k, v in ev.items()}
 
 
 def learn(log_root=LOG_ROOT, trace_dir=TRACE_DIR, done_file=DONE_FILE, only=None):
@@ -226,12 +275,12 @@ def learn(log_root=LOG_ROOT, trace_dir=TRACE_DIR, done_file=DONE_FILE, only=None
   return added
 
 
-def free_mask(z):
-  """Where a trace's speed was the road's doing (see the module doc)."""
+def driver_mask(z):
+  """Where the speed was the driver's (see the module doc) and the road's - no lead holding, no stop, no blinker."""
   v = z['v']
   held = (z['lead_d'] < LEAD_FREE_S * v) & (z['lead_v'] < v + LEAD_AWAY)
-  return (~held & ~z['pedal'].astype(bool) & (z['stop_since'] > POST_STOP_S) & (z['stop_until'] > PRE_STOP_S)
-          & (z['blink_near'] > BLINK_S) & ~z['brk_soon'].astype(bool))
+  drv = ~z['en'].astype(bool) | z['gas'].astype(bool) | z['after_brk'].astype(bool)
+  return (drv & ~held & (z['stop_since'] > POST_STOP_S) & (z['stop_until'] > PRE_STOP_S) & (z['blink_near'] > BLINK_S))
 
 
 def bend_mask(z):
@@ -245,7 +294,9 @@ def bend_mask(z):
   k = np.where(ds > 2 * STEP_M, (b[i1] - b[i0]) / np.maximum(ds, 1e-3), 0.)
   gap = np.diff(s, prepend=s[0]) > BREAK_M
   k[gap] = 0.
-  return np.abs(k) >= 1. / BEND_R
+  bend = np.abs(k) >= 1. / BEND_R
+  near = np.convolve(bend.astype(float), np.ones(2 * BEND_NEAR + 1), 'same') > 0
+  return near
 
 
 # ---------------------------------------------------------------- using it (onroad)
@@ -256,6 +307,8 @@ class RoadMemory:
     for f in sorted(glob.glob(os.path.join(trace_dir, '*.npz'))):
       try:
         z = np.load(f)
+        if 'after_brk' not in z:                 # a trace from before 10-30 15:00 lacks the driver's fields
+          continue
         day = str(z['day'])
         if day == exclude_day:
           continue
@@ -271,7 +324,7 @@ class RoadMemory:
     cat = lambda k: np.concatenate([z[k] for z, _ in parts])  # noqa: E731
     self.lat, self.lon, self.alt, self.brg = cat('lat'), cat('lon'), cat('alt'), cat('brg')
     self.vacc, self.v, self.s = cat('vacc'), cat('v'), cat('s')
-    self.free = np.concatenate([free_mask(z) & bend_mask(z) for z, _ in parts])   # only free points in bends cap
+    self.free = np.concatenate([driver_mask(z) & bend_mask(z) for z, _ in parts])   # the driver's speed near bends
     self.trace = np.concatenate([np.full(len(z['s']), i, np.int32) for i, (z, _) in enumerate(parts)])
     self.day = np.concatenate([np.full(len(z['s']), day_id[d], np.int32) for z, d in parts])
     self.x, self.y = _xy(self.lat, self.lon)
@@ -352,6 +405,46 @@ class RoadMemory:
     k = int(np.argmin(v_ok))
     return {'v_allow': float(max(v_ok[k], V_FLOOR)), 'cap': float(cap[use][k]), 'd': float(dist[use][k]),
             'days': int(n_days[use][k])}
+
+
+class BlinkMemory:
+  """What the driver did after a blinker here before: {'L': 'turn' / 'lane' / None, 'R': ...} by majority of the
+  blinkers within BLINK_MATCH_M, heading within MATCH_DEG, that side (unclear ones left out; a tie is None)."""
+  def __init__(self, trace_dir=TRACE_DIR, exclude_day=None):
+    cols = {k: [] for k in ('blk_lat', 'blk_lon', 'blk_brg', 'blk_side', 'blk_out')}
+    for f in sorted(glob.glob(os.path.join(trace_dir, '*.npz'))):
+      try:
+        z = np.load(f)
+        if 'blk_out' not in z or str(z['day']) == exclude_day:
+          continue
+        for k in cols:
+          cols[k].append(z[k])
+      except (OSError, ValueError, KeyError):
+        continue
+    a = {k: np.concatenate(v) if v else np.zeros(0) for k, v in cols.items()}
+    keep = a['blk_out'] >= 0
+    self.lat, self.lon, self.brg = a['blk_lat'][keep], a['blk_lon'][keep], a['blk_brg'][keep]
+    self.side, self.out = a['blk_side'][keep].astype(int), a['blk_out'][keep].astype(int)
+    self.x, self.y = _xy(self.lat, self.lon)
+
+  def __len__(self):
+    return len(self.lat)
+
+  def lookup(self, lat, lon, brg):
+    res = {'L': None, 'R': None}
+    if not len(self):
+      return res
+    x, y = _xy(lat, lon)
+    near = (np.hypot(self.x - x, self.y - y) < BLINK_MATCH_M) & (_angdiff(self.brg, brg) < MATCH_DEG)
+    for side, key in ((0, 'L'), (1, 'R')):
+      o = self.out[near & (self.side == side)]
+      if len(o):
+        n_turn = int(o.sum())
+        if 2 * n_turn > len(o):
+          res[key] = 'turn'
+        elif 2 * n_turn < len(o):
+          res[key] = 'lane'
+    return res
 
 
 def write_out(state):

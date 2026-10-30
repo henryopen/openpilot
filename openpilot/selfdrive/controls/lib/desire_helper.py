@@ -81,6 +81,15 @@ TURN_TT_S = 6.0
 TURN_MIN_S = 2.0                                 # at TURN_SLOW_SPEED and over, a junction closer in time is passed
 QUIET_CAPTIONS = ('m_temp_stop', 'm_unfamiliar')
 OSM_OFF_FLAG = '/data/turn_osm_off'
+# What the driver did after a blinker at this spot before (2026-10-30, the driver: "轉彎還是換道可以學"; road_memory's
+# BlinkMemory, via turn_ahead 'mem'): taken in the blinker's first MEM_LATCH_S, then kept. 'lane' there before: no turn
+# desire and no hold from OSM or the speed (the route's own turn still counts). 'turn' there before: no lane change at
+# 20-50 km/h and the turn desire when OSM's junction is due, or with no junction mapped once under TURN_SLOW_SPEED.
+# Replayed a day left out over 10/12-10/29 (346 blinkers): where there was a memory (50 m, same heading and side) it
+# said turn for 37 of 38 turns and lane for 17 of 20 lane changes; with OSM where there was none, turns given the
+# desire 105 -> 107 of 124, lane changes given it 26 -> 22 of 155. Off with MEM_OFF_FLAG.
+MEM_LATCH_S = 1.0
+MEM_OFF_FLAG = '/data/turn_mem_off'
 TURN_HOLD_FILE = '/dev/shm/turn_hold.json'     # for the HUD: turn / hold / quiet and why, rewritten when it changes
 
 
@@ -103,14 +112,16 @@ class DesireHelper:
     self.desire = log.Desire.none
     self.alc = AutoLaneChangeController(self)
     self.turn_ahead = TurnAheadReader()
-    self.turn_go = None             # the turn desire is on, and from what: 'nav' / 'osm' / 'speed'
-    self.turn_hold = None           # no lane change, and why: 'nav' / 'osm'
+    self.turn_go = None             # the turn desire is on, and from what: 'nav' / 'mem' / 'osm' / 'speed'
+    self.turn_hold = None           # no lane change, and why: 'nav' / 'mem' / 'osm'
     self.quiet = False              # a quiet caption: neither
     self.blink_prev = False
     self.blink_t = 0.0
     self.blink_v0 = 0.0
     self.osm_off = False
+    self.mem_off = False
     self.osm_check = 0
+    self.blink_mem = None           # 'turn' / 'lane' / None: what the driver did after a blinker here before
 
   def _write_hold(self, side):
     try:
@@ -125,6 +136,7 @@ class DesireHelper:
     """turn_go / turn_hold / quiet above, and whether a lane change should wait to see (HOLD_WATCH_S)."""
     if self.osm_check % 100 == 0:
       self.osm_off = os.path.exists(OSM_OFF_FLAG)
+      self.mem_off = os.path.exists(MEM_OFF_FLAG)
     self.osm_check += 1
     v_ego = carstate.vEgo
     side = 'L' if carstate.leftBlinker else 'R'
@@ -133,6 +145,7 @@ class DesireHelper:
     if one_blinker and not self.blink_prev:
       self.blink_t, self.blink_v0 = 0.0, v_ego
       self.turn_go, self.turn_hold, self.quiet = None, None, False
+      self.blink_mem = None
     self.blink_prev = one_blinker
     wait = False
     if not one_blinker:
@@ -145,11 +158,20 @@ class DesireHelper:
       d_nav = nav[1] if nav and nav[0] == side else None
       osm = bool(ta.get('osm')) and not self.osm_off
       d_osm = ta.get(side) if osm else None
+      if self.blink_mem is None and self.blink_t <= MEM_LATCH_S and not self.mem_off:
+        m = (ta.get('mem') or {}).get(side)
+        self.blink_mem = m if m in ('turn', 'lane') else None
+      mem = self.blink_mem
       if self.quiet:
         self.turn_go = None
       elif self.turn_go is None:
         if _turn_due(d_nav, v_ego):
           self.turn_go = 'nav'
+        elif mem == 'lane':
+          pass                             # a lane change here before
+        elif mem == 'turn' and (_turn_due(d_osm, v_ego) if d_osm is not None else
+                                LANE_TURN_SPEED_MIN <= v_ego < TURN_SLOW_SPEED):
+          self.turn_go = 'mem'
         elif osm:
           if _turn_due(d_osm, v_ego):
             self.turn_go = 'osm'
@@ -158,6 +180,10 @@ class DesireHelper:
       if self.turn_hold is None and not self.quiet and HOLD_MIN_SPEED <= v_ego < HOLD_MAX_SPEED:
         if d_nav is not None and d_nav <= HOLD_NAV_M:
           self.turn_hold = 'nav'
+        elif mem == 'turn':
+          self.turn_hold = 'mem'
+        elif mem == 'lane':
+          pass
         elif d_osm is not None and d_osm <= HOLD_OSM_M:
           if self.blink_t < HOLD_WATCH_S:
             wait = True
@@ -168,7 +194,7 @@ class DesireHelper:
       # in the log too (2026-10-30: a turn taken from the route could not be told apart afterwards - the route's
       # step was nowhere in the log)
       cloudlog.event("turn_decision", go=self.turn_go, hold=self.turn_hold, quiet=self.quiet, side=side if one_blinker else None,
-                     v=round(v_ego * 3.6, 1), nav=nav, osm=d_osm)
+                     v=round(v_ego * 3.6, 1), nav=nav, osm=d_osm, mem=self.blink_mem)
     return wait
 
   @staticmethod
