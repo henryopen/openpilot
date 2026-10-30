@@ -492,6 +492,7 @@
       <span class="chip cy" id="cTurn" style="display:none"></span>
       <span class="chip wait" id="cSLA" style="display:none"></span>
       <span class="chip cy" id="cLaneOff" style="display:none"></span>
+      <span class="chip wait" id="cRoadMem" style="display:none"></span>
   </div>
   <!-- 鍵盤右旋鈕切右欄時，在路面中間講現在切到哪一個 -->
   <div class="ov" id="paneToast"></div>
@@ -1054,6 +1055,14 @@ function render(F){
     if(o>0.01){ lof.style.display=''; lof.textContent=`最右車道・靠左 ${o.toFixed(2)} m`; }
     else lof.style.display='none';
   }
+  // 路段記憶（road_memory 10/30）：這段路以前開過的速度，規劃程式照它限速時才顯示
+  const rmc=$('cRoadMem');
+  if(rmc){
+    if(F.rm && F.rm.v_allow>0){
+      rmc.style.display='';
+      rmc.textContent=`路段記憶・限 ${Math.round(F.rm.v_allow*3.6)}（前方 ${Math.round(F.rm.d||0)} m 曾開 ${Math.round((F.rm.cap||0)*3.6)}）`;
+    } else rmc.style.display='none';
+  }
   const sla=$('cSLA');
   if(F.slaAge>=0 && F.slaAge<8 && F.slaTarget>0){
     sla.style.display=''; sla.textContent=`速限 ${Math.round(F.slaLimit)} → 設定 ${Math.round(F.slaTarget)}`;
@@ -1394,6 +1403,8 @@ function fromSSE(J){
     tx: J.tdxTraffic||null,   // TDX 即時路況（tdx_traffic）：前方事件、路段車速、國道車道車速 —— 只顯示
     lo: J.laneOffset||null,   // 最右側車道靠左（lane_offset）：offset 是目前往左的公尺數
     la: J.lightAhead||null,   // 規劃程式對號誌的處置（light_ahead）：滑行／提早減速，on=false 是觀察
+    rm: J.roadMem||null,      // 路段記憶（road_memory）：規劃程式正照它限速時才有
+
     // ENGAGED＝縱向真的在作用。踩煞車（行進中）／踩油門時 OP 狀態是 overriding：enabled 還是 true，
     // 但縱向已經交給駕駛，放開才接回。09-23 這段一直顯示 ENGAGED，駕駛以為 OP 還在控制，
     // 40 次踩煞車裡 17 次自己按 CANCEL。

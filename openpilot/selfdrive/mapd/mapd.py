@@ -18,7 +18,7 @@ from openpilot.cereal import messaging
 from openpilot.common.params import Params
 from openpilot.common.realtime import Ratekeeper, config_realtime_process
 from openpilot.common.swaglog import cloudlog
-from openpilot.selfdrive.mapd import turn_ahead
+from openpilot.selfdrive.mapd import road_memory, turn_ahead
 from openpilot.selfdrive.mapd.speed_limit import KPH_TO_MS, OFF_FLAG, load_fixes, lookup
 
 MAPD_ROOT = "/data/media/0/osm"
@@ -50,6 +50,13 @@ def main():
   except (OSError, ValueError, KeyError) as e:
     jmap = None
     cloudlog.warning(f"mapd: no junction map for turn_ahead ({e})")
+  try:
+    rmem = road_memory.RoadMemory()
+    cloudlog.info("mapd: road memory %d points from %d drives", len(rmem), rmem.n_traces)
+  except Exception:
+    rmem = None
+    cloudlog.exception("mapd: no road memory")
+  alt, vacc, gspeed = None, None, 0.
   bearing = None          # last heading while moving (deg), for the direction-dependent sign stretches
   fix_off = os.path.exists(OFF_FLAG)
   logged_fix = False
@@ -69,6 +76,7 @@ def main():
         "bearing": float(gps.bearingDeg),
       }))
       pos, pos_t = (float(gps.latitude), float(gps.longitude)), time.monotonic()
+      alt, vacc, gspeed = float(gps.altitude), float(gps.verticalAccuracy), float(gps.speed)
       if gps.speed > MIN_HEADING_SPEED:   # the GPS heading means nothing standing still: keep the last moving one
         bearing = float(gps.bearingDeg)
       if not logged_fix:
@@ -95,6 +103,16 @@ def main():
                         "caption": turn_ahead.caption_now(nav, now)})
     except OSError:
       pass
+
+    # how fast this stretch has been driven before - see road_memory; nothing written means nothing known here.
+    # road_memory.OFF_FLAG is the planner's to honour (road_memory_limit)
+    if rmem is not None and osm_ok:
+      try:
+        hit = rmem.lookup(pos[0], pos[1], alt, bearing, vacc, gspeed)
+        if hit is not None:
+          road_memory.write_out({"t": now, **hit})
+      except Exception:
+        cloudlog.exception("mapd: road memory lookup failed")
 
     rk.keep_time()
 

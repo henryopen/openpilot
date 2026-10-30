@@ -20,6 +20,7 @@ from openpilot.selfdrive.controls.lib.drive_helpers import CONTROL_N, get_accel_
 from openpilot.selfdrive.car.cruise import V_CRUISE_MAX, V_CRUISE_UNSET
 from openpilot.selfdrive.controls.lib.curve_speed import CurveSpeedControl
 from openpilot.selfdrive.controls.lib.light_ahead import LightAhead
+from openpilot.selfdrive.controls.lib.road_memory_limit import RoadMemoryLimit
 from openpilot.selfdrive.controls.lib.long_deadzone import LongDeadzone
 from openpilot.selfdrive.controls.lib.standstill_hold import StandstillHold, ARM_SPEED as STANDSTILL_HOLD_ARM_SPEED
 from openpilot.selfdrive.controls.lib.lead_view import LeadView, is_chase
@@ -481,6 +482,7 @@ class LongitudinalPlanner:
     self.weak_lead_frames = 0
     self.curve_speed = CurveSpeedControl()
     self.light_ahead = LightAhead()
+    self.road_memory = RoadMemoryLimit()
     self.deadzone = LongDeadzone(dt)
     self.standstill_hold = StandstillHold(dt)
     self.lead_view = LeadView()
@@ -675,6 +677,14 @@ class LongitudinalPlanner:
     except Exception:
       cloudlog.exception("light_ahead failed")
 
+    # how fast this stretch has been driven before - see road_memory_limit. Only ever a ceiling; a fault stands it down.
+    try:
+      self.road_memory.update(v_ego, sm['selfdriveState'].enabled and not reset_state, self.a_cruise)
+      if self.road_memory.a_limit is not None:
+        self.a_cruise = min(self.a_cruise, self.road_memory.a_limit)
+    except Exception:
+      cloudlog.exception("road_memory failed")
+
     # What cruise is really working to, in the units the dash shows so it can sit beside the
     # driver's MAX. On its own the set speed says nothing the driver cannot already read, so
     # the number is only worth showing when something has taken speed off it. The corner is
@@ -684,6 +694,8 @@ class LongitudinalPlanner:
     v_cruise_shown = v_cruise
     if self.curve_speed.is_active:
       v_cruise_shown = min(v_cruise_shown, self.curve_speed.v_target)
+    if self.road_memory.active and self.road_memory.v_allow is not None:
+      v_cruise_shown = min(v_cruise_shown, self.road_memory.v_allow)
     self.v_cruise_dash = true_to_dash(v_cruise_shown)
 
     # A lead the model is unsure about, too far out to hold as a lead. On 2026-09-03 a car

@@ -1,0 +1,338 @@
+#!/usr/bin/env python3
+"""Road memory: how fast this car has been driven here before, as a cap on cruise ahead (2026-10-30, the driver's
+call on 10-29: "依照我們開過的路加減速...來修正模型的不足"; 10-30: "路段記憶要做"; "你做記憶要考慮到GPS跟圖資的準度").
+
+The cases it is for: the mountain road's chain of bends, where cruise winds back up to the set speed between two
+bends and arrives at the next too fast (10/28: SCC to 1.3-2.0 m/s^2 between bends, the driver braking), and any
+bend or slope the model and curve_speed do not slow for the way the driver does.
+
+Learning (road_memd, offroad, after a drive): every logged drive becomes a trace, one point every STEP_M along it
+(GPS position, altitude, heading, speed). A point's speed counts ("free") only when it was the speed the road set:
+nothing ahead within LEAD_FREE_M / LEAD_FREE_S, not slowing to a stop (PRE_STOP_S) or pulling away from one
+(POST_STOP_S), no blinker near (a junction turn or a lane change, BLINK_S), the driver on neither pedal, and not in
+the PRE_BRAKE_S before the driver braked while openpilot drove (openpilot too fast there - the speed after the
+brake is the driver's).
+
+Using it (mapd_bridge, twice a second): the traces that pass within MATCH_M of us, heading within MATCH_DEG and
+altitude within ALT_M (the GPS cannot tell lanes apart at 1.3-1.8 m, nor a viaduct from the road below it without
+the altitude), followed AHEAD_M forward; per BIN_M of road ahead the fastest free speed of each day, and of those
+the fastest (a cap only from what every day drove slower than: one day's pedestrian or a slow car the radar did
+not hold is not a cap), from at least MIN_DAYS different days. The speed allowed now is the lowest over the bins
+of what still slows to that bin's cap (plus MARGIN) at A_COMFORT, never under V_FLOOR. Written to OUT_FILE for
+the planner (road_memory_limit) and the HUD.
+
+Off with OFF_FLAG. Nothing is learned from a day's first drive alone: a road needs MIN_DAYS days.
+"""
+import datetime
+import glob
+import json
+import math
+import os
+import sys
+import time
+
+import numpy as np
+
+ROOT = '/data/media/0/osm/road_memory'
+TRACE_DIR = os.path.join(ROOT, 'traces')
+DONE_FILE = os.path.join(ROOT, 'done.json')
+LOG_ROOT = '/data/media/0/realdata'
+OUT_FILE = '/dev/shm/road_mem.json'
+OFF_FLAG = '/data/road_mem_off'
+
+KPH = 1 / 3.6
+STEP_M = 5.0
+MIN_SPEED = 3.0                 # m/s: slower is a car park or a queue, no trace
+MAX_H_ACC = 5.0                 # m: a looser fix places us nowhere
+MAX_V_ACC = 8.0                 # m: a looser altitude cannot tell a viaduct from the road below
+LEAD_FREE_M = 40.
+LEAD_FREE_S = 3.0
+PRE_STOP_S = 10.
+POST_STOP_S = 6.
+BLINK_S = 8.
+PRE_BRAKE_S = 4.
+STOP_V = 1.0                    # m/s
+BREAK_M = 30.                   # a gap this long in a trace (no fix, stopped) ends the forward walk
+
+MATCH_M = 10.
+MATCH_DEG = 25.
+ALT_M = 6.
+AHEAD_M = 200.
+BIN_M = 10.
+MIN_DAYS = 2
+AGREE_M = 15.                   # m: two days' points for the same bin ahead are on the same road
+A_COMFORT = 1.0                 # m/s^2
+# s: the planner follows the allowed speed with a lag (road_memory_limit TAU 1.5 s, plus the twice-a-second lookup), so the
+# slowdown for a bin starts this much earlier - without it the car reaches the bin ~7 km/h over
+LEAD_S = 3.0
+MARGIN = 2 * KPH
+V_FLOOR = 15 * KPH
+CELL = 20.                      # m, the lookup grid
+TW = datetime.timezone(datetime.timedelta(hours=8))
+
+
+def _xy(lat, lon, lat0=25.0):
+  return np.asarray(lon) * 111320. * math.cos(math.radians(lat0)), np.asarray(lat) * 111320.
+
+
+def _angdiff(a, b):
+  return np.abs((np.asarray(a) - b + 540.) % 360. - 180.)
+
+
+# ---------------------------------------------------------------- learning (offroad)
+
+def extract_route(route, log_root=LOG_ROOT):
+  """One drive -> dict of arrays, one point every STEP_M while moving with a good fix, or None."""
+  from openpilot.tools.lib.logreader import LogReader
+  segs = sorted(int(d.rsplit('--', 1)[1]) for d in os.listdir(log_root) if d.startswith(route + '--'))
+  cols = {k: [] for k in ('t', 'lat', 'lon', 'alt', 'brg', 'hacc', 'vacc', 'v', 'gas', 'brake', 'en', 'lead_d', 'lead_v',
+                          'blink', 'unix')}
+  st = {'v': 0., 'gas': False, 'brake': False, 'en': False, 'lead_d': 1e3, 'lead_v': 0., 'blink': False}
+  for s in segs:
+    p = os.path.join(log_root, f'{route}--{s}', 'rlog.zst')
+    if not os.path.exists(p):
+      p = os.path.join(log_root, f'{route}--{s}', 'rlog')
+      if not os.path.exists(p):
+        continue
+    try:
+      for m in LogReader(p):
+        w = m.which()
+        if w == 'carState':
+          c = m.carState
+          st.update(v=c.vEgo, gas=c.gasPressed, brake=c.brakePressed, blink=c.leftBlinker or c.rightBlinker)
+        elif w == 'selfdriveState':
+          st['en'] = m.selfdriveState.enabled
+        elif w == 'radarState':
+          ld = m.radarState.leadOne
+          st['lead_d'], st['lead_v'] = (float(ld.dRel), float(ld.vLead)) if ld.present else (1e3, 0.)
+        elif w == 'gpsLocationExternal':
+          g = m.gpsLocationExternal
+          if not g.hasFix or (g.latitude == 0 and g.longitude == 0):
+            continue
+          cols['t'].append(m.logMonoTime * 1e-9)
+          cols['lat'].append(g.latitude)
+          cols['lon'].append(g.longitude)
+          cols['alt'].append(g.altitude)
+          cols['brg'].append(g.bearingDeg)
+          cols['hacc'].append(g.horizontalAccuracy)
+          cols['vacc'].append(g.verticalAccuracy)
+          cols['unix'].append(g.unixTimestampMillis * 1e-3)
+          for k in ('v', 'gas', 'brake', 'en', 'lead_d', 'lead_v', 'blink'):
+            cols[k].append(st[k])
+    except Exception:  # a corrupt segment loses that minute, not the drive
+      continue
+  if len(cols['t']) < 20:
+    return None
+  a = {k: np.asarray(v, dtype=np.float64) for k, v in cols.items()}
+  o = np.argsort(a['t'])
+  a = {k: v[o] for k, v in a.items()}
+  t, v = a['t'], a['v']
+
+  def near(mask, before, after):
+    """True where a sample with mask lies within [t - before, t + after]."""
+    tm = t[mask.astype(bool)]
+    if not len(tm):
+      return np.zeros(len(t), bool)
+    i = np.searchsorted(tm, t - before)
+    j = np.searchsorted(tm, t + after, side='right')
+    return j > i
+
+  stopped = v < STOP_V
+  lead_near = (a['lead_d'] < np.maximum(LEAD_FREE_M, LEAD_FREE_S * v))
+  pedal = (a['gas'] > 0.5) | (a['brake'] > 0.5)
+  op_brake = (a['brake'] > 0.5) & (a['en'] > 0.5)
+  free = (~lead_near & ~pedal & ~near(stopped, POST_STOP_S, PRE_STOP_S) & ~near(a['blink'] > 0.5, BLINK_S, BLINK_S)
+          & ~near(op_brake, 0., PRE_BRAKE_S))
+  good = (v >= MIN_SPEED) & (a['hacc'] <= MAX_H_ACC)
+  # one point every STEP_M along the road
+  x, y = _xy(a['lat'], a['lon'])
+  idx = np.flatnonzero(good)
+  if len(idx) < 2:
+    return None
+  keep, s_keep, last_xy, s = [], [], None, 0.
+  for i in idx:
+    if last_xy is not None:
+      d = math.hypot(x[i] - last_xy[0], y[i] - last_xy[1])
+      if d < STEP_M:
+        continue
+      s += d
+    keep.append(i)
+    s_keep.append(s)
+    last_xy = (x[i], y[i])
+  keep = np.asarray(keep)
+  out = {k: a[k][keep].astype(np.float32 if k not in ('lat', 'lon', 'unix') else np.float64)
+         for k in ('lat', 'lon', 'alt', 'brg', 'vacc', 'v', 'unix')}
+  out['s'] = np.asarray(s_keep, np.float32)
+  out['free'] = free[keep]
+  # not used to drive - kept so a drive can be replayed against the memory of the other days
+  out['en'] = a['en'][keep] > 0.5
+  out['brk_soon'] = near(op_brake, 0., PRE_BRAKE_S)[keep]
+  day = datetime.datetime.fromtimestamp(float(np.median(a['unix'])), TW).strftime('%Y-%m-%d')
+  return out, day
+
+
+def learn(log_root=LOG_ROOT, trace_dir=TRACE_DIR, done_file=DONE_FILE, only=None):
+  """Every finished drive not yet learned -> trace_dir/<route>.npz. Returns how many were added."""
+  os.makedirs(trace_dir, exist_ok=True)
+  try:
+    with open(done_file) as f:
+      done = set(json.load(f))
+  except (OSError, ValueError):
+    done = set()
+  routes = sorted({d.rsplit('--', 1)[0] for d in os.listdir(log_root) if d.count('--') == 2})
+  added = 0
+  for r in routes:
+    if r in done or (only and r not in only):
+      continue
+    try:
+      res = extract_route(r, log_root)
+    except Exception as e:
+      print(f'road_memory: {r} failed: {e}', file=sys.stderr)
+      res = None
+    if res is not None:
+      tr, day = res
+      np.savez_compressed(os.path.join(trace_dir, r + '.npz'), day=day, **tr)
+      added += 1
+    done.add(r)
+    tmp = done_file + '.tmp'
+    with open(tmp, 'w') as f:
+      json.dump(sorted(done), f)
+    os.replace(tmp, done_file)
+  return added
+
+
+# ---------------------------------------------------------------- using it (onroad)
+
+class RoadMemory:
+  def __init__(self, trace_dir=TRACE_DIR, exclude_day=None):
+    parts = []
+    for f in sorted(glob.glob(os.path.join(trace_dir, '*.npz'))):
+      try:
+        z = np.load(f)
+        day = str(z['day'])
+        if day == exclude_day:
+          continue
+        parts.append((z, day))
+      except (OSError, ValueError, KeyError):
+        continue
+    self.n_traces = len(parts)
+    if not parts:
+      self.lat = np.zeros(0)
+      return
+    self.days = sorted({d for _, d in parts})
+    day_id = {d: i for i, d in enumerate(self.days)}
+    cat = lambda k: np.concatenate([z[k] for z, _ in parts])  # noqa: E731
+    self.lat, self.lon, self.alt, self.brg = cat('lat'), cat('lon'), cat('alt'), cat('brg')
+    self.vacc, self.v, self.s, self.free = cat('vacc'), cat('v'), cat('s'), cat('free').astype(bool)
+    self.trace = np.concatenate([np.full(len(z['s']), i, np.int32) for i, (z, _) in enumerate(parts)])
+    self.day = np.concatenate([np.full(len(z['s']), day_id[d], np.int32) for z, d in parts])
+    self.x, self.y = _xy(self.lat, self.lon)
+    keys = np.floor(self.x / CELL).astype(np.int64) * 1000003 + np.floor(self.y / CELL).astype(np.int64)
+    self.order = np.argsort(keys, kind='stable')
+    self.keys = keys[self.order]
+
+  def __len__(self):
+    return len(self.lat)
+
+  def _near(self, x, y):
+    ci, cj = math.floor(x / CELL), math.floor(y / CELL)
+    out = []
+    for di in (-1, 0, 1):
+      for dj in (-1, 0, 1):
+        k = (ci + di) * 1000003 + (cj + dj)
+        a, b = np.searchsorted(self.keys, [k, k + 1])
+        out.append(self.order[a:b])
+    return np.concatenate(out)
+
+  def lookup(self, lat, lon, alt, brg, vacc, v_now=0.):
+    """{'v_allow', 'cap', 'd', 'days'} for the binding bin ahead, or None (no memory here)."""
+    if not len(self) or vacc is None or vacc > MAX_V_ACC:
+      return None
+    x, y = _xy(lat, lon)
+    idx = self._near(float(x), float(y))
+    if not len(idx):
+      return None
+    d = np.hypot(self.x[idx] - x, self.y[idx] - y)
+    ok = (d < MATCH_M) & (_angdiff(self.brg[idx], brg) < MATCH_DEG) & (np.abs(self.alt[idx] - alt) < ALT_M) & \
+         (self.vacc[idx] <= MAX_V_ACC)
+    idx, d = idx[ok], d[ok]
+    if not len(idx):
+      return None
+    nb = int(AHEAD_M // BIN_M) + 1
+    best = {}                                   # day -> per-bin fastest free speed
+    for tr in np.unique(self.trace[idx]):
+      m = self.trace[idx] == tr
+      i0 = int(idx[m][np.argmin(d[m])])
+      # walk forward along this trace (the traces sit one after another, so its end is where its id stops)
+      j1 = int(np.searchsorted(self.trace, tr, side='right'))
+      ss = self.s[i0:j1] - self.s[i0]
+      gaps = np.flatnonzero(np.diff(ss) > BREAK_M)
+      stop = len(ss) if not len(gaps) else gaps[0] + 1
+      ss = ss[:stop]
+      within = np.flatnonzero(ss <= AHEAD_M)
+      if not len(within):
+        continue
+      j = i0 + within
+      fr = self.free[j]
+      if not fr.any():
+        continue
+      bins = (ss[within][fr] // BIN_M).astype(int)
+      vv = self.v[j][fr]
+      arr, px, py = best.setdefault(int(self.day[i0]), (np.full(nb, -1.), np.full(nb, np.nan), np.full(nb, np.nan)))
+      for b, v, k in zip(bins, vv, j[fr], strict=True):
+        if v > arr[b]:
+          arr[b], px[b], py[b] = v, self.x[k], self.y[k]
+    if len(best) < MIN_DAYS:
+      return None
+    stack = np.stack([b[0] for b in best.values()])
+    bx = np.stack([b[1] for b in best.values()])
+    by = np.stack([b[2] for b in best.values()])
+    # a bin counts only where days agree on where it is: one day turned off at a junction ahead and another went on,
+    # and the turn's side street must not cap the road ahead
+    dd = np.hypot(bx[:, None, :] - bx[None, :, :], by[:, None, :] - by[None, :, :])
+    agree = np.nan_to_num(dd, nan=1e9) < AGREE_M
+    agree &= (stack >= 0)[:, None, :] & (stack >= 0)[None, :, :]
+    keep = agree.sum(1) >= MIN_DAYS                      # day x bin: at least MIN_DAYS days (itself too) here
+    stack = np.where(keep, stack, -1.)
+    n_days = keep.sum(0)
+    cap = stack.max(0)
+    use = n_days >= MIN_DAYS
+    if not use.any():
+      return None
+    dist = np.arange(nb) * BIN_M
+    v_ok = np.sqrt((cap[use] + MARGIN) ** 2 + 2 * A_COMFORT * np.maximum(dist[use] - max(v_now, 0.) * LEAD_S, 0.))
+    k = int(np.argmin(v_ok))
+    return {'v_allow': float(max(v_ok[k], V_FLOOR)), 'cap': float(cap[use][k]), 'd': float(dist[use][k]),
+            'days': int(n_days[use][k])}
+
+
+def write_out(state):
+  tmp = OUT_FILE + '.tmp'
+  with open(tmp, 'w') as f:
+    json.dump(state, f)
+  os.replace(tmp, OUT_FILE)
+
+
+def main():
+  """road_memd: offroad, learn every finished drive; a scan every 10 minutes."""
+  try:
+    os.nice(15)
+  except OSError:
+    pass
+  from openpilot.common.swaglog import cloudlog
+  while True:
+    try:
+      t0 = time.monotonic()
+      n = learn()
+      if n:
+        cloudlog.event("road_memory learned", routes=n, s=round(time.monotonic() - t0, 1))
+    except Exception:
+      cloudlog.exception("road_memory learn failed")
+    time.sleep(600)
+
+
+if __name__ == "__main__":
+  if len(sys.argv) > 1 and sys.argv[1] == 'learn':
+    print('learned', learn(only=set(sys.argv[2:]) or None))
+  else:
+    main()

@@ -117,6 +117,8 @@ procs = [
   # offline OSM speed limits: the binary does the map lookups, mapd_bridge tells it where we are
   NativeProcess("mapd", MAPD_ROOT, ["bash", "-c", f"{MAPD_PATH} > /dev/null 2>&1"], mapd_ready),
   PythonProcess("mapd_bridge", "openpilot.selfdrive.mapd.mapd", mapd_ready),
+  # road memory: learns each finished drive while parked, mapd_bridge reads it on the road - see road_memory
+  PythonProcess("road_memd", "openpilot.selfdrive.mapd.road_memory", only_offroad),
   # TDX live road conditions for the HUD / rear LED, display only; parked it refreshes its caches
   PythonProcess("tdx_traffic", "openpilot.selfdrive.mapd.tdx_traffic", always_run),
   # C3 (second device on the USB link, c3link/) calibrates itself against carState and reads lights; display only.
