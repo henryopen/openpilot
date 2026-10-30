@@ -2,6 +2,10 @@
 """Road memory: how fast this car has been driven here before, as a cap on cruise ahead (2026-10-30, the driver's
 call on 10-29: "依照我們開過的路加減速...來修正模型的不足"; 10-30: "路段記憶要做"; "你做記憶要考慮到GPS跟圖資的準度").
 
+Bends only (2026-10-30, the driver: "我開車都不會超速 所以速度記憶主要還是要用在轉彎 每天路況都不同速度學習跟本沒用"):
+a point caps cruise only where the road bends under BEND_R (curvature from the trace's own GPS headings over
++-BEND_HALF points). On the straights the speed is the traffic's that day, not the road's.
+
 The cases it is for: the mountain road's chain of bends, where cruise winds back up to the set speed between two
 bends and arrives at the next too fast (10/28: SCC to 1.3-2.0 m/s^2 between bends, the driver braking), and any
 bend or slope the model and curve_speed do not slow for the way the driver does.
@@ -71,6 +75,11 @@ LEAD_S = 3.0
 MARGIN = 2 * KPH
 V_FLOOR = 15 * KPH
 CELL = 20.                      # m, the lookup grid
+# A bend: tighter than this radius. On the logged drives (free points) the speed follows the radius only there -
+# medians 38 / 34 / 29 / 22 / 18 km/h at 200-500 / 100-200 / 50-100 / 25-50 / <25 m - while on the straights (83.5%
+# of the road) it spreads 33-103 km/h with the traffic.
+BEND_R = 200.
+BEND_HALF = 3                   # points (STEP_M each) either side the heading change is taken over
 TW = datetime.timezone(datetime.timedelta(hours=8))
 
 
@@ -225,6 +234,20 @@ def free_mask(z):
           & (z['blink_near'] > BLINK_S) & ~z['brk_soon'].astype(bool))
 
 
+def bend_mask(z):
+  """Where a trace is in a bend (see BEND_R): the heading change over +-BEND_HALF points along it."""
+  b = np.unwrap(np.radians(z['brg'].astype(np.float64)))
+  s = z['s'].astype(np.float64)
+  n = len(s)
+  i0 = np.clip(np.arange(n) - BEND_HALF, 0, n - 1)
+  i1 = np.clip(np.arange(n) + BEND_HALF, 0, n - 1)
+  ds = s[i1] - s[i0]
+  k = np.where(ds > 2 * STEP_M, (b[i1] - b[i0]) / np.maximum(ds, 1e-3), 0.)
+  gap = np.diff(s, prepend=s[0]) > BREAK_M
+  k[gap] = 0.
+  return np.abs(k) >= 1. / BEND_R
+
+
 # ---------------------------------------------------------------- using it (onroad)
 
 class RoadMemory:
@@ -248,7 +271,7 @@ class RoadMemory:
     cat = lambda k: np.concatenate([z[k] for z, _ in parts])  # noqa: E731
     self.lat, self.lon, self.alt, self.brg = cat('lat'), cat('lon'), cat('alt'), cat('brg')
     self.vacc, self.v, self.s = cat('vacc'), cat('v'), cat('s')
-    self.free = np.concatenate([free_mask(z) for z, _ in parts])
+    self.free = np.concatenate([free_mask(z) & bend_mask(z) for z, _ in parts])   # only free points in bends cap
     self.trace = np.concatenate([np.full(len(z['s']), i, np.int32) for i, (z, _) in enumerate(parts)])
     self.day = np.concatenate([np.full(len(z['s']), day_id[d], np.int32) for z, d in parts])
     self.x, self.y = _xy(self.lat, self.lon)
