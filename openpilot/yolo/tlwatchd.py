@@ -63,6 +63,7 @@ as before); a yellow there zeroes go like a red does, so no GO and no 'go' call 
 import argparse
 import glob
 import json
+import math
 import os
 import sys
 import time
@@ -84,6 +85,17 @@ C3_GO = BASE / 'C3_GO'          # GO on C3's call is pressed only with this too 
 C3_FILE = '/dev/shm/c3lights.json'
 C3_FRESH_S = 1.5                # c3_relay rewrites it twice a second while C3 sends
 C3_AZ_DEG = 12.0                # the HUD's "in front" for C3's lights
+# ...and at the height a signal head has at the OSM signal's distance (2026-10-30). On 10/29 C3 called red at 60 m
+# or closer on 65 signals the car then drove through without the driver braking; replayed from C3's recordings
+# (E:/Temp/d1030/c3replay.py) most of the reds picked were real lamps of another lane or direction, but tail lights
+# on the viaduct (18:01-18:05, elevation 0-0.5 deg), a flag (14:37:59, 9 deg at 46 m: 8 m up) and red signs too.
+# A head is C3_HEAD_H up, C3_HEAD_BACK short of to C3_HEAD_ON past the OSM node (the node is mid-junction), the
+# camera C3_CAM_H, C3's calibration good to C3_EL_MARGIN: over the 104 replayed moments whose outcome is known, red
+# picked on 38 -> 28 of the 65 driven through, 32 -> 30 of the 39 stopped at. Nothing changes without an OSM signal.
+C3_HEAD_H = (3.5, 7.5)          # m
+C3_HEAD_BACK, C3_HEAD_ON = 20., 15.
+C3_CAM_H = 1.36                 # m
+C3_EL_MARGIN = 1.0              # deg
 C3_GO_HOLD_S = 0.5              # go (green ball, no red) held this long before a GO on C3's call: two readings in a row
 # (C3 sends twice a second). Was 1.5 until 2026-10-28, the driver: green to moving took 4-5 s (14:37: C3 green at
 # 34.4, GO 35.9, moving 37.6). Over the 17 C3-read waits on C4 so far no green spell ended in red; the red-first and
@@ -222,10 +234,18 @@ def snap(out, band, name):
     pass
 
 
-def c3_read(now):
+def c3_el_range(osm_m):
+  """Elevation (deg) a signal head can have, the OSM signal osm_m ahead - see C3_HEAD_H."""
+  near, far = max(osm_m - C3_HEAD_BACK, 8.), osm_m + C3_HEAD_ON
+  return (math.degrees(math.atan((C3_HEAD_H[0] - C3_CAM_H) / far)) - C3_EL_MARGIN,
+          math.degrees(math.atan((C3_HEAD_H[1] - C3_CAM_H) / near)) + C3_EL_MARGIN)
+
+
+def c3_read(now, osm_m=None):
   """C3's call on the light ahead as [none, red, go, yellow], or None when C3 is not there / not reading.
   red = the most confident red within C3_AZ_DEG; go = the most confident green ball there, 0 while any red or yellow
-  is there; yellow = the most confident yellow there (C3 passes one only where a light turned yellow)."""
+  is there; yellow = the most confident yellow there (C3 passes one only where a light turned yellow). With an OSM
+  signal osm_m ahead, only lights at a head's height for that distance count (c3_el_range)."""
   try:
     with open(C3_FILE) as f:
       j = json.load(f)
@@ -234,6 +254,9 @@ def c3_read(now):
   if now - float(j.get('t', 0)) > C3_FRESH_S or j.get('idle') or not j.get('using'):
     return None
   front = [lt for lt in (j.get('lights') or []) if abs(float(lt.get('az', 99))) <= C3_AZ_DEG]
+  if osm_m is not None:
+    lo, hi = c3_el_range(osm_m)
+    front = [lt for lt in front if 'el' not in lt or lo <= float(lt['el']) <= hi]
   red = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_red'], default=0.)
   go = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_green'], default=0.)
   yellow = max([float(lt.get('conf', 0)) for lt in front if lt.get('cls') == 'light_yellow'], default=0.)
@@ -475,7 +498,7 @@ def main():
               'lead': sm['radarState'].leadOne.dRel if sm['radarState'].leadOne.present else 999.}
         t = time.monotonic()
         tag = datetime.now().strftime('%H:%M:%S')
-        c3p = c3_read(t)          # C3's call on the light, or None -> C4's own models (see the top)
+        c3p = c3_read(t, osm_m)   # C3's call on the light, or None -> C4's own models (see the top)
         thermal = sm['deviceState'].thermalStatus
         if thermal == Thermal.critical:
           wait = None
