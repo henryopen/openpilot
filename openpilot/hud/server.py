@@ -551,15 +551,15 @@ def _produce():
             data["laneOffset"] = _lo
         except (OSError, ValueError):
           pass
-        # road memory (selfdrive/mapd/road_memory.py): shown only while the planner is holding cruise to it
-        # (road_memory_limit writes the act file on a change) and mapd_bridge's lookup is fresh
+        # road memory (selfdrive/mapd/road_memory.py): shown only while the planner is holding cruise to it - or in
+        # shadow would be (live false) - (road_memory_limit writes the act file on a change) and the lookup is fresh
         try:
           with open("/dev/shm/road_mem_act.json") as _f:
             _ra = json.load(_f)
           with open("/dev/shm/road_mem.json") as _f:
             _rm = json.load(_f)
           if _ra.get("active") and time.monotonic() - float(_rm.get("t", 0)) < 1.5:
-            data["roadMem"] = _rm
+            data["roadMem"] = dict(_rm, live=bool(_ra.get("live")))
         except (OSError, ValueError):
           pass
         # TDX live road conditions ahead (selfdrive/mapd/tdx_traffic.py): events, section speeds, the freeway

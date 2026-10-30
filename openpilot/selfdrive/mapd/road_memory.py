@@ -7,11 +7,14 @@ bends and arrives at the next too fast (10/28: SCC to 1.3-2.0 m/s^2 between bend
 bend or slope the model and curve_speed do not slow for the way the driver does.
 
 Learning (road_memd, offroad, after a drive): every logged drive becomes a trace, one point every STEP_M along it
-(GPS position, altitude, heading, speed). A point's speed counts ("free") only when it was the speed the road set:
-nothing ahead within LEAD_FREE_M / LEAD_FREE_S, not slowing to a stop (PRE_STOP_S) or pulling away from one
+(GPS position, altitude, heading, speed, and what was going on: the lead, the last / next stop, the blinker, the
+pedals). A point's speed counts ("free", worked out when the memory is loaded - see free_mask - so the rules can
+change without reading the logs again) only when it was the speed the road set: no slower car holding us (within
+LEAD_FREE_S and not pulling away by LEAD_AWAY), not slowing to a stop (PRE_STOP_S) or pulling away from one
 (POST_STOP_S), no blinker near (a junction turn or a lane change, BLINK_S), the driver on neither pedal, and not in
 the PRE_BRAKE_S before the driver braked while openpilot drove (openpilot too fast there - the speed after the
-brake is the driver's).
+brake is the driver's). 10-30's first version took any car within 40 m / 3 s as holding us: 23% of the road was
+free and, a day left out, the others answered on 1.8% of it (10.6% had two other days' traces).
 
 Using it (mapd_bridge, twice a second): the traces that pass within MATCH_M of us, heading within MATCH_DEG and
 altitude within ALT_M (the GPS cannot tell lanes apart at 1.3-1.8 m, nor a viaduct from the road below it without
@@ -21,7 +24,8 @@ not hold is not a cap), from at least MIN_DAYS different days. The speed allowed
 of what still slows to that bin's cap (plus MARGIN) at A_COMFORT, never under V_FLOOR. Written to OUT_FILE for
 the planner (road_memory_limit) and the HUD.
 
-Off with OFF_FLAG. Nothing is learned from a day's first drive alone: a road needs MIN_DAYS days.
+Shadow until /data/road_mem_on exists (road_memory_limit.ON_FLAG). Nothing is learned from a day's first drive
+alone: a road needs MIN_DAYS days.
 """
 import datetime
 import glob
@@ -38,18 +42,17 @@ TRACE_DIR = os.path.join(ROOT, 'traces')
 DONE_FILE = os.path.join(ROOT, 'done.json')
 LOG_ROOT = '/data/media/0/realdata'
 OUT_FILE = '/dev/shm/road_mem.json'
-OFF_FLAG = '/data/road_mem_off'
 
 KPH = 1 / 3.6
 STEP_M = 5.0
 MIN_SPEED = 3.0                 # m/s: slower is a car park or a queue, no trace
 MAX_H_ACC = 5.0                 # m: a looser fix places us nowhere
 MAX_V_ACC = 8.0                 # m: a looser altitude cannot tell a viaduct from the road below
-LEAD_FREE_M = 40.
-LEAD_FREE_S = 3.0
-PRE_STOP_S = 10.
-POST_STOP_S = 6.
-BLINK_S = 8.
+LEAD_FREE_S = 2.0               # s: a lead nearer than this ...
+LEAD_AWAY = 1.0                 # m/s: ... and not this much faster than us is holding us
+PRE_STOP_S = 6.
+POST_STOP_S = 4.
+BLINK_S = 6.
 PRE_BRAKE_S = 4.
 STOP_V = 1.0                    # m/s
 BREAK_M = 30.                   # a gap this long in a trace (no fix, stopped) ends the forward walk
@@ -137,12 +140,21 @@ def extract_route(route, log_root=LOG_ROOT):
     j = np.searchsorted(tm, t + after, side='right')
     return j > i
 
+  def since_until(mask):
+    """Seconds since the last and until the next sample with mask (99 if none)."""
+    tm = t[mask.astype(bool)]
+    if not len(tm):
+      return np.full(len(t), 99.), np.full(len(t), 99.)
+    i = np.searchsorted(tm, t, side='right')
+    since = np.where(i > 0, t - tm[np.maximum(i - 1, 0)], 99.)
+    j = np.searchsorted(tm, t, side='left')
+    until = np.where(j < len(tm), tm[np.minimum(j, len(tm) - 1)] - t, 99.)
+    return np.minimum(since, 99.), np.minimum(until, 99.)
+
   stopped = v < STOP_V
-  lead_near = (a['lead_d'] < np.maximum(LEAD_FREE_M, LEAD_FREE_S * v))
-  pedal = (a['gas'] > 0.5) | (a['brake'] > 0.5)
   op_brake = (a['brake'] > 0.5) & (a['en'] > 0.5)
-  free = (~lead_near & ~pedal & ~near(stopped, POST_STOP_S, PRE_STOP_S) & ~near(a['blink'] > 0.5, BLINK_S, BLINK_S)
-          & ~near(op_brake, 0., PRE_BRAKE_S))
+  stop_since, stop_until = since_until(stopped)
+  blink_since, blink_until = since_until(a['blink'] > 0.5)
   good = (v >= MIN_SPEED) & (a['hacc'] <= MAX_H_ACC)
   # one point every STEP_M along the road
   x, y = _xy(a['lat'], a['lon'])
@@ -163,10 +175,14 @@ def extract_route(route, log_root=LOG_ROOT):
   out = {k: a[k][keep].astype(np.float32 if k not in ('lat', 'lon', 'unix') else np.float64)
          for k in ('lat', 'lon', 'alt', 'brg', 'vacc', 'v', 'unix')}
   out['s'] = np.asarray(s_keep, np.float32)
-  out['free'] = free[keep]
-  # not used to drive - kept so a drive can be replayed against the memory of the other days
-  out['en'] = a['en'][keep] > 0.5
+  out['lead_d'] = a['lead_d'][keep].astype(np.float32)
+  out['lead_v'] = a['lead_v'][keep].astype(np.float32)
+  out['pedal'] = ((a['gas'] > 0.5) | (a['brake'] > 0.5))[keep]
+  out['stop_since'] = stop_since[keep].astype(np.float32)
+  out['stop_until'] = stop_until[keep].astype(np.float32)
+  out['blink_near'] = np.minimum(blink_since, blink_until)[keep].astype(np.float32)
   out['brk_soon'] = near(op_brake, 0., PRE_BRAKE_S)[keep]
+  out['en'] = a['en'][keep] > 0.5            # not used to drive: for replaying a drive against the other days
   day = datetime.datetime.fromtimestamp(float(np.median(a['unix'])), TW).strftime('%Y-%m-%d')
   return out, day
 
@@ -201,6 +217,14 @@ def learn(log_root=LOG_ROOT, trace_dir=TRACE_DIR, done_file=DONE_FILE, only=None
   return added
 
 
+def free_mask(z):
+  """Where a trace's speed was the road's doing (see the module doc)."""
+  v = z['v']
+  held = (z['lead_d'] < LEAD_FREE_S * v) & (z['lead_v'] < v + LEAD_AWAY)
+  return (~held & ~z['pedal'].astype(bool) & (z['stop_since'] > POST_STOP_S) & (z['stop_until'] > PRE_STOP_S)
+          & (z['blink_near'] > BLINK_S) & ~z['brk_soon'].astype(bool))
+
+
 # ---------------------------------------------------------------- using it (onroad)
 
 class RoadMemory:
@@ -223,7 +247,8 @@ class RoadMemory:
     day_id = {d: i for i, d in enumerate(self.days)}
     cat = lambda k: np.concatenate([z[k] for z, _ in parts])  # noqa: E731
     self.lat, self.lon, self.alt, self.brg = cat('lat'), cat('lon'), cat('alt'), cat('brg')
-    self.vacc, self.v, self.s, self.free = cat('vacc'), cat('v'), cat('s'), cat('free').astype(bool)
+    self.vacc, self.v, self.s = cat('vacc'), cat('v'), cat('s')
+    self.free = np.concatenate([free_mask(z) for z, _ in parts])
     self.trace = np.concatenate([np.full(len(z['s']), i, np.int32) for i, (z, _) in enumerate(parts)])
     self.day = np.concatenate([np.full(len(z['s']), day_id[d], np.int32) for z, d in parts])
     self.x, self.y = _xy(self.lat, self.lon)

@@ -694,7 +694,7 @@ class LongitudinalPlanner:
     v_cruise_shown = v_cruise
     if self.curve_speed.is_active:
       v_cruise_shown = min(v_cruise_shown, self.curve_speed.v_target)
-    if self.road_memory.active and self.road_memory.v_allow is not None:
+    if self.road_memory.active and self.road_memory.live and self.road_memory.v_allow is not None:
       v_cruise_shown = min(v_cruise_shown, self.road_memory.v_allow)
     self.v_cruise_dash = true_to_dash(v_cruise_shown)
 

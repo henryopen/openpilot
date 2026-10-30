@@ -105,7 +105,7 @@ def main():
       pass
 
     # how fast this stretch has been driven before - see road_memory; nothing written means nothing known here.
-    # road_memory.OFF_FLAG is the planner's to honour (road_memory_limit)
+    # Whether the car is held to it is the planner's call (road_memory_limit: shadow unless /data/road_mem_on)
     if rmem is not None and osm_ok:
       try:
         hit = rmem.lookup(pos[0], pos[1], alt, bearing, vacc, gspeed)

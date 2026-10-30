@@ -1055,12 +1055,12 @@ function render(F){
     if(o>0.01){ lof.style.display=''; lof.textContent=`最右車道・靠左 ${o.toFixed(2)} m`; }
     else lof.style.display='none';
   }
-  // 路段記憶（road_memory 10/30）：這段路以前開過的速度，規劃程式照它限速時才顯示
+  // 路段記憶（road_memory 10/30）：這段路以前開過的速度，規劃程式照它限速（或觀察模式下會限速）時才顯示
   const rmc=$('cRoadMem');
   if(rmc){
     if(F.rm && F.rm.v_allow>0){
       rmc.style.display='';
-      rmc.textContent=`路段記憶・限 ${Math.round(F.rm.v_allow*3.6)}（前方 ${Math.round(F.rm.d||0)} m 曾開 ${Math.round((F.rm.cap||0)*3.6)}）`;
+      rmc.textContent=`路段記憶${F.rm.live?'':'（觀察）'}・${F.rm.live?'限':'會限'} ${Math.round(F.rm.v_allow*3.6)}（前方 ${Math.round(F.rm.d||0)} m 曾開 ${Math.round((F.rm.cap||0)*3.6)}）`;
     } else rmc.style.display='none';
   }
   const sla=$('cSLA');
