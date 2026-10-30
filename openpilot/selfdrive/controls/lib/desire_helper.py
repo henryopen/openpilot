@@ -5,6 +5,7 @@ import time
 from openpilot.cereal import log
 from openpilot.common.constants import CV
 from openpilot.common.realtime import DT_MDL
+from openpilot.common.swaglog import cloudlog
 from openpilot.selfdrive.controls.lib.auto_lane_change import AutoLaneChangeController, AutoLaneChangeMode
 from openpilot.selfdrive.mapd.turn_ahead import TurnAheadReader
 
@@ -128,6 +129,7 @@ class DesireHelper:
     v_ego = carstate.vEgo
     side = 'L' if carstate.leftBlinker else 'R'
     was = (self.turn_go, self.turn_hold, self.quiet)
+    nav, d_osm = None, None
     if one_blinker and not self.blink_prev:
       self.blink_t, self.blink_v0 = 0.0, v_ego
       self.turn_go, self.turn_hold, self.quiet = None, None, False
@@ -163,6 +165,10 @@ class DesireHelper:
             self.turn_hold = 'osm'
     if (self.turn_go, self.turn_hold, self.quiet) != was:
       self._write_hold(side)
+      # in the log too (2026-10-30: a turn taken from the route could not be told apart afterwards - the route's
+      # step was nowhere in the log)
+      cloudlog.event("turn_decision", go=self.turn_go, hold=self.turn_hold, quiet=self.quiet, side=side if one_blinker else None,
+                     v=round(v_ego * 3.6, 1), nav=nav, osm=d_osm)
     return wait
 
   @staticmethod

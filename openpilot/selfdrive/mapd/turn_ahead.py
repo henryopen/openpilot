@@ -38,7 +38,11 @@ ARM_MIN, ARM_MAX = 30, 160
 ON_ROAD_DEG = 35.
 MAJOR = ('motorway', 'trunk', 'primary', 'secondary', 'tertiary', 'unclassified', 'motorway_link', 'trunk_link',
          'primary_link', 'secondary_link', 'tertiary_link')
-NAV_MANEUVERS = ('turn', 'off_ramp', 'fork', 'roundabout', 'on_ramp')
+# Ramps and forks are no turn (2026-10-30, the driver: lane changes on the motorway taken as turns). Leaving the
+# motorway is a lane change to the right and then the ramp, whose bend the model follows by itself (10/29 17:46:51:
+# it drew the viaduct ramp's 84 deg right bend with the desire straight). As turns, a right blinker for the exit lane
+# held the lane change back (17:59:45, 46 km/h, OSM had no junction: the wheel pushed right to 306 and nothing).
+NAV_MANEUVERS = ('turn', 'roundabout')
 NAV_STALE_S = 5.0
 FILE_STALE_S = 2.0
 REACH_M = 150.                             # looked this far; desire_helper decides how near counts
@@ -111,7 +115,7 @@ class JunctionMap:
 
 
 def nav_turn(nav, now):
-  """(side 'L'/'R', metres) of the next route step if it turns / leaves the road, from NAV_FILE's content."""
+  """(side 'L'/'R', metres, maneuver) of the next route step if it turns, from NAV_FILE's content."""
   try:
     if nav is None or now - float(nav.get('mono', 0)) > NAV_STALE_S:
       return None
@@ -123,7 +127,7 @@ def nav_turn(nav, now):
     side = 'L' if 'left' in mod else ('R' if 'right' in mod else None)
     if side is None:
       return None
-    return side, max(0., float(step.get('dist') or 0))
+    return side, max(0., float(step.get('dist') or 0)), str(step.get('maneuver'))
   except (TypeError, ValueError, AttributeError):
     return None
 
