@@ -34,6 +34,21 @@ MAX_SAME_OBJECT_DIST_GAP = 50.0  # m
 MIN_SAME_OBJECT_HEADWAY = 0.6  # s
 MIN_HEADWAY_GATE_SPEED = 4.17  # m/s, 15 km/h
 
+# When vision's lead is stopped, speed says nothing: every pole, parked scooter and kerb object
+# is doing 0 too, so same_object passes on speed and lateral alone. 2026-10-31 15:15:46 at 18
+# km/h: vision's lead was a stopped car at 35-48 m, the radar held something stopped 2.1 m to
+# the side at 9 m, matching took it, and the planner asked for -3.3 m/s2 on an empty road. So a
+# radar track that is itself stopped, with vision's lead stopped, and nearer than vision by more
+# than this share of vision's range, is not the same car - vision's lead is used. One way only:
+# a radar track farther than vision's is left alone (15:17:39 the radar read the car across
+# the junction right at 73 -> 40 m while vision said 51 -> 28; dropping it there swapped the
+# source 30 times in 6 s). Replayed open loop on 10/31's three drives (52 segments, 16.8 min
+# with a vision lead): the lead differs on 29 frames, every one a stopped radar target 5-30 m
+# nearer than vision's and mostly 2-2.8 m to the side; source swaps 242 -> 249.
+STOPPED_V = 2.0          # m/s
+STOPPED_NEARER = 0.30    # of vision's range
+STOPPED_NEARER_MIN = 5.0  # m
+
 # radar tracks
 SPEED, ACCEL = 0, 1     # Kalman filter states enum
 
@@ -192,6 +207,11 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
 
   track = max(tracks.values(), key=prob)
 
+  def stopped_nearer(t):
+    """see STOPPED_V"""
+    return (abs(lead.v[0]) < STOPPED_V and abs(t.vLead) < STOPPED_V and
+            offset_vision_dist - t.dRel > max(STOPPED_NEARER * offset_vision_dist, STOPPED_NEARER_MIN))
+
   # if no 'sane' match is found return -1
   # stationary radar points can be false positives
   # The Custin's radar reports a guardrail scanned along its length as a steady target in
@@ -224,7 +244,7 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
   dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0]) or same_object
   vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
   if dist_sane and vel_sane:
-    return track
+    return None if stopped_nearer(track) else track
 
   # The gate is strict enough to blink: over 2026-09-02's drives the lead fell from radar to
   # vision 1905 times in 63 minutes, and 95.1% of the time the track that came back was the
@@ -243,7 +263,7 @@ def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks
     pref_dist = abs(preferred.dRel - offset_vision_dist) < max([(offset_vision_dist)*.12, 4.0]) or pref_same
     pref_vel = (abs(preferred.vRel + v_ego - lead.v[0]) < 13) or (v_ego + preferred.vRel > 3)
     if pref_dist and pref_vel:
-      return preferred
+      return None if stopped_nearer(preferred) else preferred
   return None
 
 
