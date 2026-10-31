@@ -1049,10 +1049,14 @@ function render(F){
     else tc.style.display='none';
   }
   // 最右側車道靠左（lane_offset 10/29）：模型看到的畫面往右平移，車子就往左開這麼多
+  // 彎道補償（compensation 10/31）：模型會切彎內側，依學到的切彎量反向補（bend：+ 往左、− 往右）
   const lof=$('cLaneOff');
   if(lof){
-    const o=(F.lo&&!F.lo.disabled)?(+F.lo.offset||0):0;
-    if(o>0.01){ lof.style.display=''; lof.textContent=`最右車道・靠左 ${o.toFixed(2)} m`; }
+    const o=F.lo?(+F.lo.offset||0):0, b=F.lo?(+F.lo.bend||0):0, s=o-b;
+    const parts=[];
+    if(s>0.01) parts.push(`最右車道・靠左 ${s.toFixed(2)} m`);
+    if(Math.abs(b)>0.03) parts.push(`彎道補償・往${b>0?'左':'右'} ${Math.abs(b).toFixed(2)} m`);
+    if(parts.length){ lof.style.display=''; lof.textContent=parts.join('　'); }
     else lof.style.display='none';
   }
   // 路段記憶（road_memory 10/30）：這段路以前開過的速度，規劃程式照它限速（或觀察模式下會限速）時才顯示
@@ -1456,7 +1460,7 @@ function fromSSE(J){
   });
   F.stopA = (mv && mv.stopAhead) || 0;
   // lane_offset 開著時模型的線都偏了 offset（模型以為車在正中），畫的時候加回去（同 sunnypilot model_renderer）
-  const lo_o=(J.laneOffset&&!J.laneOffset.disabled)?(+J.laneOffset.offset||0):0, lo_sh=a=>lo_o?(a||[]).map(y=>y+lo_o):a;
+  const lo_o=J.laneOffset?(+J.laneOffset.offset||0):0, lo_sh=a=>lo_o?(a||[]).map(y=>y+lo_o):a;
   if(mv && mv.lanes){ F.lanes=lo_o?mv.lanes.map(l=>({...l,y:lo_sh(l.y)})):mv.lanes;
                       F.edges=lo_o?(mv.edges||[]).map(e=>({...e,y:lo_sh(e.y)})):mv.edges; F.path=lo_sh(mv.path);
                       if(mv.d && mv.d.length) SAMPLE_D=mv.d; }
