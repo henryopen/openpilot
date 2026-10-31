@@ -26,6 +26,7 @@ MAPD_PATH = os.path.join(MAPD_ROOT, "mapd")
 
 MIN_ACCURACY = 25.0     # metres; past this the fix is too loose to place us on a road
 MIN_HEADING_SPEED = 3.0  # m/s
+ROAD_SPEED_MEMORY = False  # see main(): the speed half of road memory is off
 
 
 def main():
@@ -50,12 +51,17 @@ def main():
   except (OSError, ValueError, KeyError) as e:
     jmap = None
     cloudlog.warning(f"mapd: no junction map for turn_ahead ({e})")
-  try:
-    rmem = road_memory.RoadMemory()
-    cloudlog.info("mapd: road memory %d points from %d drives", len(rmem), rmem.n_traces)
-  except Exception:
-    rmem = None
-    cloudlog.exception("mapd: no road memory")
+  # The speed half of road memory is off (2026-10-31, the driver: a bend's speed comes from the formula; navigation,
+  # memory and the map all hang on GPS, which is only for telling a turn from a lane change with the indicator on).
+  # road_memd still learns the traces - BlinkMemory below reads them.
+  rmem = None
+  if ROAD_SPEED_MEMORY:
+    try:
+      rmem = road_memory.RoadMemory()
+      cloudlog.info("mapd: road memory %d points from %d drives", len(rmem), rmem.n_traces)
+    except Exception:
+      rmem = None
+      cloudlog.exception("mapd: no road memory")
   try:
     bmem = road_memory.BlinkMemory()
     cloudlog.info("mapd: blinker memory %d blinkers", len(bmem))
