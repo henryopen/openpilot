@@ -3,13 +3,16 @@
 call on 10-29: "依照我們開過的路加減速...來修正模型的不足"; 10-30: "路段記憶要做"; "你做記憶要考慮到GPS跟圖資的準度").
 
 Bends only, and only the driver's own speed (2026-10-30, the driver: "我開車都不會超速 所以速度記憶主要還是要用在轉彎
-每天路況都不同速度學習跟本沒用"; "過彎速度你就看我接手有操作的時候速度是多少"): a point caps cruise only near a bend tighter
-than BEND_R (curvature from the trace's own GPS headings over +-BEND_HALF points, BEND_NEAR points either side) and
+每天路況都不同速度學習跟本沒用"; "過彎速度你就看我接手有操作的時候速度是多少"): a point caps cruise only near a bend - the
+wheel turned past BEND_ANG there (BEND_NEAR points either side), nowhere within BLINK_TURN_S of a blinker - and
 only where the speed was the driver's - driving it themselves, on the throttle, or in the AFTER_BRAKE_S after
 letting the brake go (what they braked it down to). A bend openpilot took without the driver touching anything has
 no memory and no cap. The first try took openpilot's own free speed in the bends: replaying 10/28's mountain road
 against itself, of 37 driver brakes near a bend it would have slowed for 3 - the brakes are where openpilot was too
-fast, and those seconds were left out.
+fast, and those seconds were left out. 10-31 the bends came from the GPS heading over +-15 m: on the day's
+drives 9 of 23 "would slow" were on a straight road (GPS heading jitter at low speed) and the rest mostly junction
+turns. The driver: "很多直路都會顯示彎道 ... GPS跟地圖的判斷只用來作為換道或轉彎的判斷而且一定要打方向燈". So the wheel says
+where the bends are, and junction turns (a blinker near) are not bends.
 
 Blinkers (BlinkMemory, same traces): where each blinker came on, which side, and whether the car then turned or
 changed lanes; desire_helper takes what the driver did there before (turn_ahead's 'mem').
@@ -87,9 +90,15 @@ CELL = 20.                      # m, the lookup grid
 # A bend: tighter than this radius. On the logged drives (free points) the speed follows the radius only there -
 # medians 38 / 34 / 29 / 22 / 18 km/h at 200-500 / 100-200 / 50-100 / 25-50 / <25 m - while on the straights (83.5%
 # of the road) it spreads 33-103 km/h with the traffic.
-BEND_R = 200.
-BEND_HALF = 3                   # points (STEP_M each) either side the heading change is taken over
+BEND_ANG = 15.                  # deg of wheel: about a 200 m radius at this car's steer ratio; lane changes stay under
+BLINK_TURN_S = 15.              # s: a blinker this near makes it a junction turn, not a bend
 BEND_NEAR = 6                   # points: the braking for a bend starts on the way in
+# A bend is a bend every time through; one drive's wheel is not. With the wheel rule, 4 of the 6 'would slow' on 10-31's
+# drives were still on a straight road: each from a single other day where the driver had the wheel at 16-25 deg there
+# with no blinker (pulling out at the start of a drive, going round something), while every other pass went straight.
+# So where other drives passed the same place (within AGREE_M, heading within MATCH_DEG, driven by anyone), a point is
+# near a bend only if most of the drives there were.
+BEND_AGREE = 0.5                # share of the drives through a place that must have been near a bend there
 BLINK_MATCH_M = 50.             # a blinker this near, heading within MATCH_DEG, same side, is "here"
 TW = datetime.timezone(datetime.timedelta(hours=8))
 
@@ -109,8 +118,8 @@ def extract_route(route, log_root=LOG_ROOT):
   from openpilot.tools.lib.logreader import LogReader
   segs = sorted(int(d.rsplit('--', 1)[1]) for d in os.listdir(log_root) if d.startswith(route + '--'))
   cols = {k: [] for k in ('t', 'lat', 'lon', 'alt', 'brg', 'hacc', 'vacc', 'gspeed', 'v', 'gas', 'brake', 'en', 'lead_d',
-                          'lead_v', 'bl', 'br', 'unix')}
-  st = {'v': 0., 'gas': False, 'brake': False, 'en': False, 'lead_d': 1e3, 'lead_v': 0., 'bl': False, 'br': False}
+                          'lead_v', 'bl', 'br', 'ang', 'unix')}
+  st = {'v': 0., 'gas': False, 'brake': False, 'en': False, 'lead_d': 1e3, 'lead_v': 0., 'bl': False, 'br': False, 'ang': 0.}
   for s in segs:
     p = os.path.join(log_root, f'{route}--{s}', 'rlog.zst')
     if not os.path.exists(p):
@@ -122,7 +131,8 @@ def extract_route(route, log_root=LOG_ROOT):
         w = m.which()
         if w == 'carState':
           c = m.carState
-          st.update(v=c.vEgo, gas=c.gasPressed, brake=c.brakePressed, bl=c.leftBlinker, br=c.rightBlinker)
+          st.update(v=c.vEgo, gas=c.gasPressed, brake=c.brakePressed, bl=c.leftBlinker, br=c.rightBlinker,
+                    ang=c.steeringAngleDeg)
         elif w == 'selfdriveState':
           st['en'] = m.selfdriveState.enabled
         elif w == 'radarState':
@@ -141,7 +151,7 @@ def extract_route(route, log_root=LOG_ROOT):
           cols['vacc'].append(g.verticalAccuracy)
           cols['gspeed'].append(g.speed)
           cols['unix'].append(g.unixTimestampMillis * 1e-3)
-          for k in ('v', 'gas', 'brake', 'en', 'lead_d', 'lead_v', 'bl', 'br'):
+          for k in ('v', 'gas', 'brake', 'en', 'lead_d', 'lead_v', 'bl', 'br', 'ang'):
             cols[k].append(st[k])
     except Exception:  # a corrupt segment loses that minute, not the drive
       continue
@@ -202,6 +212,7 @@ def extract_route(route, log_root=LOG_ROOT):
   out['lead_d'] = a['lead_d'][keep].astype(np.float32)
   out['lead_v'] = a['lead_v'][keep].astype(np.float32)
   out['pedal'] = ((a['gas'] > 0.5) | brake)[keep]
+  out['ang'] = a['ang'][keep].astype(np.float32)
   out['gas'] = (a['gas'] > 0.5)[keep]
   out['after_brk'] = (~brake & (brake_since <= AFTER_BRAKE_S))[keep]   # the speed the driver braked it down to
   out['stop_since'] = stop_since[keep].astype(np.float32)
@@ -284,19 +295,10 @@ def driver_mask(z):
 
 
 def bend_mask(z):
-  """Where a trace is in a bend (see BEND_R): the heading change over +-BEND_HALF points along it."""
-  b = np.unwrap(np.radians(z['brg'].astype(np.float64)))
-  s = z['s'].astype(np.float64)
-  n = len(s)
-  i0 = np.clip(np.arange(n) - BEND_HALF, 0, n - 1)
-  i1 = np.clip(np.arange(n) + BEND_HALF, 0, n - 1)
-  ds = s[i1] - s[i0]
-  k = np.where(ds > 2 * STEP_M, (b[i1] - b[i0]) / np.maximum(ds, 1e-3), 0.)
-  gap = np.diff(s, prepend=s[0]) > BREAK_M
-  k[gap] = 0.
-  bend = np.abs(k) >= 1. / BEND_R
-  near = np.convolve(bend.astype(float), np.ones(2 * BEND_NEAR + 1), 'same') > 0
-  return near
+  """Near a bend: the wheel past BEND_ANG (BEND_NEAR points either side, the braking for it starts on the way in), and
+  no blinker within BLINK_TURN_S (that is a junction turn)."""
+  bend = (np.abs(z['ang']) >= BEND_ANG) & (z['blink_near'] > BLINK_TURN_S)
+  return np.convolve(bend.astype(float), np.ones(2 * BEND_NEAR + 1), 'same') > 0
 
 
 # ---------------------------------------------------------------- using it (onroad)
@@ -307,7 +309,7 @@ class RoadMemory:
     for f in sorted(glob.glob(os.path.join(trace_dir, '*.npz'))):
       try:
         z = np.load(f)
-        if 'after_brk' not in z:                 # a trace from before 10-30 15:00 lacks the driver's fields
+        if 'ang' not in z:                       # a trace from before 10-31 20:00 lacks the wheel angle
           continue
         day = str(z['day'])
         if day == exclude_day:
@@ -324,13 +326,22 @@ class RoadMemory:
     cat = lambda k: np.concatenate([z[k] for z, _ in parts])  # noqa: E731
     self.lat, self.lon, self.alt, self.brg = cat('lat'), cat('lon'), cat('alt'), cat('brg')
     self.vacc, self.v, self.s = cat('vacc'), cat('v'), cat('s')
-    self.free = np.concatenate([driver_mask(z) & bend_mask(z) for z, _ in parts])   # the driver's speed near bends
+    bend = np.concatenate([bend_mask(z) for z, _ in parts])
+    self.free = np.concatenate([driver_mask(z) for z, _ in parts]) & bend   # the driver's speed near bends
     self.trace = np.concatenate([np.full(len(z['s']), i, np.int32) for i, (z, _) in enumerate(parts)])
     self.day = np.concatenate([np.full(len(z['s']), day_id[d], np.int32) for z, d in parts])
     self.x, self.y = _xy(self.lat, self.lon)
     keys = np.floor(self.x / CELL).astype(np.int64) * 1000003 + np.floor(self.y / CELL).astype(np.int64)
     self.order = np.argsort(keys, kind='stable')
     self.keys = keys[self.order]
+    for k in np.flatnonzero(self.free):                  # see BEND_AGREE
+      idx = self._near(float(self.x[k]), float(self.y[k]))
+      idx = idx[(np.hypot(self.x[idx] - self.x[k], self.y[idx] - self.y[k]) < AGREE_M) &
+                (_angdiff(self.brg[idx], self.brg[k]) < MATCH_DEG)]
+      trs = np.unique(self.trace[idx])
+      if len(trs) > 1:
+        n_bend = sum(bool(bend[idx[self.trace[idx] == t]].any()) for t in trs)
+        self.free[k] = n_bend > BEND_AGREE * len(trs)
 
   def __len__(self):
     return len(self.lat)
