@@ -110,6 +110,21 @@ MAX_FLOOR_DECEL = 2.5
 FLOOR_JERK = 4.0            # m/s3, so full floor is reached in about 0.6 s rather than at once
 MIN_STOP_DISTANCE = 2.0     # below this the geometry is meaningless
 
+# Held at the line. _planned_stop reads nothing at or under 1 m/s, so once the car has all but
+# stopped only HOLD_TIME kept the mode on - and with it the model's own plan among the candidates.
+# 2026-10-31 15:17:51: stopped at a red, a car 31 m off across the junction (so stop_for_lights had
+# stood down for it), the model saying shouldStop on every frame; 4 s after the car went under 1 m/s
+# the mode lapsed, cruise asked for +0.72 and the car rolled into the junction until the driver
+# braked. So while the mode is on and the car is stopped, the model saying stop keeps it on, and it
+# lets go once the model has said go for HELD_CLEAR (or at once for a lead inside the veto, as before)
+# rather than HOLD_TIME later, which would have the green's pull-away follow the model's own small
+# accel for 4 s. HELD_CLEAR as stop_for_lights' CLEAR_FOR: at a halt the flag flickers off for a frame.
+# Counted only once standing: rolling the last metre in, the model says shouldStop only at rest (15:17:51:
+# False down to 1.0 km/h, True from there), so counting it then let go 3 s before the car even stopped.
+HELD_SPEED = 1.0            # m/s, where _planned_stop stops reading
+HELD_CLEAR = 1.0            # s
+HELD_STANDING = 0.3         # m/s
+
 
 class JunctionHandoff:
   def __init__(self):
@@ -121,6 +136,8 @@ class JunctionHandoff:
     self.stop_x = None
     self.stop_v = 0.0
     self.a_floor = 0.0
+    self.clear_for = 0.0
+    self.held = False
 
   def reset(self):
     self.filter.x = 0.0
@@ -131,6 +148,8 @@ class JunctionHandoff:
     self.stop_x = None
     self.stop_v = 0.0
     self.a_floor = 0.0
+    self.clear_for = 0.0
+    self.held = False
 
   def _turning(self, car_state, v_ego):
     """The indicator is on and the model has been told to take a turn, so its plan ends at
@@ -196,10 +215,25 @@ class JunctionHandoff:
     armed = self.filter.x >= THRESHOLD
 
     now = time.monotonic()
-    if armed and self.model_detected:
+    # held at the line - see HELD_SPEED
+    at_line = self.active and v_ego <= HELD_SPEED
+    standing = at_line and v_ego < HELD_STANDING
+    self.clear_for = self.clear_for + DT_MDL if standing and not model.action.shouldStop else 0.0
+    if at_line and model.action.shouldStop:
       self.hold_until = now + HOLD_TIME
+      self.held = True
+    elif armed and self.model_detected:
+      self.hold_until = now + HOLD_TIME
+    elif standing and self.clear_for > HELD_CLEAR:
+      self.hold_until = now
+    elif self.held and v_ego > HELD_SPEED and not model.action.shouldStop:
+      # pulled away from a hold with the model no longer saying stop: let go now, not HOLD_TIME into the pull-away
+      # (replayed, 4 launches would otherwise have followed the model's own small accel for 2-3 s)
+      self.hold_until = now
 
     self.active = bool(armed or (not lead_relevant and now < self.hold_until))
+    if not self.active:
+      self.held = False
 
     # Ask for what stopping in the distance the model says it has would take. Rate limited
     # in both directions: arming is a step in the trigger but must not be one at the wheels,
