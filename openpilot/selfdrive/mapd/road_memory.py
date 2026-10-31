@@ -480,6 +480,15 @@ def main():
         cloudlog.event("road_memory learned", routes=n, s=round(time.monotonic() - t0, 1))
     except Exception:
       cloudlog.exception("road_memory learn failed")
+    # the control compensations learned from the same drives - see compensation
+    try:
+      from openpilot.selfdrive.mapd import compensation
+      t0 = time.monotonic()
+      n = compensation.learn()
+      if n:
+        cloudlog.event("compensation learned", routes=n, s=round(time.monotonic() - t0, 1), params=compensation.load())
+    except Exception:
+      cloudlog.exception("compensation learn failed")
     time.sleep(600)
 
 

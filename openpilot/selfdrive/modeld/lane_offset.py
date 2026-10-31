@@ -19,13 +19,22 @@ Only while all of these hold (from the model's previous frame), else back to 0:
   rightmost: no lane line beyond the right one (prob < FAR_P) or the road edge within EDGE_GAP of it;
   straight (|desiredCurvature| < STRAIGHT_CURV), over MIN_SPEED, no blinker, no lane change.
 On for ON_S and off for OFF_S before it changes its mind; the offset moves at RATE. FLAG_OFF turns it off.
+
+Bends (2026-10-31): the model cuts to the inside of a bend - on 10-31 left bends 0.15-0.32 m left of centre (towards
+the oncoming lane), right bends 0.10-0.45 m right. compensation.py learns, from each drive, how far it cuts for each
+band of its own desiredCurvature; the opposite of that is added here (the same shear), BEND_MAX at most, moving at
+BEND_RATE, while there is no blinker or lane change and the car is over BEND_SPEED_MIN. BEND_FLAG_OFF turns that part
+off. What it applied is logged ('bend_offset', twice a second while not zero) so it can be checked against the drive.
 """
 import json
 import os
 import time
 
+import numpy as np
+
 from openpilot.cereal import log
 from openpilot.common.swaglog import cloudlog
+from openpilot.selfdrive.mapd import compensation
 
 OFFSET = 0.15            # m to the left in the rightmost lane
 RATE = 0.05              # m/s the offset moves at (0.15 m in 3 s)
@@ -40,6 +49,12 @@ OFF_S = 1.0
 FLAG_OFF = '/data/lane_offset_off'
 OUT = '/dev/shm/lane_offset.json'   # for the HUD: written on a change and once a second
 DT = 0.05
+BEND_MAX = 0.4           # m
+BEND_RATE = 0.15         # m/s
+BEND_SPEED_MIN = 15 / 3.6
+BEND_TAU = 0.5           # s, smoothing the model's curvature (it flickers frame to frame)
+BEND_RELOAD_S = 60.      # s between reads of the learned table
+BEND_FLAG_OFF = '/data/bend_offset_off'
 
 
 class LaneOffset:
@@ -51,6 +66,34 @@ class LaneOffset:
     self.frame = 0
     self._out_t = 0.
     self._out_last = None
+    self.straight = 0.       # the rightmost-lane part
+    self.bend = 0.           # the bend part
+    self.k_f = 0.
+    self.bend_k, self.bend_o = None, None
+    self.bend_disabled = os.path.exists(BEND_FLAG_OFF)
+    self._bend_load_t = -1e9
+    self._bend_log_t = 0.
+
+  def _load_bend(self):
+    """The learned table: desiredCurvature band centre -> how far the model sits off centre there (+ = left)."""
+    p = compensation.load()
+    k, o = [0.], [0.]
+    if p and p.get('bend_offset'):
+      for kc, oc in zip(p['bend_k'], p['bend_offset'], strict=True):
+        if oc is not None and abs(kc) > 1e-4:
+          k.append(kc)
+          o.append(oc)
+    order = np.argsort(k)
+    self.bend_k, self.bend_o = np.array(k)[order], np.array(o)[order]
+
+  def bend_target(self, md, car_state, lane_change_state, v_ego):
+    k = float(md.action.desiredCurvature)
+    self.k_f += (k - self.k_f) * min(DT / BEND_TAU, 1.)
+    if (self.bend_disabled or self.bend_k is None or len(self.bend_k) < 2 or v_ego < BEND_SPEED_MIN
+        or car_state.leftBlinker or car_state.rightBlinker or lane_change_state != log.LaneChangeState.off):
+      return 0.
+    cut = float(np.interp(self.k_f, self.bend_k, self.bend_o))
+    return float(np.clip(-cut, -BEND_MAX, BEND_MAX))
 
   @staticmethod
   def rightmost_straight(md, car_state, lane_change_state, v_ego):
@@ -75,6 +118,15 @@ class LaneOffset:
     self.frame += 1
     if self.frame % 20 == 0:
       self.disabled = os.path.exists(FLAG_OFF)
+      self.bend_disabled = os.path.exists(BEND_FLAG_OFF)
+    now = time.monotonic()
+    if now - self._bend_load_t > BEND_RELOAD_S:
+      self._bend_load_t = now
+      try:
+        self._load_bend()
+      except Exception:
+        cloudlog.exception("lane_offset: bend table")
+        self.bend_k = None
     cond = not self.disabled and self.rightmost_straight(md, car_state, lane_change_state, v_ego)
     if cond != self.want:
       self.cond_t += DT
@@ -85,7 +137,14 @@ class LaneOffset:
       self.cond_t = 0.
     target = OFFSET if self.want else 0.
     step = RATE * DT
-    self.offset = min(self.offset + step, target) if self.offset < target else max(self.offset - step, target)
+    self.straight = min(self.straight + step, target) if self.straight < target else max(self.straight - step, target)
+    bt = self.bend_target(md, car_state, lane_change_state, v_ego)
+    step = BEND_RATE * DT
+    self.bend = min(self.bend + step, bt) if self.bend < bt else max(self.bend - step, bt)
+    self.offset = self.straight + self.bend
+    if abs(self.bend) > 0.02 and now - self._bend_log_t >= 0.5:
+      self._bend_log_t = now
+      cloudlog.event("bend_offset", bend=round(self.bend, 3), k=round(self.k_f, 5), offset=round(self.offset, 3))
     self._publish()
     return self.offset
 
@@ -98,7 +157,8 @@ class LaneOffset:
     try:
       tmp = OUT + '.tmp'
       with open(tmp, 'w') as f:
-        json.dump({'t': now, 'on': self.want, 'offset': round(self.offset, 3), 'disabled': self.disabled}, f)
+        json.dump({'t': now, 'on': self.want, 'offset': round(self.offset, 3), 'disabled': self.disabled,
+                   'bend': round(self.bend, 3)}, f)
       os.replace(tmp, OUT)
     except OSError:
       pass
