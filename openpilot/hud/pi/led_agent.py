@@ -213,31 +213,77 @@ def throttled():
 
 
 CARD_CON = "led-card"       # NM connection of the Pi's USB wifi (wlan1) to the card's own AP, since 10/19
-CARD_MAC = "98:48:27:e0:4b:7f"   # the USB wifi (rtl8821au). 10/25: found by MAC, not by name - on a cold boot it can
-                                 # come up as wlan0 (the led-card NM profile is bound to this MAC too)
+# The USB wifi is the wireless adapter that is not the Pi's own (brcmfmac). 10/25 it was found by its MAC because on a
+# cold boot it can come up as wlan0, and the led-card profile was bound to that MAC too - but 10/31 the adapter was
+# swapped (Archer T2U rtl8821au 98:48:27:e0:4b:7f -> TL-WN725N rtl8xxxu 18:69:45:ab:a8:53) and the profile, still on
+# the old MAC, would never have come up on the new one. Found by driver now, and the profile is re-bound to whatever
+# adapter that is (card_profile_fix).
+BUILTIN_DRIVER = "brcmfmac"
+
+
+def _wifi_adapters():
+  """-> [(name, mac, driver)] of the wireless interfaces."""
+  out = []
+  try:
+    for name in sorted(os.listdir("/sys/class/net")):
+      if not os.path.isdir(f"/sys/class/net/{name}/wireless"):
+        continue
+      try:
+        with open(f"/sys/class/net/{name}/address") as f:
+          mac = f.read().strip().lower()
+        drv = os.path.basename(os.readlink(f"/sys/class/net/{name}/device/driver"))
+      except OSError:
+        continue
+      out.append((name, mac, drv))
+  except OSError:
+    pass
+  return out
 
 
 def card_iface() -> str:
-  try:
-    for name in os.listdir("/sys/class/net"):
-      try:
-        with open(f"/sys/class/net/{name}/address") as f:
-          if f.read().strip().lower() == CARD_MAC:
-            return name
-      except OSError:
-        continue
-  except OSError:
-    pass
+  for name, _, drv in _wifi_adapters():
+    if drv != BUILTIN_DRIVER:
+      return name
   return "wlan1"
+
+
+def card_profile_fix():
+  """Bind the led-card profile to the USB adapter actually plugged in, and let NetworkManager retry it for ever
+  (the default gives up for 5 minutes after a few failures - see card_wifi_watch)."""
+  usb = [(n, m) for n, m, d in _wifi_adapters() if d != BUILTIN_DRIVER]
+  if not usb:
+    say("card wifi: no USB wifi adapter found")
+    return
+  name, mac = usb[0]
+  try:
+    cur = subprocess.run(["nmcli", "-g", "802-11-wireless.mac-address,connection.autoconnect-retries", "con", "show", CARD_CON],
+                         capture_output=True, text=True, timeout=5).stdout.split("\n")
+    cur_mac = cur[0].strip().replace("\\", "").lower() if cur else ""
+    retries = cur[1].strip() if len(cur) > 1 else ""
+    if cur_mac != mac or retries != "0":
+      r = subprocess.run(["nmcli", "con", "modify", CARD_CON, "802-11-wireless.mac-address", mac,
+                          "connection.autoconnect-retries", "0"], capture_output=True, text=True, timeout=10)
+      say(f"card wifi profile {CARD_CON}: mac {cur_mac or '-'} -> {mac} ({name}), retries {retries or '-'} -> 0"
+          + ("" if r.returncode == 0 else f" FAILED: {r.stderr.strip()[:120]}"))
+  except (OSError, subprocess.SubprocessError) as e:
+    say(f"card wifi profile check failed: {e}")
+
+
 WIFI_CHECK_EVERY = 15.0
 WIFI_LOG_EVERY = 120.0
+WIFI_UP_EVERY = 30.0        # s between our own 'con up' attempts
 
 
 def card_wifi_watch(card_down):
   """While the card is down and the card's adapter is sitting disconnected: ask that adapter for a scan, and log
   whether the card's AP is on the air. 10/23 the adapter sat disconnected for 290 s after boot and then joined in
   2 s, with nothing in the logs to say whether the AP was not up yet or NetworkManager had not looked. A scan on a
-  disconnected adapter costs nothing (with the card joined it would cost the card's replies - see hud_agent net_list)."""
+  disconnected adapter costs nothing (with the card joined it would cost the card's replies - see hud_agent net_list).
+  10/31's four boots answered it: the card boots slower than the Pi, so the first tries find no AP; from 60-80 s the AP
+  was on the air (signal 37-40, ch 6) but NetworkManager, having given up, only tried again at 262-264 s. So once the
+  AP is seen, bring the profile up ourselves (at most every WIFI_UP_EVERY)."""
+  card_profile_fix()
+  up_t = -1e9
   try:
     ssid = subprocess.run(["nmcli", "-g", "802-11-wireless.ssid", "con", "show", CARD_CON],
                           capture_output=True, text=True, timeout=5).stdout.strip()
@@ -267,6 +313,14 @@ def card_wifi_watch(card_down):
       said, said_t = bool(seen), now
       say(f"card wifi {card_iface()} disconnected: AP " +
           (f"on air, signal {seen[0][1]} ch {seen[0][2]}" if seen else "not seen in a scan"))
+    if seen and now - up_t >= WIFI_UP_EVERY:
+      up_t = now
+      try:
+        r = subprocess.run(["nmcli", "con", "up", CARD_CON, "ifname", card_iface()], capture_output=True, text=True,
+                           timeout=40)
+        say(f"card wifi con up {card_iface()}: " + ("ok" if r.returncode == 0 else f"failed: {(r.stderr or r.stdout).strip()[:120]}"))
+      except (OSError, subprocess.SubprocessError) as e:
+        say(f"card wifi con up failed: {e}")
 
 
 def mirror(img, key, text, card_ok, manual_left=None, manual_key=None):

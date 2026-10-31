@@ -1,7 +1,6 @@
 [Unit]
 Description=HUD static server + comma device discovery
-After=network-online.target
-Wants=network-online.target
+After=network.target
 
 [Service]
 Type=simple

@@ -1,7 +1,6 @@
 [Unit]
 Description=Rear window LED: car HUD stream -> BX-Y04 controller
-After=hud-agent.service network-online.target
-Wants=network-online.target
+After=hud-agent.service network.target
 
 [Service]
 Type=simple
