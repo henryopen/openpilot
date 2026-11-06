@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 疊在 Google 導航畫面左側、由上往下直排的圖示鍵（2.5.0，11/04 使用者：「三個按鈕太大了改用圖示放在地圖左邊從上而下排列」） -->
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="wrap_content"
+    android:layout_height="wrap_content"
+    android:orientation="vertical">
+
+    <ImageButton
+        android:id="@+id/guidanceBackButton"
+        android:layout_width="@dimen/guidance_icon_size"
+        android:layout_height="@dimen/guidance_icon_size"
+        android:background="@drawable/guidance_icon_bg"
+        android:contentDescription="@string/back_to_search"
+        android:padding="11dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_place" />
+
+    <!-- 導航中也看得到鍵盤／語音說明（10/29），返回就回到導航，導航不中斷 -->
+    <ImageButton
+        android:id="@+id/guidanceHelpButton"
+        android:layout_width="@dimen/guidance_icon_size"
+        android:layout_height="@dimen/guidance_icon_size"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/guidance_icon_bg"
+        android:contentDescription="@string/help_short"
+        android:padding="11dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_help" />
+
+    <!-- 導航語音開／關（11/02），按一下立刻生效、記住設定；開＝白色喇叭，關＝灰色靜音喇叭 -->
+    <ImageButton
+        android:id="@+id/guidanceVoiceButton"
+        android:layout_width="@dimen/guidance_icon_size"
+        android:layout_height="@dimen/guidance_icon_size"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/guidance_icon_bg"
+        android:contentDescription="@string/voice_on"
+        android:padding="11dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_volume_up" />
+
+    <ImageButton
+        android:id="@+id/guidanceStopButton"
+        android:layout_width="@dimen/guidance_icon_size"
+        android:layout_height="@dimen/guidance_icon_size"
+        android:layout_marginTop="8dp"
+        android:background="@drawable/guidance_icon_bg_stop"
+        android:contentDescription="@string/stop_nav"
+        android:padding="12dp"
+        android:scaleType="fitCenter"
+        android:src="@drawable/ic_close" />
+</LinearLayout>

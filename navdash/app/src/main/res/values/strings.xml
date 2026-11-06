@@ -1,0 +1,129 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">NavDash 導航</string>
+
+    <!-- 主畫面 -->
+    <string name="fab_navigation">導航設定</string>
+    <string name="loading">載入中...</string>
+    <string name="connection_failed">無法連線到 FrogPilot</string>
+    <string name="retry">重試</string>
+
+    <!-- 導航頁面 -->
+    <string name="nav_title">導航</string>
+    <string name="search_hint">搜尋目的地...</string>
+    <string name="search">搜尋</string>
+    <string name="favorites">常用目的地</string>
+    <string name="recent">最近導航</string>
+    <string name="settings">設定</string>
+    <string name="nav_status">導航狀態</string>
+    <string name="start_nav">導航</string>
+    <string name="stop_nav">結束導航</string>
+    <string name="view_map">查看地圖</string>
+    <string name="add_favorite">新增常用地點</string>
+    <string name="no_favorites">尚無常用目的地</string>
+    <string name="no_recent">尚無最近導航紀錄</string>
+    <string name="navigating_to">導航中：前往 %s</string>
+    <string name="remaining_info">剩餘 %s · %s</string>
+    <string name="remaining_distance_time">剩餘：%.1f 公里 / %d 分鐘</string>
+    <string name="eta">預計到達：%s</string>
+    <string name="not_navigating">目前未導航</string>
+    <string name="routing">計算路線中...</string>
+    <string name="rerouting">重新計算路線中...</string>
+    <string name="arrived">已到達目的地</string>
+    <string name="nav_error">導航發生錯誤</string>
+    <string name="unknown_destination">未知目的地</string>
+
+    <!-- 常用地點操作 -->
+    <string name="added_to_favorites">已將「%s」加入常用地點</string>
+    <string name="removed_from_favorites">已將「%s」從常用地點移除</string>
+    <string name="remove_favorite_title">移除常用地點</string>
+    <string name="remove_favorite_message">確定要將「%s」從常用地點移除嗎？</string>
+    <string name="remove">移除</string>
+    <string name="long_press_hint">長按可加入常用地點</string>
+
+    <!-- SDK 初始化 -->
+    <string name="init_nav_sdk">重新初始化導航 SDK</string>
+    <string name="accept_terms">同意服務條款</string>
+    <string name="sdk_not_ready">導航 SDK 尚未初始化</string>
+    <string name="sdk_ready">導航 SDK 已就緒</string>
+    <string name="sdk_init_error">初始化錯誤：%s</string>
+    <string name="terms_required">需要同意服務條款才能使用導航功能</string>
+    <string name="terms_accepted">服務條款已接受</string>
+    <string name="terms_rejected">服務條款被拒絕</string>
+    <string name="initializing">正在初始化...</string>
+
+    <!-- 設定 -->
+    <string name="settings_title">設定</string>
+    <string name="frogpilot_connection">WebRTC 連線</string>
+    <string name="frogpilot_ip">Comma 裝置 IP</string>
+    <string name="frogpilot_port">WebRTC Port</string>
+    <string name="ip_address">IP 位址</string>
+    <string name="port">Port</string>
+    <string name="ip_hint">例如：192.168.1.100</string>
+    <string name="webrtc_port_hint">預設 5001</string>
+    <string name="save_settings">儲存設定</string>
+    <string name="test_connection">測試連線</string>
+    <string name="google_maps_api">Google Maps API</string>
+    <string name="api_key">API Key</string>
+    <string name="show">顯示</string>
+    <string name="hide">隱藏</string>
+    <string name="test">測試</string>
+    <string name="nav_preferences">導航偏好</string>
+    <string name="avoid_highways">避開高速公路</string>
+    <string name="avoid_tolls">避開收費站</string>
+    <string name="avoid_ferries">避開渡輪</string>
+    <string name="cancel">取消</string>
+    <string name="save">儲存</string>
+    <string name="edit">編輯</string>
+
+    <!-- 狀態訊息 -->
+    <string name="connection_success">連線成功</string>
+    <string name="connection_error">連線失敗：%s</string>
+    <string name="api_key_valid">API Key 有效</string>
+    <string name="api_key_invalid">API Key 無效</string>
+    <string name="settings_saved">設定已儲存</string>
+    <string name="nav_started">導航已開始</string>
+    <string name="nav_stopped">導航已結束</string>
+
+    <!-- 預設值 -->
+    <string name="default_ip">192.168.1.100</string>
+    <string name="default_port">5001</string>
+
+    <!-- Dashboard -->
+    <string name="no_lead">無前車</string>
+    <string name="connecting">WebRTC 連接中...</string>
+    <string name="connected">WebRTC 已連接</string>
+    <string name="connection_failed_short">WebRTC 連接失敗</string>
+    <string name="please_set_ip">請先設定 Comma 裝置 IP</string>
+    <string name="nav_stopped_toast">導航已停止</string>
+
+    <!-- 無障礙說明 -->
+    <string name="nav_icon_desc">轉向圖示</string>
+    <string name="nav_lanes_desc">車道指示</string>
+    <string name="nav_arrow_right">→</string>
+
+    <!-- 路徑檢視 -->
+    <string name="route_planning">路徑規劃</string>
+    <string name="no_route_data">無路徑資料</string>
+    <string name="close">關閉</string>
+    <!-- D531 版 -->
+    <string name="open_guidance">回到導航畫面</string>
+    <string name="help_title">鍵盤／語音說明</string>
+    <string name="back_to_search">目的地</string>
+    <!-- 2.3.0（10/29） -->
+    <string name="help_short">說明</string>
+    <string name="voice_on">語音：開</string>
+    <string name="voice_off">語音：關</string>
+    <string name="voice_search">語音輸入目的地</string>
+    <string name="voice_prompt">請說出目的地</string>
+    <string name="voice_unavailable">這支手機沒有語音辨識（需要 Google 語音服務）</string>
+    <string name="exit_app">結束 NavDash</string>
+    <string name="exit_confirm">導航中，要結束導航並關閉 NavDash 嗎？</string>
+    <string name="exit_ok">結束</string>
+    <string name="simulate_start">模擬行駛（測試用）</string>
+    <string name="simulate_stop">停止模擬</string>
+    <string name="need_location">需要定位權限才能導航</string>
+    <string name="pi_never">PiBar：還沒來讀過導航資料</string>
+    <string name="pi_connected">PiBar：已連線（%s）</string>
+    <string name="pi_stale">PiBar：%d 秒沒來讀了</string>
+</resources>

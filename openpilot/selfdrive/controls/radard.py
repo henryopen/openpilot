@@ -1,0 +1,511 @@
+#!/usr/bin/env python3
+import math
+import numpy as np
+from collections import deque
+from typing import Any
+
+import capnp
+from openpilot.cereal import messaging, log
+from opendbc.car.structs import car
+from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.params import Params
+from openpilot.common.realtime import DT_MDL, Priority, config_realtime_process
+from openpilot.common.swaglog import cloudlog
+from openpilot.common.simple_kalman import KF1D
+
+
+# Default lead acceleration decay set to 50% at 1s
+_LEAD_ACCEL_TAU = 1.5
+
+# How far the radar and vision may disagree on range and still be called the same car.
+# Sized to reject only the absurd: accepted matches sit 0.8 m apart at the median.
+MAX_SAME_OBJECT_DIST_GAP = 50.0  # m
+
+# A range means nothing without the speed it is read at: 8 m is 0.58 s of headway at 50
+# km/h and 2.9 s at 10 km/h. Over 49 minutes of accepted matches this radar placed the lead
+# inside 0.6 s of headway on 0.53% of frames, at a median of 4.9 m while vision looked 92.7
+# m out and the car was doing 54 km/h. Nothing is there. Those frames carry 94 of the
+# planner's commands below -1 m/s2, nearly three times what the range gate above catches,
+# and the two overlap on less than a third of what they reject, so both are needed.
+# Below 15 km/h the ratio cannot fire at all - 0 of 33201 frames - which leaves stop-and-go
+# and junction crawls alone, and it never fires past 45 m either, so the early warning the
+# radar exists for is untouched: 0 of 5919 frames with the radar between 45 and 100 m, and
+# 0 of the 2386 of those where the radar alone said the lead was closing.
+MIN_SAME_OBJECT_HEADWAY = 0.6  # s
+MIN_HEADWAY_GATE_SPEED = 4.17  # m/s, 15 km/h
+
+# When vision's lead is stopped, speed says nothing: every pole, parked scooter and kerb object
+# is doing 0 too, so same_object passes on speed and lateral alone. 2026-10-31 15:15:46 at 18
+# km/h: vision's lead was a stopped car at 35-48 m, the radar held something stopped 2.1 m to
+# the side at 9 m, matching took it, and the planner asked for -3.3 m/s2 on an empty road. So a
+# radar track that is itself stopped, with vision's lead stopped, and nearer than vision by more
+# than this share of vision's range, is not the same car - vision's lead is used. One way only:
+# a radar track farther than vision's is left alone (15:17:39 the radar read the car across
+# the junction right at 73 -> 40 m while vision said 51 -> 28; dropping it there swapped the
+# source 30 times in 6 s). Replayed open loop on 10/31's three drives (52 segments, 16.8 min
+# with a vision lead): the lead differs on 29 frames, every one a stopped radar target 5-30 m
+# nearer than vision's and mostly 2-2.8 m to the side; source swaps 242 -> 249.
+STOPPED_V = 2.0          # m/s
+STOPPED_NEARER = 0.30    # of vision's range
+STOPPED_NEARER_MIN = 5.0  # m
+
+# radar tracks
+SPEED, ACCEL = 0, 1     # Kalman filter states enum
+
+# stationary qualification parameters
+V_EGO_STATIONARY = 4.   # no stationary object flag below this speed
+
+RADAR_TO_CAMERA = 1.52  # RADAR is ~ 1.5m ahead from center of mesh frame
+
+# The lead going away is usually not the lead leaving. Over 2.27 hours of this car's own
+# logs leadOne vanished 268 times an hour, and 52% of those came back within a second at a
+# distance that carried on from where it left off, with the raw vision probability still
+# sitting at 0.35 - the model blinking, not a car pulling away. Holding through the blink is
+# worth 2.1:1 inside 25 m and 2.9:1 from 25 to 45, counted as dropout seconds recovered
+# against seconds spent holding a lead that really had gone. Past 45 m it is 0.9:1, so
+# nothing is held out there; LONGITUDINAL.md 7.3 says what is done instead.
+#
+# The gate is the model's own probability, not the filtered one radard decides with: that
+# filter rises instantly and decays slowly, so by the time it admits the lead is gone it can
+# no longer tell a blink from a departure. Holding on a timer alone loses - a second of it
+# buys back 30 dropout seconds an hour and spends 41 (openpilot/yolo/analysis/lead_hold_sim.py).
+LEAD_HOLD_MAX_DIST = 45.
+LEAD_HOLD_MIN_PROB = 0.2
+LEAD_HOLD_MAX_TIME = 3.0
+LEAD_HOLD_MIN_SPEED = 3.0
+
+# Stopped, the same hold is needed for the opposite failure. The lead is still 'present' -
+# vision has one - but the radar track under it has gone, and vision reads a stopped car at
+# 3-4 m as anywhere between 3.3 and 14.8 m. The planner sees the gap open and creeps.
+# Over 22 minutes of stopped-and-close frames on 2026-09-06 the radar track dropped out 60
+# times, 1.3 times a minute, and those frames creep 44.0% of the time against 5.3% for
+# stopped frames as a whole. The drops are short - 0.20 s at the median, 1.21 s at p90 and
+# 2.70 s at the longest - so LEAD_HOLD_MAX_TIME covers all of them with room to spare.
+# Only held when vision reports the lead further away than the radar last did: reading it
+# closer is the safe direction and is believed immediately.
+LEAD_HOLD_STANDSTILL_SPEED = 0.5  # m/s
+LEAD_HOLD_STANDSTILL_DIST = 10.0  # m
+LEAD_HOLD_STANDSTILL_JUMP = 1.0  # m
+
+# Keep the radar track vision has just confirmed (2026-10-06). At night vision's own reported uncertainty
+# grows - on 10-05, 08:13 -> 21:47, xStd 1.3 -> 5.1 m and vStd 1.8 -> 5.6 km/h - and the match above starts
+# turning the radar away: the lead came from radar 96 / 92 / 80 / 62% of the time over the four drives and
+# switched between radar and vision 5.8 / 19.9 / 40.7 / 61.9 times a minute. In those vision frames the
+# radar track was there 81-89% of the time, 0.4-0.9 m from vision's lead sideways, and for 75-87% of them it
+# was the very track matched as the lead within 3 s either side: the same car, vision's range and speed
+# 8-14 m and 10-18 km/h off it. Widening the match on vision's uncertainty instead let other objects in
+# (39 leads braking hard: closest 3.18 -> 1.43 m) and is not used. So the track that was the lead stays the
+# lead for RADAR_KEEP_S while it is the same track, within RADAR_KEEP_DY of vision's lead sideways, and
+# vision does not see something nearer than RADAR_KEEP_NEAR of its range. The driver: radar is there to
+# make vision more precise.
+# Closed loop (radard re-run on each log), 10-05 following, night / day: radar 93.0 -> 97.7% / 97.4 -> 98.1%,
+# switches 19.9 -> 6.6 / 3.9 -> 1.8 a minute, braking past -2.0 22 -> 19 / 24 -> 23, past -1.0 1.27 ->
+# 1.25 / unchanged, accelerate-then-brake 0.56 -> 0.62 / 0.25 -> 0.24. The 39 leads braking hard and 50
+# stops unchanged; of 47 hard brakings on 10-05, 4 nearer by 0.5-5.7 m, the nearest 17.4 m. 5 s brought
+# one to 5.5 m from 11.2 and is not used.
+RADAR_KEEP_S = 2.0
+RADAR_KEEP_DY = 1.0       # m
+RADAR_KEEP_NEAR = 0.7     # vision nearer than this share of the track's range -> believe vision
+RADAR_KEEP_REFRESH = False   # True keeps it as long as the rest holds; measured the same as 2 s
+
+
+class KalmanParams:
+  def __init__(self, dt: float):
+    # Lead Kalman Filter params, calculating K from A, C, Q, R requires the control library.
+    # hardcoding a lookup table to compute K for values of radar_ts between 0.01s and 0.2s
+    assert dt > .01 and dt < .2, "Radar time step must be between .01s and 0.2s"
+    self.A = [[1.0, dt], [0.0, 1.0]]
+    self.C = [1.0, 0.0]
+    #Q = np.matrix([[10., 0.0], [0.0, 100.]])
+    #R = 1e3
+    #K = np.matrix([[ 0.05705578], [ 0.03073241]])
+    dts = [i * 0.01 for i in range(1, 21)]
+    K0 = [0.12287673, 0.14556536, 0.16522756, 0.18281627, 0.1988689,  0.21372394,
+          0.22761098, 0.24069424, 0.253096,   0.26491023, 0.27621103, 0.28705801,
+          0.29750003, 0.30757767, 0.31732515, 0.32677158, 0.33594201, 0.34485814,
+          0.35353899, 0.36200124]
+    K1 = [0.29666309, 0.29330885, 0.29042818, 0.28787125, 0.28555364, 0.28342219,
+          0.28144091, 0.27958406, 0.27783249, 0.27617149, 0.27458948, 0.27307714,
+          0.27162685, 0.27023228, 0.26888809, 0.26758976, 0.26633338, 0.26511557,
+          0.26393339, 0.26278425]
+    self.K = [[np.interp(dt, dts, K0)], [np.interp(dt, dts, K1)]]
+
+
+class Track:
+  def __init__(self, identifier: int, v_lead: float, kalman_params: KalmanParams):
+    self.identifier = identifier
+    self.cnt = 0
+    self.aLeadTau = FirstOrderFilter(_LEAD_ACCEL_TAU, 0.45, DT_MDL)
+    self.K_A = kalman_params.A
+    self.K_C = kalman_params.C
+    self.K_K = kalman_params.K
+    self.kf = KF1D([[v_lead], [0.0]], self.K_A, self.K_C, self.K_K)
+
+  def update(self, d_rel: float, y_rel: float, v_rel: float, v_lead: float):
+    # relative values, copy
+    self.dRel = d_rel   # LONG_DIST
+    self.yRel = y_rel   # -LAT_DIST
+    self.vRel = v_rel   # REL_SPEED
+    self.vLead = v_lead
+
+    # computed velocity and accelerations
+    if self.cnt > 0:
+      self.kf.update(self.vLead)
+
+    self.vLeadK = float(self.kf.x[SPEED][0])
+    self.aLeadK = float(self.kf.x[ACCEL][0])
+
+    # Learn if constant acceleration
+    if abs(self.aLeadK) < 0.5:
+      self.aLeadTau.x = _LEAD_ACCEL_TAU
+    else:
+      self.aLeadTau.update(0.0)
+
+    self.cnt += 1
+
+  def get_RadarState(self, model_prob: float = 0.0):
+    return {
+      "dRel": float(self.dRel),
+      "yRel": float(self.yRel),
+      "vRel": float(self.vRel),
+      "vLead": float(self.vLead),
+      "vLeadK": float(self.vLeadK),
+      "aLeadK": float(self.aLeadK),
+      "aLeadTau": float(self.aLeadTau.x),
+      "present": True,
+      "modelProb": model_prob,
+      "radar": True,
+      "radarTrackId": self.identifier,
+    }
+
+  def potential_low_speed_lead(self, v_ego: float):
+    # stop for stuff in front of you and low speed, even without model confirmation
+    # Radar points closer than 0.75, are almost always glitches on toyota radars
+    return abs(self.yRel) < 1.0 and (v_ego < V_EGO_STATIONARY) and (0.75 < self.dRel < 25)
+
+  def __str__(self):
+    ret = f"x: {self.dRel:4.1f}  y: {self.yRel:4.1f}  v: {self.vRel:4.1f}  a: {self.aLeadK:4.1f}"
+    return ret
+
+
+def laplacian_pdf(x: float, mu: float, b: float):
+  b = max(b, 1e-4)
+  return math.exp(-abs(x-mu)/b)
+
+
+def match_vision_to_track(v_ego: float, lead: capnp._DynamicStructReader, tracks: dict[int, Track],
+                          preferred_track_id: int = -1):
+  offset_vision_dist = lead.x[0] - RADAR_TO_CAMERA
+
+  def prob(c):
+    prob_d = laplacian_pdf(c.dRel, offset_vision_dist, lead.xStd[0])
+    prob_y = laplacian_pdf(c.yRel, -lead.y[0], lead.yStd[0])
+    prob_v = laplacian_pdf(c.vRel + v_ego, lead.v[0], lead.vStd[0])
+
+    # This isn't exactly right, but it's a good heuristic
+    return prob_d * prob_y * prob_v
+
+  track = max(tracks.values(), key=prob)
+
+  def stopped_nearer(t):
+    """see STOPPED_V"""
+    return (abs(lead.v[0]) < STOPPED_V and abs(t.vLead) < STOPPED_V and
+            offset_vision_dist - t.dRel > max(STOPPED_NEARER * offset_vision_dist, STOPPED_NEARER_MIN))
+
+  # if no 'sane' match is found return -1
+  # stationary radar points can be false positives
+  # The Custin's radar reports a guardrail scanned along its length as a steady target in
+  # our own lane, and at 25% the gate is 28 m wide when vision is looking 110 m out, so the
+  # rail gets accepted over the real car. Tightening this to 7% cut that from 56% of frames
+  # to 4% while the stock ACC's own target still matched on 99%.
+  #
+  # That gate is a test of vision's distance, and vision's distance is the thing that
+  # degrades: over 2026-08-29's two drives it missed by more than the gate on 26% of frames
+  # by day and 52% at night, so the radar was thrown away exactly where it was worth most.
+  # Speed and lateral position say 'same object' without asking vision how far away it is -
+  # this radar reports each track's own speed over the ground - and the guardrail the gate
+  # was tightened for sits a lane's width off centre rather than on it. Among the frames the
+  # gate rejects, the lateral disagreement is 0.3 m at the median; letting those through
+  # raises accepted frames from 77.9% to 91.7% by day and from 57.9% to 79.7% at night, and
+  # what it admits disagrees on distance by 3.9 m at the median while agreeing on speed.
+  # Matching on speed and lateral position alone leaves nothing checking the range at all,
+  # and this radar will hold a target on a bridge's noise barrier that is doing our own
+  # speed on our own centreline - both tests pass while it reads 7 m against vision's 101.
+  # Twice on 2026-09-06 that reached the planner as a car a metre and a half ahead at 60
+  # km/h and it braked to 2.8 m/s2 with the road visibly empty. So the range still has to be
+  # in the same world: over 49 minutes of accepted matches the two disagree by 0.8 m at the
+  # median and 10.4 m at p95, while those two events disagreed by 83 and 103 m. A 50 m
+  # ceiling turns away 0.80% of matches, and what it turns away falls back to vision, which
+  # in both of those was the one telling the truth.
+  same_object = abs(track.vRel + v_ego - lead.v[0]) < 1.5 and abs(track.yRel + lead.y[0]) < 2.0
+  same_object = same_object and abs(track.dRel - offset_vision_dist) < MAX_SAME_OBJECT_DIST_GAP
+  same_object = same_object and (v_ego <= MIN_HEADWAY_GATE_SPEED
+                                 or track.dRel > MIN_SAME_OBJECT_HEADWAY * v_ego)
+  dist_sane = abs(track.dRel - offset_vision_dist) < max([(offset_vision_dist)*.07, 2.0]) or same_object
+  vel_sane = (abs(track.vRel + v_ego - lead.v[0]) < 10) or (v_ego + track.vRel > 3)
+  if dist_sane and vel_sane:
+    return None if stopped_nearer(track) else track
+
+  # The gate is strict enough to blink: over 2026-09-02's drives the lead fell from radar to
+  # vision 1905 times in 63 minutes, and 95.1% of the time the track that came back was the
+  # one that left, a median of 0.10 s later with its range 0.2 m from where it was. Nothing
+  # moved - one frame of camera noise failed the test. Each swap hands the planner a
+  # different measurement of the same car, disagreeing on closing speed by a median 6.4 km/h
+  # and by as much as 45.8, and the MPC brakes for the difference.
+  #
+  # So give the track we were already using a second, looser look, the way StarPilot does
+  # (selfdrive/controls/radard.py, preferred_track_id): still measured against this frame's
+  # vision lead rather than sustained on its own, so a track that has genuinely diverged is
+  # still dropped. cnt >= 3 keeps a track that has only just appeared from being preferred.
+  preferred = tracks.get(preferred_track_id)
+  if preferred is not None and preferred.cnt >= 3:
+    pref_same = abs(preferred.vRel + v_ego - lead.v[0]) < 2.5 and abs(preferred.yRel + lead.y[0]) < 3.0
+    pref_dist = abs(preferred.dRel - offset_vision_dist) < max([(offset_vision_dist)*.12, 4.0]) or pref_same
+    pref_vel = (abs(preferred.vRel + v_ego - lead.v[0]) < 13) or (v_ego + preferred.vRel > 3)
+    if pref_dist and pref_vel:
+      return None if stopped_nearer(preferred) else preferred
+  return None
+
+
+def get_RadarState_from_vision(lead_msg: capnp._DynamicStructReader, v_ego: float, model_v_ego: float, lead_prob: float):
+  lead_v_rel_pred = lead_msg.v[0] - model_v_ego
+  return {
+    "dRel": float(lead_msg.x[0] - RADAR_TO_CAMERA),
+    "yRel": float(-lead_msg.y[0]),
+    "vRel": float(lead_v_rel_pred),
+    "vLead": float(v_ego + lead_v_rel_pred),
+    "vLeadK": float(v_ego + lead_v_rel_pred),
+    "aLeadK": float(lead_msg.a[0]),
+    "aLeadTau": 0.3,
+    "modelProb": float(lead_prob),
+    "present": True,
+    "radar": False,
+    "radarTrackId": -1,
+  }
+
+
+def get_lead(v_ego: float, ready: bool, tracks: dict[int, Track], lead_msg: capnp._DynamicStructReader,
+             model_v_ego: float, lead_prob: float, low_speed_override: bool = True,
+             preferred_track_id: int = -1) -> dict[str, Any]:
+  # Determine leads, this is where the essential logic happens
+  if len(tracks) > 0 and ready and lead_prob > .5:
+    track = match_vision_to_track(v_ego, lead_msg, tracks, preferred_track_id)
+  else:
+    track = None
+
+  lead_dict = {'present': False}
+  if track is not None:
+    lead_dict = track.get_RadarState(lead_prob)
+  elif (track is None) and ready and (lead_prob > .5):
+    lead_dict = get_RadarState_from_vision(lead_msg, v_ego, model_v_ego, lead_prob)
+
+  if low_speed_override:
+    low_speed_tracks = [c for c in tracks.values() if c.potential_low_speed_lead(v_ego)]
+    if len(low_speed_tracks) > 0:
+      closest_track = min(low_speed_tracks, key=lambda c: c.dRel)
+
+      # Only choose new track if it is actually closer than the previous one
+      if (not lead_dict['present']) or (closest_track.dRel < lead_dict['dRel']):
+        lead_dict = closest_track.get_RadarState()
+
+  return lead_dict
+
+
+class LeadHold:
+  """Carries the last lead through a dip in the model's confidence. See LEAD_HOLD_* above."""
+
+  def __init__(self):
+    self.lead: dict[str, Any] | None = None
+    self.held = 0.
+
+  def _standstill_radar_loss(self, lead: dict[str, Any], v_ego: float) -> bool:
+    """Stopped, and the radar track under the lead has gone while vision reads it further.
+
+    get_lead returns a bare {'present': False} when there is no lead at all, so the
+    keys below only exist once something has been seen. Reading them unguarded crashed
+    radard on 2026-09-08 (KeyError: 'radar') the first time a lead vanished outright
+    while stopped - a car pulling away at a light - and took longitudinal with it.
+    Nothing to compare against in that case, so it is not a standstill loss.
+    """
+    return (v_ego < LEAD_HOLD_STANDSTILL_SPEED and self.lead is not None
+            and lead['present']
+            and self.lead['radar'] and not lead['radar']
+            and self.lead['dRel'] < LEAD_HOLD_STANDSTILL_DIST
+            and lead['dRel'] > self.lead['dRel'] + LEAD_HOLD_STANDSTILL_JUMP)
+
+  def update(self, lead: dict[str, Any], raw_prob: float, v_ego: float) -> dict[str, Any]:
+    standstill_loss = self._standstill_radar_loss(lead, v_ego)
+    if lead['present'] and not standstill_loss:
+      self.lead = dict(lead)
+      self.held = 0.
+      return lead
+
+    if (self.lead is None or (v_ego < LEAD_HOLD_MIN_SPEED and not standstill_loss)
+        or raw_prob < LEAD_HOLD_MIN_PROB
+        or self.held >= LEAD_HOLD_MAX_TIME or self.lead['dRel'] > LEAD_HOLD_MAX_DIST):
+      self.lead = None
+      self.held = 0.
+      return lead
+
+    self.held += DT_MDL
+    # let it keep closing at the speed it was last measured doing, so the gap does not freeze
+    self.lead['dRel'] = max(self.lead['dRel'] + self.lead['vRel'] * DT_MDL, 0.)
+    return dict(self.lead)
+
+
+# The radar lead sits in the next lane while vision's sits in ours and is slower. This radar hands
+# radard one target only - the one the stock ACC has picked (CUSTIN_PRIMARY_ONLY) - and on
+# 2026-09-27 16:10:07.4 the stock ACC moved it to a car 1.52 m to our right while the car dead
+# ahead braked from 31 to 11 km/h. match_vision_to_track took it anyway: dist_sane has no lateral
+# test and vel_sane allows 10 m/s, so being 1.5 m nearer in range than vision's car was enough, and
+# the preferred-track look kept it as the gap grew. For 1.4 s the planner followed a car doing
+# 34 km/h at 17 m and asked for nothing; the driver braked at -4.6 and stopped 1.6 m short. Radar
+# and vision on the right car there read 0.00-0.16 m apart laterally; on the wrong one 1.58-1.76.
+# Over 09-16..09-27 the same pattern held for 0.3 s or more 48 times, several of them followed
+# within 2 s by -1.6 to -3.5 m/s^2 from the planner once it caught up.
+# Only ever swaps to the more cautious reading: vision confident, in our lane, and slower than the
+# radar car. A radar lead that is nearer or slower than vision's is never dropped here - that is
+# the car cutting in that the radar sees first.
+LANE_MISMATCH_VISION_PROB = 0.9
+LANE_MISMATCH_VISION_Y = 0.8     # m, vision's lead within our lane
+LANE_MISMATCH_RADAR_Y = 1.0      # m, radar's outside it
+LANE_MISMATCH_DY = 1.0           # m apart laterally
+LANE_MISMATCH_DV = 1.5           # m/s, radar's car that much faster than vision's
+LANE_MISMATCH_MAX_DIST = 70.     # m
+LANE_MISMATCH_FRAMES = int(round(0.3 / DT_MDL))   # one-frame disagreements are camera noise, see match_vision_to_track
+
+
+def lane_mismatch(lead: dict[str, Any], lead_msg: capnp._DynamicStructReader) -> bool:
+  if not (lead.get('present') and lead.get('radar')):
+    return False
+  vis_y = -lead_msg.y[0]
+  return bool(lead_msg.prob > LANE_MISMATCH_VISION_PROB and abs(vis_y) < LANE_MISMATCH_VISION_Y
+              and abs(lead['yRel']) > LANE_MISMATCH_RADAR_Y and abs(lead['yRel'] - vis_y) > LANE_MISMATCH_DY
+              and lead['vLead'] - lead_msg.v[0] > LANE_MISMATCH_DV and lead['dRel'] < LANE_MISMATCH_MAX_DIST)
+
+
+class RadarD:
+  def __init__(self, delay: float = 0.0):
+    self.tracks: dict[int, Track] = {}
+    self.kalman_params = KalmanParams(DT_MDL)
+    self.lead_prob_filters = [FirstOrderFilter(0.0, 0.2, DT_MDL) for _ in range(2)]
+    self.prev_lead_track_ids = [-1, -1]
+    self.lead_hold = LeadHold()
+    self.lane_mismatch_frames = 0
+    self.keep_id = -1
+    self.keep_age = 1e9
+
+    self.v_ego = 0.0
+    self.v_ego_hist = deque([0.0], maxlen=int(round(delay / DT_MDL))+1)
+    self.last_v_ego_frame = -1
+
+    self.radar_state: capnp._DynamicStructBuilder | None = None
+    self.radar_state_valid = False
+
+    self.ready = False
+
+  def update(self, sm: messaging.SubMaster, rr: car.RadarData):
+    self.ready = sm.seen['modelV2']
+
+    if sm.recv_frame['carState'] != self.last_v_ego_frame:
+      self.v_ego = sm['carState'].vEgo
+      self.v_ego_hist.append(self.v_ego)
+      self.last_v_ego_frame = sm.recv_frame['carState']
+
+    ar_pts = {pt.trackId: [pt.dRel, pt.yRel, pt.vRel] for pt in rr.points}
+
+    # *** remove missing points from meta data ***
+    for ids in list(self.tracks.keys()):
+      if ids not in ar_pts:
+        self.tracks.pop(ids, None)
+
+    # *** compute the tracks ***
+    for ids in ar_pts:
+      rpt = ar_pts[ids]
+
+      # align v_ego by a fixed time to align it with the radar measurement
+      v_lead = rpt[2] + self.v_ego_hist[0]
+
+      # create the track if it doesn't exist or it's a new track
+      if ids not in self.tracks:
+        self.tracks[ids] = Track(ids, v_lead, self.kalman_params)
+      self.tracks[ids].update(rpt[0], rpt[1], rpt[2], v_lead)
+
+    # *** publish radarState ***
+    self.radar_state_valid = sm.all_checks()
+    self.radar_state = log.RadarState.new_message()
+    self.radar_state.mdMonoTime = sm.logMonoTime['modelV2']
+    self.radar_state.radarErrors = rr.errors
+
+    if len(sm['modelV2'].velocity.x):
+      model_v_ego = sm['modelV2'].velocity.x[0]
+    else:
+      model_v_ego = self.v_ego
+    leads_v3 = sm['modelV2'].leadsV3
+    if len(leads_v3) > 1:
+      for i in range(2):
+        # Asymmetric filter on lead prob to keep lead when uncertain
+        lead_prob = leads_v3[i].prob
+        if lead_prob > self.lead_prob_filters[i].x:
+          self.lead_prob_filters[i].x = lead_prob
+        else:
+          self.lead_prob_filters[i].update(lead_prob)
+
+      lead_one = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[0], model_v_ego,
+                          self.lead_prob_filters[0].x, low_speed_override=True,
+                          preferred_track_id=self.prev_lead_track_ids[0])
+      # see RADAR_KEEP_*
+      if lead_one.get('radar'):
+        self.keep_id, self.keep_age = int(lead_one['radarTrackId']), 0.
+      else:
+        self.keep_age += DT_MDL
+        trk = self.tracks.get(self.keep_id)
+        if (RADAR_KEEP_S > 0. and lead_one['present'] and trk is not None and trk.cnt >= 3 and self.keep_age < RADAR_KEEP_S
+            and abs(trk.yRel + leads_v3[0].y[0]) < RADAR_KEEP_DY and lead_one['dRel'] >= RADAR_KEEP_NEAR * trk.dRel):
+          lead_one = trk.get_RadarState(self.lead_prob_filters[0].x)
+          if RADAR_KEEP_REFRESH:
+            self.keep_age = 0.
+      # see LANE_MISMATCH_*: the radar has moved to the next lane and vision's lead is slower
+      self.lane_mismatch_frames = self.lane_mismatch_frames + 1 if lane_mismatch(lead_one, leads_v3[0]) else 0
+      if self.lane_mismatch_frames >= LANE_MISMATCH_FRAMES:
+        lead_one = get_RadarState_from_vision(leads_v3[0], self.v_ego, model_v_ego, self.lead_prob_filters[0].x)
+      self.radar_state.leadOne = self.lead_hold.update(lead_one, leads_v3[0].prob, self.v_ego)
+      self.radar_state.leadTwo = get_lead(self.v_ego, self.ready, self.tracks, leads_v3[1], model_v_ego,
+                                          self.lead_prob_filters[1].x, low_speed_override=False,
+                                          preferred_track_id=self.prev_lead_track_ids[1])
+      self.prev_lead_track_ids = [int(self.radar_state.leadOne.radarTrackId),
+                                  int(self.radar_state.leadTwo.radarTrackId)]
+
+  def publish(self, pm: messaging.PubMaster):
+    assert self.radar_state is not None
+
+    radar_msg = messaging.new_message("radarState")
+    radar_msg.valid = self.radar_state_valid
+    radar_msg.radarState = self.radar_state
+    pm.send("radarState", radar_msg)
+
+
+# fuses camera and radar data for best lead detection
+def main() -> None:
+  config_realtime_process(5, Priority.CTRL_LOW)
+
+  # wait for stats about the car to come in from controls
+  cloudlog.info("radard is waiting for CarParams")
+  CP = messaging.log_from_bytes(Params().get("CarParams", block=True), car.CarParams)
+  cloudlog.info("radard got CarParams")
+
+  # *** setup messaging
+  sm = messaging.SubMaster(['modelV2', 'carState', 'radarTracks'], poll='modelV2')
+  pm = messaging.PubMaster(['radarState'])
+
+  RD = RadarD(CP.radarDelay)
+
+  while 1:
+    sm.update()
+
+    RD.update(sm, sm['radarTracks'])
+    RD.publish(pm)
+
+
+if __name__ == "__main__":
+  main()

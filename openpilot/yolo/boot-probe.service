@@ -1,0 +1,18 @@
+[Unit]
+Description=Record where the boot time goes (one small JSON per boot, then exits)
+DefaultDependencies=no
+After=sysinit.target
+
+[Service]
+Type=simple
+User=comma
+Nice=19
+IOSchedulingClass=idle
+CPUAffinity=0 1 2 3
+Environment=PYTHONPATH=/data/openpilot
+ExecStart=/usr/local/venv/bin/python /data/yolo/boot_probe.py
+# one shot per boot: it stops itself once onroad, or after 20 minutes
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

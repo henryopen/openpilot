@@ -1,0 +1,3 @@
+# 複製成 local.properties 再填入（local.properties 不要提交）
+sdk.dir=/path/to/Android/Sdk
+MAPS_API_KEY=YOUR_GOOGLE_API_KEY

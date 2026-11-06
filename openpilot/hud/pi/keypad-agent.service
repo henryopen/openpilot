@@ -1,0 +1,14 @@
+[Unit]
+Description=Bluetooth keypad -> car commands (hud/server.py /keypad)
+After=hud-agent.service bluetooth.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+ExecStart=/usr/bin/python3 /home/pi/hud/keypad_agent.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
