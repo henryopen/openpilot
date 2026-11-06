@@ -29,7 +29,7 @@
 | `full` | comma four ＋ comma 3（第二台，當紅綠燈辨識機）＋ Raspberry Pi（HUD 顯示器、藍牙鍵盤、NavDash 導航轉接）＋ 後窗 LED 看板（BX-Y04 控制卡＋ESP32-C3 中繼） |
 | `no-led` | comma four ＋ comma 3 ＋ Raspberry Pi（拿掉後窗 LED 看板） |
 | `c4-pi` | comma four ＋ Raspberry Pi（再拿掉 comma 3） |
-| `c4-only` | 只有 comma four（再拿掉 Raspberry Pi）；**可以直接安裝** |
+| `c4-only` | 只有 comma four 或 comma 3X（再拿掉 Raspberry Pi）；**可以直接安裝** |
 
 ### 各分支有哪些功能
 
