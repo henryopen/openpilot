@@ -2,7 +2,7 @@
 
 > ## ⚠️ 這個分支可以直接安裝，但風險完全由你自行負責
 >
-> 你現在看的分支：**`c4-only`**（只有 comma four）。安裝方式見下方「安裝」。
+> 你現在看的分支：**`c4-only`**（只有 comma four 或 comma 3X）。安裝方式見下方「安裝」。
 
 這是一份以 [openpilot](https://github.com/commaai/openpilot) 官方 master（2026-08-21，`084747c75`）為基礎，為一台 **2026 Hyundai Custin**（台灣／中國才有的車型）搭配 **comma four** 自行修改的版本。
 這個 `c4-only` 分支可以用 comma 官方安裝器直接安裝；其他分支只供研究程式碼。
@@ -29,7 +29,7 @@
 | `full` | comma four ＋ comma 3（第二台，當紅綠燈辨識機）＋ Raspberry Pi（HUD 顯示器、藍牙鍵盤、NavDash 導航轉接）＋ 後窗 LED 看板（BX-Y04 控制卡＋ESP32-C3 中繼） |
 | `no-led` | comma four ＋ comma 3 ＋ Raspberry Pi（拿掉後窗 LED 看板） |
 | `c4-pi` | comma four ＋ Raspberry Pi（再拿掉 comma 3） |
-| `c4-only` | 只有 comma four（再拿掉 Raspberry Pi）；**可以直接安裝** |
+| `c4-only` | 只有 comma four 或 comma 3X（再拿掉 Raspberry Pi）；**可以直接安裝** |
 
 ### 各分支有哪些功能
 
@@ -54,7 +54,7 @@
 
 ## 安裝（`c4-only`）
 
-1. comma four 開機進入設定畫面，選「安裝自訂軟體」（Custom Software），輸入：
+1. comma four 或 comma 3X 開機進入設定畫面，選「安裝自訂軟體」（Custom Software），輸入：
    ```
    installer.comma.ai/henryopen/c4-only
    ```
@@ -62,7 +62,8 @@
 2. 第一次開機會在 comma four 上自己編譯，要等一段時間。
 3. 依畫面完成官方的使用條款與操作說明。
 4. 第一次發動車子後，如果畫面顯示「無法辨識車輛」（行車記錄器模式），代表 ECU 版本對不上。這時 openpilot 只會錄影、不會控制車子，請見下方「ECU 版本對不上時」。
-5. **自動更新是開著的。** 這個分支更新後（例如加入新的 ECU 版本），車機會在熄火、連上網路時自動下載，下次開機套用。
+5. **comma 3X 也可以裝。** openpilot 官方同時支援 comma four 與 comma 3X，這個分支的修改沒有綁定機型；但作者只在 comma four 上實車使用過。第一代 comma 3 官方已經不支援，不能裝。
+6. **自動更新是開著的。** 這個分支更新後（例如加入新的 ECU 版本），車機會在熄火、連上網路時自動下載，下次開機套用。
    跟官方一樣，車機太久沒連上網路時，會要求先連網更新才能啟用 openpilot。
 
 ### 紅綠燈：只能用 openpilot 原本的實驗模式
