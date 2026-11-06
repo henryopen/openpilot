@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <!-- 基本主題 (深色) -->
+    <style name="Theme.NavDashN" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="colorPrimary">@color/hfop_red</item>
+        <item name="colorPrimaryContainer">@color/hfop_red_dark</item>
+        <item name="colorOnPrimary">@color/white</item>
+        <item name="colorSecondary">@color/accent</item>
+        <item name="colorOnSecondary">@color/white</item>
+        <item name="android:colorBackground">@color/background</item>
+        <item name="colorSurface">@color/surface</item>
+        <item name="colorOnSurface">@color/white</item>
+        <item name="android:statusBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@android:color/black</item>
+    </style>
+
+    <!-- 全螢幕主題 (隱藏狀態列和導航列) -->
+    <style name="Theme.NavDashN.Fullscreen" parent="Theme.NavDashN">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="windowActionBar">false</item>
+        <item name="windowNoTitle">true</item>
+    </style>
+
+</resources>

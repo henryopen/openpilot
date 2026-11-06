@@ -1,0 +1,15 @@
+[Unit]
+Description=C3 self-calibration against C4's carState + light directions for C4's HUD (display only)
+After=c3-sensord.service c3link.service
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/c3link
+Environment=PYTHONPATH=/data/openpilot
+ExecStart=/usr/local/pyenv/versions/3.11.4/bin/python /data/c3link/c3calib.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

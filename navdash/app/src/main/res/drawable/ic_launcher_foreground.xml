@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- 指南針外圈 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,24
+                         A30,30 0 1,1 53.99,24
+                         A30,30 0 1,1 54,24
+                         M54,28
+                         A26,26 0 1,0 54.01,28
+                         A26,26 0 1,0 54,28Z"/>
+
+    <!-- 指南針指針 - 北 (紅色) -->
+    <path
+        android:fillColor="#FF5252"
+        android:pathData="M54,30 L58,54 L54,50 L50,54 Z"/>
+
+    <!-- 指南針指針 - 南 (白色) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,78 L58,54 L54,58 L50,54 Z"/>
+
+    <!-- 中心點 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M54,51 A3,3 0 1,1 54,57 A3,3 0 1,1 54,51Z"/>
+
+    <!-- N 標記 -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M51,20 L51,16 L53,19 L53,16 L54.5,16 L54.5,20 L52.5,17 L52.5,20 Z"/>
+</vector>

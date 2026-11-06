@@ -1,0 +1,15 @@
+[Unit]
+Description=sunnypilot HUD data stream (SSE) for external display
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=comma
+Environment=PYTHONPATH=/data/openpilot
+ExecStart=/usr/local/venv/bin/python /data/openpilot/openpilot/hud/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

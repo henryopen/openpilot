@@ -1,0 +1,28 @@
+[Unit]
+Description=C3 drive recorder (openpilot encoderd + loggerd, no openpilot manager), only while C4 is driving
+After=c3-camerad.service
+Requires=c3-camerad.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=comma
+WorkingDirectory=/data/openpilot
+Environment=PYTHONPATH=/data/openpilot
+# c3_record.sh: waits until C4 is driving, then encoderd (VisionIPC frames -> HEVC) and loggerd; stops 60 s after C4
+# stops (exit 0, restarted here to wait for the next drive); if EITHER exits, both go (exit 1) - see the script.
+# (Checked every 2 s rather than `wait -n`: at boot encoderd dies inside the first 4 s, before `wait -n` is reached,
+# and `wait -n` does not see a job that is already gone - the first version of this sat there with loggerd alone.)
+ExecStart=/bin/bash /data/c3link/c3_record.sh
+Restart=always
+RestartSec=5
+# encoderd asks for realtime priority 52 and asserts if it is refused (10/21)
+LimitRTPRIO=99
+LimitNICE=-20
+AmbientCapabilities=CAP_SYS_NICE
+KillMode=control-group
+StandardOutput=append:/data/c3det/log/record.log
+StandardError=append:/data/c3det/log/record.log
+
+[Install]
+WantedBy=multi-user.target

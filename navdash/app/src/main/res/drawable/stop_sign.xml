@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="48dp"
+    android:height="48dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <!-- STOP 標誌 (八角形) -->
+    <path
+        android:fillColor="#E74C3C"
+        android:pathData="M7.5,3L3,7.5L3,16.5L7.5,21L16.5,21L21,16.5L21,7.5L16.5,3L7.5,3Z"/>
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M7,10L7,14L9,14L9,12L11,12L11,14L13,14L13,12L15,12L15,14L17,14L17,10L7,10Z"/>
+</vector>

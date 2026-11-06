@@ -1,0 +1,22 @@
+[Unit]
+Description=YOLO11n road object detection for the external HUD
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=comma
+Environment=PYTHONPATH=/data/openpilot:/data/yolo/pylibs
+# lowest priority on both CPU and disk: the driving stack must never wait on this
+Nice=15
+IOSchedulingClass=idle
+# controlsd/card/selfdrived own core 4, plannerd/radard core 5, and camerad/modeld are on the
+# isolated 6-7. SCHED_FIFO already preempts us everywhere, but staying off those cores means
+# we are not even sharing one with the control loop.
+CPUAffinity=0 1 2 3
+ExecStart=/usr/local/venv/bin/python /data/yolo/yolod.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
