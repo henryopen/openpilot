@@ -1,0 +1,556 @@
+#!/usr/bin/env python3
+import os
+import time
+import numpy as np
+from openpilot.cereal import log
+from opendbc.car.interfaces import ACCEL_MIN, ACCEL_MAX
+from openpilot.common.realtime import DT_MDL
+from openpilot.common.swaglog import cloudlog
+# WARNING: imports outside of constants will not trigger a rebuild
+from openpilot.selfdrive.modeld.constants import index_function
+from openpilot.selfdrive.controls.radard import _LEAD_ACCEL_TAU
+
+if __name__ == '__main__':  # generating code
+  from acados.acados_template import AcadosModel, AcadosOcp, AcadosOcpSolver
+else:
+  from openpilot.selfdrive.controls.lib.longitudinal_mpc_lib.c_generated_code.acados_ocp_solver_pyx import AcadosOcpSolverCython
+
+from casadi import SX, vertcat
+
+MODEL_NAME = 'long'
+LONG_MPC_DIR = os.path.dirname(os.path.abspath(__file__))
+EXPORT_DIR = os.path.join(LONG_MPC_DIR, "c_generated_code")
+JSON_FILE = os.path.join(LONG_MPC_DIR, "acados_ocp_long.json")
+
+LongitudinalPlanSource = log.LongitudinalPlan.LongitudinalPlanSource
+# A junction the model wants to stop at is handed to the solver as a third obstacle, one
+# that is standing still. It reports as e2e, which is the slot the planner already reads as
+# the junction stop outside experimental mode.
+MPC_SOURCES = (LongitudinalPlanSource.lead0, LongitudinalPlanSource.lead1,
+               LongitudinalPlanSource.e2e)
+
+X_DIM = 3
+U_DIM = 1
+PARAM_DIM = 6
+COST_E_DIM = 5
+COST_DIM = COST_E_DIM + 1
+CONSTR_DIM = 4
+
+# 2026-09-15: 3 -> 30, for a stopping distance the driver has been asking about since 09-06.
+#
+# The gap error this weights is divided by (v_ego + 10) in the cost expression below, so at a
+# standstill one metre of it is worth 3*(1/10)^2 = 0.03 against A_CHANGE_COST's 200*0.1^2 =
+# 2.0 for moving the command by 0.1 m/s^2. The solver will give up 8.2 m of gap rather than
+# change what it is asking for, and that is exactly what it does: the target it works to is
+# 7.0 at rest, and over 8 routes and 151 engaged minutes it stops at a median 3.39 m with 35%
+# of stops inside 3 m, against 4.61 m when the driver drives the same roads himself. Neither
+# STOP_DISTANCE (6.0 -> 7.0) nor COMFORT_BRAKE (2.0 -> 1.5) moved it, because both only move
+# that same soft target rather than what the solver is willing to pay to reach it.
+#
+# Swept over 60614 real frames from 11 routes up to 112 km/h, each weight fed the same
+# recorded states and the output put through the planner's own min(MPC, a_cruise):
+#
+#                     stopping      following    closing     opening     72+ km/h
+#   3 (stock)           83%          +0.000      +0.000      +0.000      +0.000
+#   10                  87%          +0.029      -0.101      +0.027      +0.036
+#   30                  99%          +0.060      -0.282      +0.058      +0.089
+#   100                126%          +0.103      -0.619      +0.077      +0.150
+#
+# 30 lands on the deceleration that stopping 5 m behind the lead actually takes; 100 brakes a
+# quarter harder than the geometry needs. Opening on a lead barely moves because the cruise
+# ceiling absorbs it - the MPC asks +1.103 there and 0.481 comes out, with 68.6% of frames
+# capped against 40.4% at stock - and 72 km/h and above is +0.089 for the same reason.
+#
+# The cost is jerk. Replayed at 20 Hz with the command fed back as its own a_prev, frames
+# over 2 m/s^3 go from 2.13% to 4.05% (the recorded drive itself is 3.26%, so the simulation
+# is smoother than the car and the real increase should be less than that 1.9 points).
+# Paying it back with A_CHANGE_COST 200 -> 300 does work on the jerk (3.13%) but takes the
+# stopping distance with it (87%): the two are the same trade inside one cost function.
+#
+# A geometric floor outside the MPC was written and measured instead (lead_stop.py, kept but
+# not wired up). At 20 Hz it holds for a median of 0.05 s at a time, 125 of 173 holds shorter
+# than 0.3 s, because min(floor, output) has no smoothing at the seam - see STOPPING.md 9.4.
+# This has no seam: it is the same solver, asked to value distance more.
+X_EGO_OBSTACLE_COST = 30.
+X_EGO_COST = 0.
+V_EGO_COST = 0.
+A_EGO_COST = 0.
+J_EGO_COST = 5.
+A_CHANGE_COST = 200.
+# Weight on violating the constraint below. Raised from 100 with LEAD_DANGER_FACTOR, see
+# there: on its own it is worth 0.05 m of stopping distance, because at a standstill the
+# stock factor puts the constraint at 0.75 * 7.0 = 5.25 m and the car already stops outside
+# it, so there is nothing for a bigger weight to push against.
+DANGER_ZONE_COST = 400.
+CRASH_DISTANCE = .25
+# Where the car comes to rest was never something this solver was asked to achieve. The gap
+# term in the cost is one of six, divided by (v_ego + 10), and what STOP_DISTANCE does is
+# set a constant in the target it works towards - the resting place is a by-product of how
+# far it got, not a specification. Measured over 24 stops behind a stationary lead on
+# 2026-09-16 the car sat at a median dRel of 5.57 m against the 7.0 it was working to, and
+# neither 6.0 -> 7.0 on STOP_DISTANCE (worth 0.1-0.3 m) nor 3 -> 30 on X_EGO_OBSTACLE_COST
+# closed it.
+#
+# The same distance is also in a CONSTRAINT, which is a different kind of statement:
+#
+#     ((x_obstacle - x_ego) - lead_danger_factor * desired_dist) / (v_ego + 10.) >= 0
+#
+# At a standstill desired_dist collapses to STOP_DISTANCE, so a factor of 1.0 down there
+# reads "never inside 7 m" and the solver has to find a plan that honours it rather than
+# trading it against jerk. At speed desired_dist is the v^2/(2*COMFORT_BRAKE) term, which
+# asks for 76 m at 50 km/h - a number nothing can honour and which the car is already 3.9 m
+# inside when the approach starts - so the factor has to stay at stock up there or the
+# problem is infeasible and the slack does the talking anyway.
+#
+# Closed-loop replay of 2026-09-16, fidelity established first (predicted median 5.96 m
+# against an actual 5.73; per-case error median 0.79 m, so medians only). 17 stops:
+#
+#                          median    q1-q3      closest   worst a   jerk >2
+#   stock                    5.78   5.22-6.39      3.98     -3.47     2.78%
+#   factor 1.0 under 6 m/s   6.62   6.36-6.94      5.15     -3.49     3.08%
+#   + DANGER_ZONE_COST 400   7.03   6.88-7.37      6.11     -3.49     3.09%
+#
+# and it does not disturb following, 72 stretches over 25 minutes:
+#
+#    0-20 km/h   gap 12.4 -> 12.9 m   worst -1.55 -> -1.87
+#   20-40 km/h   gap 19.7 -> 20.0 m   worst -2.21 -> -2.39
+#   40-70 km/h   unchanged to 0.01 m
+#     70+ km/h   unchanged
+#
+# because above 6 m/s the constraint is the same one it always was, and below it the gap
+# the car already keeps is outside what the constraint asks for.
+#
+# The junction path was checked too, since stop_for_lights' imaginary car goes through the
+# same constraint: 12 stops move by 0.4 m, which is inside that replay's own fidelity
+# (base +0.96 against a recorded +0.21). junction_handoff's a_floor is what governs there,
+# not this - the first version of that replay left it out and stopped 0 of 12.
+LEAD_DANGER_BP = [6., 10.]      # m/s
+LEAD_DANGER_VALS = [1.0, 0.75]
+LEAD_DANGER_FACTOR = LEAD_DANGER_VALS[-1]
+LIMIT_COST = 1e6
+ACADOS_SOLVER_TYPE = 'SQP_RTI'
+
+# Fewer timestamps don't hurt performance and lead to
+# much better convergence of the MPC with low iterations
+N = 12
+MAX_T = 10.0
+T_IDXS_LST = [index_function(idx, max_val=MAX_T, max_idx=N) for idx in range(N+1)]
+
+T_IDXS = np.array(T_IDXS_LST)
+FCW_IDXS = T_IDXS < 5.0
+T_DIFFS = np.diff(T_IDXS, prepend=[0.])
+# The MPC's target gap is v^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE, so this is
+# not a braking limit - it is how much deceleration the planner assumes it may use when it
+# decides how much room to keep. Lowering it keeps more room and therefore starts braking
+# earlier and more gently.
+#
+# 2026-09-08: replaying that day's seven engaged stops, the gap fell below the target at
+# 36.3 m / 33 km/h needing 1.61 m/s^2 to stop in what was left; the car then actually used
+# -2.1 to -3.1 m/s^2 because it had done nothing until then. At 2.0 the same stops trigger
+# at 36.7 m needing 1.32, and the individual approaches gain 5-9 m of run-up (stop #4:
+# 25.6 m needing 1.67 -> 30.7 m needing 1.23). Only the v^2 term moves, so low-speed
+# following distance is left where the driver asked for it on 09-06.
+#
+# 2026-09-14: 2.0 -> 1.5, because the car was stopping too close to be comfortable - 32 stops
+# that day sat at a median dRel of 4.31 m, six of them inside 3 m and the nearest at 1.94 m.
+# STOP_DISTANCE is the obvious knob and is the wrong one: 6.0 put the car at 3.6-4.9 m and
+# 7.0 moved the median to 4.31, a tenth of a metre for a whole one added. The reason is that
+# nothing is left to do by the time the constant term matters - on 26 of those 32 stops the
+# gap was already inside the target when the approach began, a median of 6.5 m inside, and
+# the MPC spent the last two seconds letting the brake off (-1.8 to -0.26 while the gap went
+# 4.0 -> 1.98 m) because no feasible plan gets the room back. What has to change is how much
+# room is kept on the way in, which is the v^2 term and therefore this.
+#
+# It only moves when the lead is slower than we are. Following a lead at our own speed, the
+# v_lead^2 term in get_stopped_equivalence_factor cancels it exactly and the equilibrium gap
+# is t_follow*v + STOP_DISTANCE regardless - measured over 6815 steady-following frames that
+# day, actual gap was 106% of 1.5v + 7 (quartiles 95-119%), so the distance the driver signed
+# off on 09-06 is untouched. Against a stopped lead nothing cancels and the target grows by
+# 2.6 m at 20 km/h, 5.8 at 30 and 10.3 at 40.
+#
+# 1.7 was measured first and was not worth having: over the last ten seconds of those stops
+# it asked for 0.5 m more room, because the approach is at 20.7 km/h by then and v^2 is small.
+#
+# 2026-09-14, same evening: reverted to 2.0 after one drive. It did not move the stopping
+# distance the driver asked about - "just as close" - and it cost two things that were not
+# paid for. The reasoning above only ever looked at a lead slower than us. Written out, what
+# the MPC sees is
+#
+#     error = dRel + (v_lead^2 - v_ego^2) / (2*COMFORT_BRAKE) - t_follow*v_ego - STOP_DISTANCE
+#
+# so lowering this scales that middle term by 4/3 in BOTH directions. Behind a lead pulling
+# away at 15 m/s while we do 10, it hands the solver 41.7 m of room where 2.0 gave 31.2 - ten
+# metres of licence to accelerate, at any speed, which is why the driver felt it get quicker
+# on a drive that never left town and never touched the raised part of A_CRUISE_MAX_VALS_FREE.
+# And because the term is v_lead^2, it multiplies the radar's own noise in vLead by the same
+# 4/3: at 15 m/s, +-1 m/s of lead speed moves the obstacle +-10 m instead of +-7.5, and the
+# accel command moves with it. That is the jerkiness.
+#
+# What this says about the stopping distance is that COMFORT_BRAKE is not the knob either.
+COMFORT_BRAKE = 2.0
+# Where to come to rest behind a stopped car, measured as the radar measures it - dRel
+# reads a systematic 0.85 m shorter than the real gap, so 6.0 here is about 6.9 m to the
+# eye. The term is constant across speed, so it also adds itself to the following distance
+# at every speed, not only at rest.
+#
+# This was 7.0, and before that 6.0, as compensation: the car used to stop a long way short
+# of whatever was asked for (40 stops on 2026-09-06 at 3.6-4.9 m against a 6 m target) and
+# raising the number was the only lever anyone had. It barely worked - 6.0 -> 7.0 moved the
+# median 0.1-0.3 m - because the number was a constant inside a target the solver was never
+# required to reach. With the constraint change above it is required to, so this is now a
+# specification of where to stop rather than a nudge, and it reads as what the driver
+# actually wants. 6.0 was asked for on 2026-09-16 after seeing the replay land on 7.03; the
+# driver confirmed on 2026-09-18 that the car now stops where it is told, and asked for 5.0.
+# That is the point of the constraint change - the number means something now, so it can be
+# set to the gap that is wanted rather than to whatever compensates for missing it.
+STOP_DISTANCE = 5.0
+MIN_X_LEAD_FACTOR = 0.5
+
+# All three personalities are deliberately identical, asked for on 2026-09-09. The distance
+# button on the wheel is easy to catch by accident: the 2026-09-08 drive started on relaxed
+# and was found on standard afterwards without the driver having chosen that, so the gap
+# changed underneath him and the next drive's data meant something different. Making the
+# three the same means the button cannot change anything.
+#
+# 1.5 is the value the car has actually been driven on - relaxed since 2026-09-06 - and
+# standard was only 0.05 s away from it, so nothing is really being given up. Measured over
+# 27.6 min of following on 2026-09-09 this produced 1.8-3.3 s of real gap, because the MPC's
+# target is v^2/(2*COMFORT_BRAKE) + t_follow*v + STOP_DISTANCE and t_follow is only one term.
+#
+# The cost: changing the following distance now means editing this file and redeploying.
+# The structure is left as three branches rather than a bare return so the values are still
+# per-personality if that is ever wanted back, and so the unsupported case still raises.
+def get_jerk_factor(personality=log.LongitudinalPersonality.standard):
+  if personality==log.LongitudinalPersonality.relaxed:
+    return 1.0
+  elif personality==log.LongitudinalPersonality.standard:
+    return 1.0
+  elif personality==log.LongitudinalPersonality.aggressive:
+    return 1.0
+  else:
+    raise NotImplementedError("Longitudinal personality not supported")
+
+
+def get_T_FOLLOW(personality=log.LongitudinalPersonality.standard):
+  if personality==log.LongitudinalPersonality.relaxed:
+    return 1.5
+  elif personality==log.LongitudinalPersonality.standard:
+    return 1.5
+  elif personality==log.LongitudinalPersonality.aggressive:
+    return 1.5
+  else:
+    raise NotImplementedError("Longitudinal personality not supported")
+
+def get_stopped_equivalence_factor(v_lead):
+  return (v_lead**2) / (2 * COMFORT_BRAKE)
+
+def get_safe_obstacle_distance(v_ego, t_follow):
+  return (v_ego**2) / (2 * COMFORT_BRAKE) + t_follow * v_ego + STOP_DISTANCE
+
+def gen_long_model():
+  model = AcadosModel()
+  model.name = MODEL_NAME
+
+  # states
+  x_ego, v_ego, a_ego = SX.sym('x_ego'), SX.sym('v_ego'), SX.sym('a_ego')
+  model.x = vertcat(x_ego, v_ego, a_ego)
+
+  # controls
+  j_ego = SX.sym('j_ego')
+  model.u = vertcat(j_ego)
+
+  # xdot
+  x_ego_dot = SX.sym('x_ego_dot')
+  v_ego_dot = SX.sym('v_ego_dot')
+  a_ego_dot = SX.sym('a_ego_dot')
+  model.xdot = vertcat(x_ego_dot, v_ego_dot, a_ego_dot)
+
+  # runtime parameters
+  a_min = SX.sym('a_min')
+  a_max = SX.sym('a_max')
+  x_obstacle = SX.sym('x_obstacle')
+  a_prev = SX.sym('a_prev')
+  lead_t_follow = SX.sym('lead_t_follow')
+  lead_danger_factor = SX.sym('lead_danger_factor')
+  model.p = vertcat(a_min, a_max, x_obstacle, a_prev, lead_t_follow, lead_danger_factor)
+
+  # dynamics model
+  f_expl = vertcat(v_ego, a_ego, j_ego)
+  model.f_impl_expr = model.xdot - f_expl
+  model.f_expl_expr = f_expl
+  return model
+
+def gen_long_ocp():
+  ocp = AcadosOcp()
+  ocp.model = gen_long_model()
+
+  Tf = T_IDXS[-1]
+
+  # set dimensions
+  ocp.dims.N = N
+
+  # set cost module
+  ocp.cost.cost_type = 'NONLINEAR_LS'
+  ocp.cost.cost_type_e = 'NONLINEAR_LS'
+
+  QR = np.zeros((COST_DIM, COST_DIM))
+  Q = np.zeros((COST_E_DIM, COST_E_DIM))
+
+  ocp.cost.W = QR
+  ocp.cost.W_e = Q
+
+  x_ego, v_ego, a_ego = ocp.model.x[0], ocp.model.x[1], ocp.model.x[2]
+  j_ego = ocp.model.u[0]
+
+  a_min, a_max = ocp.model.p[0], ocp.model.p[1]
+  x_obstacle = ocp.model.p[2]
+  a_prev = ocp.model.p[3]
+  lead_t_follow = ocp.model.p[4]
+  lead_danger_factor = ocp.model.p[5]
+
+  ocp.cost.yref = np.zeros((COST_DIM, ))
+  ocp.cost.yref_e = np.zeros((COST_E_DIM, ))
+
+  desired_dist_comfort = get_safe_obstacle_distance(v_ego, lead_t_follow)
+
+  # The main cost in normal operation is how close you are to the "desired" distance
+  # from an obstacle at every timestep. This obstacle can be a lead car
+  # or other object. In e2e mode we can use x_position targets as a cost
+  # instead.
+  costs = [((x_obstacle - x_ego) - (desired_dist_comfort)) / (v_ego + 10.),
+           x_ego,
+           v_ego,
+           a_ego,
+           a_ego - a_prev,
+           j_ego]
+  ocp.model.cost_y_expr = vertcat(*costs)
+  ocp.model.cost_y_expr_e = vertcat(*costs[:-1])
+
+  # Constraints on speed, acceleration and desired distance to
+  # the obstacle, which is treated as a slack constraint so it
+  # behaves like an asymmetrical cost.
+  constraints = vertcat(v_ego,
+                        (a_ego - a_min),
+                        (a_max - a_ego),
+                        ((x_obstacle - x_ego) - lead_danger_factor * (desired_dist_comfort)) / (v_ego + 10.))
+  ocp.model.con_h_expr = constraints
+
+  x0 = np.zeros(X_DIM)
+  ocp.constraints.x0 = x0
+  ocp.parameter_values = np.array([-1.2, 1.2, 0.0, 0.0, get_T_FOLLOW(), LEAD_DANGER_FACTOR])
+
+
+  # We put all constraint cost weights to 0 and only set them at runtime
+  cost_weights = np.zeros(CONSTR_DIM)
+  ocp.cost.zl = cost_weights
+  ocp.cost.Zl = cost_weights
+  ocp.cost.Zu = cost_weights
+  ocp.cost.zu = cost_weights
+
+  ocp.constraints.lh = np.zeros(CONSTR_DIM)
+  ocp.constraints.uh = 1e4*np.ones(CONSTR_DIM)
+  ocp.constraints.idxsh = np.arange(CONSTR_DIM)
+
+  # The HPIPM solver can give decent solutions even when it is stopped early
+  # Which is critical for our purpose where compute time is strictly bounded
+  # We use HPIPM in the SPEED_ABS mode, which ensures fastest runtime. This
+  # does not cause issues since the problem is well bounded.
+  ocp.solver_options.qp_solver = 'PARTIAL_CONDENSING_HPIPM'
+  ocp.solver_options.hessian_approx = 'GAUSS_NEWTON'
+  ocp.solver_options.integrator_type = 'ERK'
+  ocp.solver_options.nlp_solver_type = ACADOS_SOLVER_TYPE
+  ocp.solver_options.qp_solver_cond_N = 1
+
+  # More iterations take too much time and less lead to inaccurate convergence in
+  # some situations. Ideally we would run just 1 iteration to ensure fixed runtime.
+  ocp.solver_options.qp_solver_iter_max = 10
+  ocp.solver_options.qp_tol = 1e-3
+
+  # set prediction horizon
+  ocp.solver_options.tf = Tf
+  ocp.solver_options.shooting_nodes = T_IDXS
+
+  ocp.code_export_directory = EXPORT_DIR
+  return ocp
+
+
+class LongitudinalMpc:
+  def __init__(self, dt=DT_MDL):
+    self.dt = dt
+    self.solver = AcadosOcpSolverCython(MODEL_NAME, ACADOS_SOLVER_TYPE, N)
+    self.reset()
+    self.source = LongitudinalPlanSource.cruise
+
+  def reset(self):
+    self.solver.reset()
+
+    self.x_sol = np.zeros((N+1, X_DIM))
+    self.u_sol = np.zeros((N, 1))
+    self.v_solution = np.zeros(N+1)
+    self.a_solution = np.zeros(N+1)
+    self.j_solution = np.zeros(N)
+    self.a_prev = np.array(self.a_solution)
+    self.yref = np.zeros((N+1, COST_DIM))
+
+    for i in range(N):
+      self.solver.cost_set(i, "yref", self.yref[i])
+    self.solver.cost_set(N, "yref", self.yref[N][:COST_E_DIM])
+
+    self.params = np.zeros((N+1, PARAM_DIM))
+    for i in range(N+1):
+      self.solver.set(i, 'x', np.zeros(X_DIM))
+
+    self.last_cloudlog_t = 0
+    self.crash_cnt = 0.0
+    self.solution_status = 0
+    # timers
+    self.solve_time = 0.0
+    self.x0 = np.zeros(X_DIM)
+    self.set_weights()
+
+  def set_cost_weights(self, cost_weights, constraint_cost_weights):
+    W = np.asfortranarray(np.diag(cost_weights))
+    for i in range(N):
+      # TODO don't hardcode A_CHANGE_COST idx
+      # reduce the cost on (a-a_prev) later in the horizon.
+      W[4,4] = cost_weights[4] * np.interp(T_IDXS[i], [0.0, 1.0, 2.0], [1.0, 1.0, 0.0])
+      self.solver.cost_set(i, 'W', W)
+    # Setting the slice without the copy make the array not contiguous,
+    # causing issues with the C interface.
+    self.solver.cost_set(N, 'W', np.copy(W[:COST_E_DIM, :COST_E_DIM]))
+
+    # Set L2 slack cost on lower bound constraints
+    Zl = np.array(constraint_cost_weights)
+    for i in range(N):
+      self.solver.cost_set(i, 'Zl', Zl)
+
+  def set_weights(self, prev_accel_constraint=True, personality=log.LongitudinalPersonality.standard):
+    jerk_factor = get_jerk_factor(personality)
+    a_change_cost = A_CHANGE_COST if prev_accel_constraint else 0
+    cost_weights = [X_EGO_OBSTACLE_COST, X_EGO_COST, V_EGO_COST, A_EGO_COST, jerk_factor * a_change_cost, jerk_factor * J_EGO_COST]
+    constraint_cost_weights = [LIMIT_COST, LIMIT_COST, LIMIT_COST, DANGER_ZONE_COST]
+    self.set_cost_weights(cost_weights, constraint_cost_weights)
+
+  def set_cur_state(self, v, a):
+    v_prev = self.x0[1]
+    self.x0[1] = v
+    self.x0[2] = a
+    if abs(v_prev - v) > 2.:  # probably only helps if v < v_prev
+      for i in range(N+1):
+        self.solver.set(i, 'x', self.x0)
+
+  @staticmethod
+  def extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau):
+    a_lead_traj = a_lead * np.exp(-a_lead_tau * (T_IDXS**2)/2.)
+    v_lead_traj = np.clip(v_lead + np.cumsum(T_DIFFS * a_lead_traj), 0.0, 1e8)
+    x_lead_traj = x_lead + np.cumsum(T_DIFFS * v_lead_traj)
+    lead_xv = np.column_stack((x_lead_traj, v_lead_traj))
+    return lead_xv
+
+  def process_lead(self, lead):
+    v_ego = self.x0[1]
+    if lead is not None and lead.present:
+      x_lead = lead.dRel
+      v_lead = lead.vLead
+      a_lead = lead.aLeadK
+      a_lead_tau = lead.aLeadTau
+    else:
+      # Fake a fast lead car, so mpc can keep running in the same mode
+      x_lead = 50.0
+      v_lead = v_ego + 10.0
+      a_lead = 0.0
+      a_lead_tau = _LEAD_ACCEL_TAU
+
+    # MPC will not converge if immediate crash is expected
+    # Clip lead distance to what is still possible to brake for
+    min_x_lead = MIN_X_LEAD_FACTOR * (v_ego + v_lead) * (v_ego - v_lead) / (-ACCEL_MIN * 2)
+    x_lead = np.clip(x_lead, min_x_lead, 1e8)
+    v_lead = np.clip(v_lead, 0.0, 1e8)
+    a_lead = np.clip(a_lead, -10., 5.)
+    lead_xv = self.extrapolate_lead(x_lead, v_lead, a_lead, a_lead_tau)
+    return lead_xv
+
+  def update(self, radarstate, personality=log.LongitudinalPersonality.standard,
+             stop_x=None, a_min=ACCEL_MIN, t_follow=None):
+    """stop_x puts a standing obstacle in the road, for a junction with nothing at it.
+
+    Stopping is a question about where, and this solver is the one part of the chain that
+    is asked where: its cost is the error against the distance it wants to keep from an
+    obstacle. So a junction stop is not a second control law, it is a stopped car that
+    happens to be imaginary. a_min is how hard it may brake for one - the call is a guess,
+    so the worst a wrong one can do is a firm slow down rather than a stab at the pedal.
+    """
+    # the planner can ask for less than the personality's gap - see longitudinal_planner LC_*
+    t_follow = get_T_FOLLOW(personality) if t_follow is None else t_follow
+
+    lead_xv_0 = self.process_lead(radarstate.leadOne)
+    lead_xv_1 = self.process_lead(radarstate.leadTwo)
+
+    # To estimate a safe distance from a moving lead, we calculate how much stopping
+    # distance that lead needs as a minimum. We can add that to the current distance
+    # and then treat that as a stopped car/obstacle at this new distance.
+    lead_0_obstacle = lead_xv_0[:,0] + get_stopped_equivalence_factor(lead_xv_0[:,1])
+    lead_1_obstacle = lead_xv_1[:,0] + get_stopped_equivalence_factor(lead_xv_1[:,1])
+
+    if stop_x is None:
+      stop_obstacle = np.full(N+1, 1e9)
+    else:
+      # standing still, so no stopped-equivalence to add. Held no nearer than we could
+      # still brake for, the same guard process_lead puts on a lead, or the solver is
+      # asked for something impossible and stops converging.
+      v_ego = self.x0[1]
+      stop_obstacle = np.full(N+1, max(stop_x, MIN_X_LEAD_FACTOR * v_ego ** 2 / (-a_min * 2)))
+
+    x_obstacles = np.column_stack([lead_0_obstacle, lead_1_obstacle, stop_obstacle])
+    self.source = MPC_SOURCES[np.argmin(x_obstacles[0])]
+
+    self.yref[:,:] = 0.0
+    for i in range(N):
+      self.solver.set(i, "yref", self.yref[i])
+    self.solver.set(N, "yref", self.yref[N][:COST_E_DIM])
+
+    self.params[:,0] = a_min
+    self.params[:,1] = ACCEL_MAX
+    self.params[:,2] = np.min(x_obstacles, axis=1)
+    self.params[:,3] = np.copy(self.a_prev)
+    self.params[:,4] = t_follow
+    self.params[:,5] = np.interp(self.x0[1], LEAD_DANGER_BP, LEAD_DANGER_VALS)
+
+    self.run()
+    if (np.any(lead_xv_0[FCW_IDXS,0] - self.x_sol[FCW_IDXS,0] < CRASH_DISTANCE) and
+            radarstate.leadOne.modelProb > 0.9):
+      self.crash_cnt += 1
+    else:
+      self.crash_cnt = 0
+
+  def run(self):
+    for i in range(N+1):
+      self.solver.set(i, 'p', self.params[i])
+    self.solver.constraints_set(0, "lbx", self.x0)
+    self.solver.constraints_set(0, "ubx", self.x0)
+
+    self.solution_status = self.solver.solve()
+    self.solve_time = float(self.solver.get_stats('time_tot')[0])
+
+    for i in range(N+1):
+      self.x_sol[i] = self.solver.get(i, 'x')
+    for i in range(N):
+      self.u_sol[i] = self.solver.get(i, 'u')
+
+    self.v_solution = self.x_sol[:,1]
+    self.a_solution = self.x_sol[:,2]
+    self.j_solution = self.u_sol[:,0]
+
+    self.a_prev = np.interp(T_IDXS + self.dt, T_IDXS, self.a_solution)
+
+    t = time.monotonic()
+    if self.solution_status != 0:
+      if t > self.last_cloudlog_t + 5.0:
+        self.last_cloudlog_t = t
+        cloudlog.warning(f"Long mpc reset, solution_status: {self.solution_status}")
+      self.reset()
+
+
+if __name__ == "__main__":
+  ocp = gen_long_ocp()
+  AcadosOcpSolver.generate(ocp, json_file=JSON_FILE)

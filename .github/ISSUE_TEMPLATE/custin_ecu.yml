@@ -1,0 +1,33 @@
+name: Custin ECU 版本回報
+description: 車機顯示「無法辨識車輛」時，把 ECU 版本傳給作者加進車型辨識
+title: "[ECU] "
+labels: ["ecu"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        作法見 README 的「ECU 版本對不上時」。下面兩種擇一提供即可。
+        **零件號跟作者的車不同時，代表硬體可能不同，作者不一定會加入。**
+  - type: input
+    id: car
+    attributes:
+      label: 車型與年份
+      placeholder: 例如：2024 Hyundai Custin 1.5T 旗艦型
+    validations:
+      required: true
+  - type: input
+    id: route
+    attributes:
+      label: 方法一：comma connect 公開行程名稱
+      description: 行程要先設成公開。公開的行程任何人都看得到影片與 GPS 路線，作者讀完後你就可以關掉公開。
+      placeholder: connect 網址裡的行程名稱
+  - type: textarea
+    id: report
+    attributes:
+      label: 方法二：tools/custin_fw_report.py 的完整輸出
+      render: text
+  - type: input
+    id: branch
+    attributes:
+      label: 安裝的分支
+      placeholder: c4-only
