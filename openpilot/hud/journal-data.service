@@ -1,0 +1,17 @@
+[Unit]
+# The device's rootfs is read-only and /var/log is a tmpfs, so the systemd journal (sp-hud, c3voice, the
+# system itself) was gone after every reboot - 10/28 the C3 voice "no link" at 14:20 could not be looked up.
+# journald keeps the journal on disk when /var/log/journal exists (Storage=auto): bind /data/journal there
+# and flush what is in /run so far. Size limits in journald-data.conf.
+Description=Keep the systemd journal on /data across reboots
+After=local-fs.target systemd-journald.service
+RequiresMountsFor=/data /var/log
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'mkdir -p /data/journal /var/log/journal; chown root:systemd-journal /data/journal; chmod 2755 /data/journal; mountpoint -q /var/log/journal || mount --bind /data/journal /var/log/journal'
+ExecStart=/bin/journalctl --flush
+
+[Install]
+WantedBy=multi-user.target

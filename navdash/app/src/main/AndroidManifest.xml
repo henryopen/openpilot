@@ -1,0 +1,80 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Android 11+ 要宣告才找得到語音辨識（RecognizerIntent） -->
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.NavDashN"
+        android:usesCleartextTraffic="true"
+        android:resizeableActivity="true"
+        tools:targetApi="31">
+
+        <meta-data
+            android:name="com.google.android.geo.API_KEY"
+            android:value="${MAPS_API_KEY}" />
+
+        <!--
+          不鎖方向：Custin 是直式螢幕，D531 會依車機自動調整解析度。
+          configChanges 列全，換解析度/方向/密度時 Activity 不重建，導航不中斷。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:screenOrientation="unspecified"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|fontScale"
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".GuidanceActivity"
+            android:exported="false"
+            android:screenOrientation="unspecified"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|fontScale"
+            android:theme="@style/Theme.NavDashN.Fullscreen" />
+
+        <!-- 藍牙鍵盤／C3 語音說明（assets/help.html） -->
+        <activity
+            android:name=".HelpActivity"
+            android:exported="false"
+            android:label="@string/help_title"
+            android:configChanges="orientation|screenSize|smallestScreenSize|screenLayout|density|keyboard|keyboardHidden|navigation|uiMode|fontScale" />
+
+        <!-- 前景服務：讓 Pi 讀資料的 HTTP 服務（port 5002）在背景也活著 -->
+        <service
+            android:name=".navigation.NavService"
+            android:exported="false"
+            android:foregroundServiceType="location" />
+
+        <!-- 接收 Navigation SDK 的逐步導航資料 -->
+        <service
+            android:name=".navigation.NavInfoReceivingService"
+            android:exported="true" />
+
+    </application>
+
+</manifest>

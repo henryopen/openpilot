@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/guidanceRoot"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/background">
+
+    <androidx.fragment.app.FragmentContainerView
+        android:id="@+id/navFragmentContainer"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent" />
+
+    <!-- 2.5.0：圖示鍵疊在地圖左側中段（不再佔用地圖下方的空間） -->
+    <include
+        android:id="@+id/guidanceControls"
+        layout="@layout/guidance_controls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="start|center_vertical"
+        android:layout_marginStart="8dp" />
+</FrameLayout>

@@ -1,0 +1,253 @@
+"""Hand a junction to the driving model instead of braking for it here.
+
+openpilot only lets the model's own longitudinal plan compete in experimental mode. Outside
+it the plan is cruise and the lead MPC, and neither knows a junction is coming, which is why
+the car holds its set speed into a red light. Rather than write a second stopping law beside
+the model's - which is what stop_for_lights did - this arms experimental mode for the
+approach and stands down after it, so there is one stopping law and the model owns it.
+
+The trigger was the model's path running short, and that was wrong. A path runs short for a
+stop, but it runs just as short for a turn, a bend, a crest, or nothing at all. Measured over
+56 engaged minutes on 2026-09-06: of the ten armings with no car in front, four were real
+stops and six were not, and three of the six were the driver's own indicator - a turn desire
+halves the planned path, from a median 74 m to 33 m, which drops it straight onto the old
+threshold.
+
+What the model plans to *do* separates them where the path cannot. Approaching a red light
+its planned speed collapses to nothing; taking a turn it dips to turning speed and carries
+on. Over the same drive, arming on the planned speed reaching 7 km/h caught four real stops
+and nothing else - no turns, no bends, no empty road.
+
+The cost is that it arms later, because the plan only collapses once the model is committed:
+42 to 63 m out at 44 to 52 km/h rather than 100 m at 55. That is why the floor below exists.
+Left to itself the model brakes at about 64% of what stopping in the distance it has would
+need, and the shortfall compounds - every metre it does not shed raises what the next metre
+demands. On 2026-09-06 it was on an overshoot trajectory in every frame of all three real
+approaches, and the driver took over each time. The floor asks for the deceleration the
+remaining distance actually needs, capped so it can never become a slam, and ramped so it is
+never a step.
+"""
+import time
+
+import numpy as np
+
+from openpilot.common.constants import CV
+from openpilot.common.filter_simple import FirstOrderFilter
+from openpilot.common.realtime import DT_MDL
+from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN
+
+# The model is planning a stop when its own plan stops reaching as far as we would travel in
+# the next few seconds; it leaves at the longer one so a plan hovering around the line cannot
+# chatter the mode. A stop collapses the plan's length well before it collapses its speed:
+# over 2026-09-11's drives this arms at a median 111 m against 28 m, and holds the mode on
+# for less of the drive rather than more (15.8% against 18.7%), because it also lets go
+# sooner once the plan opens back up.
+STOP_PLAN_TIME_ON = 8.0     # seconds of travel the plan has to fall short of
+STOP_PLAN_TIME_OFF = 9.0
+STOP_PLAN_LEN = 50.0        # ...or simply this short, which no cruising plan ever is
+
+# ...and the plan has to get slow somewhere, not only short. The length above is travel over ten
+# seconds, so a plan that merely eases off - for a bend ahead - falls under v * 8 as soon as it
+# averages 80% of our speed. On 2026-09-30 (town and a mountain road) the handoff braked for 94.6 s
+# with nothing in front, and at the start of each stretch the plan's lowest speed was 20-35 km/h;
+# the driver: bends slowed for as if they were junctions, with the path plainly long. Over
+# 09-24..09-30 (8.7 h under openpilot) the gate alone armed 220 times with no stop to follow (25 an
+# hour), with this 56 (6.4); all 9 stops with nothing in front still armed, at a median 35 m out
+# rather than 55 (P25 26 m either way). A plan ending at 30% of our speed did about the same (63).
+STOP_PLAN_MIN_V = 10 * CV.KPH_TO_MS
+
+# Where the stop is, once we believe there is one. Kept separate from the gate above: this
+# is what the floor divides by, and the far end of a 110 m plan would ask for nothing.
+STOP_SPEED_ON = 2.0         # m/s, 7.2 km/h
+STOP_SPEED_OFF = 3.5
+
+FILTER_TIME = 0.35          # a plan has to hold for about one time constant
+THRESHOLD = 1.0 - 1.0 / np.e
+HOLD_TIME = 4.0             # keep the mode through a brief loss of the plan
+
+# Above this the model's horizon is longer than any junction it could be reacting to, and a
+# false arming at speed is the one that matters. Taiwan's fastest surface roads sit under it.
+DISABLE_SPEED = 80 * CV.KPH_TO_MS
+
+# A lead inside the stopping distance vetoes the handoff outright. Braking for a car in
+# front is the lead MPC's job and it is already doing it; the model has nothing to add
+# there, and everything it does add is felt. Measured on 2026-09-06 the mode was on for 21%
+# of the drive with a lead there 93% of the time, and every one of the 50 armings that had a
+# lead had a lead barely moving - traffic queues, not junctions.
+LEAD_LOOKAHEAD = 7.0        # seconds of travel a lead has to be inside to count
+LEAD_BLOCK_MARGIN = 15.0
+
+# ...but only up to the point where the stop is already committed. Down at walking pace the
+# question the veto answers - is this a queue the lead MPC should own, or a junction - is
+# already settled, and what appears 17-19 m ahead at a junction is traffic crossing it.
+# On 2026-09-09 that handed control back to cruise twice at a red light:
+#
+#   13:10:18.25  2.6 km/h, a car crossing 18.4 m ahead   -> cruise asked for +1.19
+#   13:31:15.25  3.4 km/h, a car crossing 18.9 m ahead   -> lead MPC asked for +0.53
+#
+# both times the car pulled forward into the junction and the driver braked. The distances
+# gave it away - 18.9, 17.6, gone, 19.1, 17.4, 35.1, 36.9, 32.2 while we sat still - but
+# nothing here reads lateral motion, so the fix is to stop asking once stopping is decided.
+# Only affects a mode that is already active: arming still sees the veto in full, so the
+# queue behaviour it was written for is untouched.
+#
+# Bounded below as well, because "already stopped" is not the case this is for. Replayed
+# over 22 segments the upper bound alone held the mode on for 10601 extra frames, and every
+# one of them had a lead at a median 5.8 m with the car already at a standstill - queues,
+# exactly what the veto is meant to catch. The two frames that needed help were rolling at
+# 0.86 and 0.89 m/s, so the window only covers a car still moving towards its stop.
+COMMITTED_SPEED = STOP_SPEED_ON
+COMMITTED_SPEED_MIN = 0.5
+
+# What the driver's indicator means to the model: desire_helper sends turnLeft/turnRight in
+# this band, the model plans the corner, and the plan ends at the corner. That is not a stop.
+# Bounds are imported so the two cannot drift apart.
+
+# The floor. 2.5 m/s2 is firm braking and not an emergency stop; every real approach on
+# 2026-09-06 needed between 1.59 and 2.01 at the moment the plan collapsed, so the cap is
+# clear of what the trigger actually asks for while still bounding what a bad frame can do.
+MAX_FLOOR_DECEL = 2.5
+FLOOR_JERK = 4.0            # m/s3, so full floor is reached in about 0.6 s rather than at once
+MIN_STOP_DISTANCE = 2.0     # below this the geometry is meaningless
+
+# Held at the line. _planned_stop reads nothing at or under 1 m/s, so once the car has all but
+# stopped only HOLD_TIME kept the mode on - and with it the model's own plan among the candidates.
+# 2026-10-31 15:17:51: stopped at a red, a car 31 m off across the junction (so stop_for_lights had
+# stood down for it), the model saying shouldStop on every frame; 4 s after the car went under 1 m/s
+# the mode lapsed, cruise asked for +0.72 and the car rolled into the junction until the driver
+# braked. So while the mode is on and the car is stopped, the model saying stop keeps it on, and it
+# lets go once the model has said go for HELD_CLEAR (or at once for a lead inside the veto, as before)
+# rather than HOLD_TIME later, which would have the green's pull-away follow the model's own small
+# accel for 4 s. HELD_CLEAR as stop_for_lights' CLEAR_FOR: at a halt the flag flickers off for a frame.
+# Counted only once standing: rolling the last metre in, the model says shouldStop only at rest (15:17:51:
+# False down to 1.0 km/h, True from there), so counting it then let go 3 s before the car even stopped.
+HELD_SPEED = 1.0            # m/s, where _planned_stop stops reading
+HELD_CLEAR = 1.0            # s
+HELD_STANDING = 0.3         # m/s
+
+
+class JunctionHandoff:
+  def __init__(self):
+    self.filter = FirstOrderFilter(0.0, FILTER_TIME, DT_MDL)
+    self.lead_clear_filter = FirstOrderFilter(0.0, 0.6, DT_MDL)
+    self.active = False
+    self.model_detected = False
+    self.hold_until = 0.0
+    self.stop_x = None
+    self.stop_v = 0.0
+    self.a_floor = 0.0
+    self.clear_for = 0.0
+    self.held = False
+
+  def reset(self):
+    self.filter.x = 0.0
+    self.lead_clear_filter.x = 0.0
+    self.active = False
+    self.model_detected = False
+    self.hold_until = 0.0
+    self.stop_x = None
+    self.stop_v = 0.0
+    self.a_floor = 0.0
+    self.clear_for = 0.0
+    self.held = False
+
+  def _turning(self, car_state, v_ego):
+    """The indicator is on and the model has been told to take a turn, so its plan ends at
+    the corner rather than at anything in front of us."""
+    return bool(car_state.leftBlinker or car_state.rightBlinker) and \
+        LANE_TURN_SPEED_MIN <= v_ego < LANE_TURN_SPEED_MAX
+
+  def _planned_stop(self, model, v_ego):
+    """How far ahead the model plans to be stopped, or None if it does not."""
+    xs, ys, vs = model.position.x, model.position.y, model.velocity.x
+    n = min(len(xs), len(ys), len(vs))
+    if n < 2:
+      return None
+
+    # the gate: the plan no longer reaches as far as we would travel in the next few seconds.
+    #
+    # Measured along the path, not as x[-1]. x is the distance straight down the axis the car
+    # is pointing, so a bend folds the plan towards us and it reads as one that stops: on
+    # 2026-09-14, going round an 83 m bend at 41 km/h, x[-1] was 58.7 m against v * 8 = 91 m
+    # while the plan itself ran 114.4 m - 56 m of the shortfall was the projection and none
+    # of it was a junction. Over that day's two drives this fired on 1581 frames in a bend
+    # (lateral accel over 1 m/s^2) and the arc length leaves 251 of them, while the 47 real
+    # stops keep every one they had, 40 of 47, and the six with nothing in front stay 6 of 6.
+    #
+    # The indicator veto below cannot cover this: a bend you follow round is not a turn you
+    # signal, and the blinker was off on every one of those frames.
+    reach = STOP_PLAN_TIME_OFF if self.model_detected else STOP_PLAN_TIME_ON
+    px = np.array([xs[i] for i in range(n)])   # capnp readers do not slice
+    py = np.array([ys[i] for i in range(n)])
+    plan_len = float(np.sum(np.hypot(np.diff(px), np.diff(py))))
+    if v_ego <= 1.0 or not (plan_len < STOP_PLAN_LEN or plan_len < v_ego * reach):
+      return None
+    if min(float(vs[i]) for i in range(n)) >= STOP_PLAN_MIN_V:
+      return None
+
+    # the distance: where the plan actually slows, which is what the floor works from. Still
+    # read off x: what the floor does with it is v^2 / 2d down the road ahead, and the gate
+    # above has already ruled out the bends where the two readings part company.
+    limit = STOP_SPEED_OFF if self.model_detected else STOP_SPEED_ON
+    for i in range(n):
+      if vs[i] < limit:
+        self.stop_v = float(vs[i])
+        return float(xs[i])
+    self.stop_v = float(vs[n - 1])
+    return float(xs[n - 1])
+
+  def update(self, model, car_state, v_ego, lead):
+    if v_ego > DISABLE_SPEED or self._turning(car_state, v_ego):
+      self.reset()
+      return
+
+    self.stop_x = self._planned_stop(model, v_ego)
+    self.model_detected = self.stop_x is not None
+
+    threshold = max(v_ego * LEAD_LOOKAHEAD, 0.0)
+    committed = self.active and COMMITTED_SPEED_MIN < v_ego < COMMITTED_SPEED
+    lead_relevant = not committed and lead is not None and bool(lead.present) and \
+        lead.dRel < threshold + LEAD_BLOCK_MARGIN
+    self.lead_clear_filter.update(not lead_relevant)
+    lead_cleared = self.lead_clear_filter.x >= THRESHOLD
+
+    self.filter.update(self.model_detected and lead_cleared)
+    armed = self.filter.x >= THRESHOLD
+
+    now = time.monotonic()
+    # held at the line - see HELD_SPEED
+    at_line = self.active and v_ego <= HELD_SPEED
+    standing = at_line and v_ego < HELD_STANDING
+    self.clear_for = self.clear_for + DT_MDL if standing and not model.action.shouldStop else 0.0
+    if at_line and model.action.shouldStop:
+      self.hold_until = now + HOLD_TIME
+      self.held = True
+    elif armed and self.model_detected:
+      self.hold_until = now + HOLD_TIME
+    elif standing and self.clear_for > HELD_CLEAR:
+      self.hold_until = now
+    elif self.held and v_ego > HELD_SPEED and not model.action.shouldStop:
+      # pulled away from a hold with the model no longer saying stop: let go now, not HOLD_TIME into the pull-away
+      # (replayed, 4 launches would otherwise have followed the model's own small accel for 2-3 s)
+      self.hold_until = now
+
+    self.active = bool(armed or (not lead_relevant and now < self.hold_until))
+    if not self.active:
+      self.held = False
+
+    # Ask for what stopping in the distance the model says it has would take. Rate limited
+    # in both directions: arming is a step in the trigger but must not be one at the wheels,
+    # and letting go has to be as smooth as taking hold.
+    # stop_x is where the plan gets down to STOP_SPEED (2.0, then 3.5 m/s), not where it comes
+    # to rest, so what it takes is getting down to the plan's speed there - not to zero. Asking for
+    # zero was harmless at speed (36 km/h and 30 m: 1.67 against 1.46) but not near the end: on
+    # 2026-09-28 17:57:39 at 14.9 km/h the plan was under 3.5 m/s 5 m out and at rest at 14.2 m,
+    # the model asked for -0.34, and the floor took -1.6 and -1.7. Braking that much harder than
+    # the plan makes the next plan end nearer, stop_for_lights only ever pulls its point in, and
+    # the car stopped about 10 m short; the driver's gas reset it and the second stop was right.
+    # Five of these on 09-16 and 09-28.
+    want = 0.0
+    if self.active and self.stop_x is not None and self.stop_x > MIN_STOP_DISTANCE and v_ego > 1.0:
+      want = -min(max(v_ego ** 2 - self.stop_v ** 2, 0.0) / (2.0 * self.stop_x), MAX_FLOOR_DECEL)
+    step = FLOOR_JERK * DT_MDL
+    self.a_floor = float(np.clip(want, self.a_floor - step, self.a_floor + step))

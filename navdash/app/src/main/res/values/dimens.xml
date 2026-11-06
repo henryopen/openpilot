@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 預設尺寸 (手機/小螢幕) -->
+
+    <!-- 頂部卡片 - 標籤文字 -->
+    <dimen name="top_card_label_size">12sp</dimen>
+    <!-- 頂部卡片 - 數值文字 -->
+    <dimen name="top_card_value_size">32sp</dimen>
+
+    <!-- 側邊欄 - 標籤文字 -->
+    <dimen name="side_card_label_size">10sp</dimen>
+    <!-- 側邊欄 - 數值文字 -->
+    <dimen name="side_card_value_size">24sp</dimen>
+
+    <!-- 中央前車資訊 - 標籤文字 -->
+    <dimen name="lead_card_label_size">12sp</dimen>
+    <!-- 中央前車資訊 - 數值文字 -->
+    <dimen name="lead_card_value_size">32sp</dimen>
+
+    <!-- 底部道路名稱 -->
+    <dimen name="road_name_size">20sp</dimen>
+
+    <!-- 無前車圖示 -->
+    <dimen name="no_lead_icon_size">48sp</dimen>
+    <dimen name="no_lead_text_size">18sp</dimen>
+
+    <!-- 實驗模式圖示 -->
+    <dimen name="experimental_icon_size">48dp</dimen>
+
+    <!-- 盲點警示文字 -->
+    <dimen name="blindspot_icon_size">18sp</dimen>
+    <dimen name="blindspot_text_size">10sp</dimen>
+
+    <!-- 連接狀態 -->
+    <dimen name="connection_status_size">10sp</dimen>
+
+    <!-- 2.5.0 導航畫面左側圖示鍵 -->
+    <dimen name="guidance_icon_size">48dp</dimen>
+</resources>

@@ -1,0 +1,747 @@
+#!/usr/bin/env python3
+"""hud: stream selected cereal services as Server-Sent Events for an external HUD display.
+
+Runs on the comma device as a standalone systemd service (sp-hud.service), outside of
+openpilot's process manager, so it survives branch switches.
+
+Built for sunnypilot, which published its own selfdriveStateSP / longitudinalPlanSP /
+liveMapDataSP messages. This branch has none of those, so the same shapes are assembled
+here from what master does have, and the page needs no changes:
+
+  road name, speed limit  <- mapd's memory params
+  speed limit assist      <- SpeedLimitMode and the set speed
+  mads                    <- AlwaysOnLateral and carControl.latActive
+  dec                     <- experimentalMode, which picks e2e or acc the same way
+
+  GET /stream  -> SSE, JSON snapshot ~10 Hz onroad / 1 Hz standby
+  GET /health  -> {"ok": true}
+"""
+import bisect
+import hmac
+import json
+import os
+import socket
+import threading
+import time
+import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+from openpilot.cereal import custom, log, messaging
+from openpilot.common.params import Params
+from openpilot.common.time_helpers import system_time_valid
+from openpilot.selfdrive.controls.lib.desire_helper import LANE_TURN_SPEED_MAX, LANE_TURN_SPEED_MIN, TURN_HOLD_FILE
+from openpilot.selfdrive.controls.lib.relc import RoadEdgeLaneChangeController
+from openpilot.selfdrive.mapd.mapd import MIN_ACCURACY
+from openpilot.selfdrive.mapd.speed_limit import effective_limit
+from openpilot.selfdrive.mapd.turn_ahead import NAV_FILE
+from openpilot.selfdrive.modeld.constants import ModelConstants
+from openpilot.hud.radar_tracker import TargetTracker, relevant
+from openpilot.hud.fuel_tracker import FuelTracker
+from openpilot.selfdrive import keypad
+
+PORT = 8902
+KEYPAD_TOKEN = "/data/keypad_token"
+SERVICES = ["carState", "selfdriveState", "radarState", "radarTracksSP", "modelV2", "carControl",
+            "longitudinalPlan", "longitudinalPlanSP", "controlsState", "gpsLocationExternal", "pandaStates"]
+
+# what the planner says set the accel; the page shows these instead of the raw plan source
+# Keyed on the enum's raw value: a constant stringifies to its number while a value read
+# off a message gives its name, and relying on which one arrives here is asking for it.
+_R = custom.LongitudinalPlanSP.Reason
+REASON_NAMES = {_R.cruise: "cruise", _R.lead: "lead0", _R.stopLight: "stoplight",
+                _R.curve: "curve", _R.e2e: "e2e", _R.weakLead: "weaklead"}
+
+KPH_TO_MS = 1 / 3.6
+
+# C3's self-calibration wants the car's vEgo / aEgo (c3link/c3calib.py). They are sent from here, not from a reader
+# of its own: msgq lets a topic have 15 readers, carState already had exactly 15, and c3_relay's 16th made every
+# reader drop messages - the 10/21 drive's commIssue on every engage. Same packet c3_relay used to send, at this
+# loop's ~20 Hz instead of 100.
+C3_ADDR = ("10.44.0.1", 4410)
+C3_BATCH_S = 0.1
+
+
+
+def _c3_tl(sm, radar_points):
+  """What C3's light follower (c3link/c3track.py, 11/03) needs from C4, riding on the calibration packet: the blinkers,
+  tlwatchd's OSM signal ahead (m, None) and the radar's points (dRel, yRel left +, vRel) - a lamp on a moving one is a
+  vehicle's, not a signal head. Nothing new reads carState: this loop already does."""
+  try:
+    out = {"bl": bool(sm["carState"].leftBlinker), "br": bool(sm["carState"].rightBlinker), "osm": None,
+           "rad": [[round(p["dRel"], 1), round(p["yRel"], 2), round(p["vRel"], 2)] for p in radar_points[:48]]}
+  except Exception:  # never let C3's extras cost the calibration packet
+    return None
+  try:
+    with open("/dev/shm/tlwatch.json") as f:
+      tl = json.load(f)
+    if time.monotonic() - float(tl.get("t", 0)) < 1.5:
+      out["osm"] = tl.get("osm_m")
+  except (OSError, ValueError, TypeError):
+    pass
+  return out
+
+
+# Whether the C4 is plugged into the car (the panda's harness), for car_hotspot.py, which picks the network by it.
+# Written here because this process is openpilot's user: car_hotspot runs as root before openpilot is up, and its
+# own pandaStates reader made /dev/shm/msgq_pandaStates root's - openpilot then failed to open it on every boot.
+HARNESS_FILE = "/dev/shm/c4_harness.json"
+
+
+def _write_harness(ps) -> None:
+  try:
+    tmp = HARNESS_FILE + ".tmp"
+    with open(tmp, "w") as f:
+      json.dump({"in_car": ps[0].harnessStatus != log.PandaState.HarnessStatus.notConnected, "t": time.monotonic()}, f)
+    os.replace(tmp, HARNESS_FILE)
+  except (OSError, IndexError):
+    pass
+
+# modelV2 的線是 33 個不等距點；降取樣成固定距離，HUD 夠用又不會塞爆 SSE
+SAMPLE_X = [0, 5, 12, 20, 30, 45, 60, 80, 95, 110]
+
+_lock = threading.Lock()
+_snapshot = b'{"standby": true}'
+_frame = 0
+_model_cache = None
+# Fuel remaining by subtraction; see fuel_tracker.py for why the float is not read directly
+_fuel = FuelTracker()
+# The producer runs in a daemon thread while the main thread serves HTTP, so an exception in
+# it kills the thread and leaves the process up: systemd sees a healthy service, the stream
+# keeps sending the last snapshot forever, and the display freezes on a frame that looks
+# live. That is what the driver saw on 2026-09-07 - lane lines still drawn, no vehicles, the
+# lead frozen - while radarState.leadOne in the same drive never stuck for even half a
+# second. Stamp every snapshot so the freeze is detectable instead of silent.
+_snapshot_ts = 0.0
+# Offroad the loop runs at 1 Hz, onroad at 20. Anything past this is not slow, it is stopped.
+STALE_AFTER = 15.0  # s
+
+
+def _resample(line):
+  xs, ys = list(line.x), list(line.y)
+  if len(xs) < 2:
+    return [0.0] * len(SAMPLE_X)
+  out = []
+  for d in SAMPLE_X:
+    if d <= xs[0]:
+      out.append(ys[0])
+    elif d >= xs[-1]:
+      out.append(ys[-1])
+    else:
+      i = bisect.bisect_left(xs, d)
+      x0, x1, y0, y1 = xs[i - 1], xs[i], ys[i - 1], ys[i]
+      t = (d - x0) / (x1 - x0) if x1 != x0 else 0.0
+      out.append(y0 + (y1 - y0) * t)
+  return [round(float(v), 3) for v in out]
+
+
+def _planned_stop(md):
+  """Where the model's own speed profile comes to rest, for the display only.
+
+  shouldStop fires once the stop is imminent; the model sees the junction seconds
+  earlier. Same profile test stop_for_lights uses (falls to rest and stays there),
+  but with no trigger gate - this only draws a sign, it never brakes."""
+  v, x = md.velocity.x, md.position.x
+  if len(v) == 0 or len(x) != len(v):
+    return 0.
+  idx = next((i for i, u in enumerate(v) if u < 0.5), None)
+  if idx is None:
+    return 0.
+  if any(v[i] > 1.0 for i in range(idx, len(v))):   # dips and recovers: traffic, not a stop
+    return 0.
+  return float(x[idx])
+
+
+def _model(md):
+  return {
+    "d": SAMPLE_X,
+    "stopAhead": round(_planned_stop(md), 1),
+    "lanes": [{"y": _resample(l), "p": round(float(p), 3)}
+              for l, p in zip(md.laneLines, md.laneLineProbs, strict=True)],
+    "edges": [{"y": _resample(e), "s": round(float(st), 3)}
+              for e, st in zip(md.roadEdges, md.roadEdgeStds, strict=True)],
+    "path": _resample(md.position),
+  }
+
+
+LOCAL_UTC_OFFSET_S = 8 * 3600   # the device keeps UTC, and we drive in Taiwan
+
+
+def _clock():
+  """The device's own clock, so something seen on the road can be found in the logs.
+
+  Sent from here rather than read off the PI: the PI is on the car's hotspot with no route
+  out, so its own clock is no better than this one and would not line up with the segments.
+  ok is false until GPS or NTP has actually set the time - the RTC has no backup power, so
+  until then this is systemd's build date, and writing that down would find the wrong drive.
+  epoch (UTC seconds) is for the PI's own clock displays - the rear LED and the standby clock -
+  which need the date too and must not fall back on the PI's clock for the same reason.
+  """
+  now = time.time_ns() / 1e9
+  return {"t": time.strftime("%H:%M:%S", time.gmtime(now + LOCAL_UTC_OFFSET_S)),
+          "ok": system_time_valid(), "epoch": now}
+
+
+def _car_state(cs):
+  cruise = cs.cruiseState
+  # With openpilot longitudinal the set speed lives in carState.vCruise (km/h, 255 when
+  # unset); cruiseState.speed belongs to the stock ACC and stays 0 on this car.
+  v_cruise = float(cs.vCruise)
+  cruise_speed = v_cruise * KPH_TO_MS if 0. < v_cruise < 250. else 0.
+  return {
+    "vEgo": float(cs.vEgo),
+    "vEgoCluster": float(cs.vEgoCluster),
+    "cruiseEnabled": bool(cruise.enabled),
+    "cruiseAvailable": bool(cruise.available),
+    "cruiseSpeed": cruise_speed,
+    "gasPressed": bool(cs.gasPressed),
+    "brakePressed": bool(cs.brakePressed),
+    "leftBlinker": bool(cs.leftBlinker),
+    "rightBlinker": bool(cs.rightBlinker),
+    "standstill": bool(cs.standstill),
+    "steeringAngleDeg": float(cs.steeringAngleDeg),
+    "leftBlindspot": bool(cs.leftBlindspot),
+    "rightBlindspot": bool(cs.rightBlindspot),
+    "yawRate": float(cs.yawRate),
+    # 0.0-1.0 of the tank. Sent as the fraction carState carries; the page turns it into
+    # litres, because the capacity is a property of the car and not of the signal.
+    "fuelGauge": float(cs.fuelGauge),
+    "odometer": float(cs.odometer),
+    "avgFuelEconomy": float(cs.avgFuelEconomy),
+  }
+
+
+def _lat_saturated(cs):
+  try:
+    lcs = cs.lateralControlState
+    branch = getattr(lcs, lcs.which())
+    return bool(getattr(branch, "saturated", False))
+  except Exception:
+    return False
+
+
+def _stop_distance(speeds):
+  """How much further the plan runs before it comes to rest.
+
+  There is no stop line on the wire, so integrate the plan's own speed trajectory.
+  It only reaches 2.5s ahead, so this is the distance left to a stop that is already
+  being braked for, not the distance to one still up the road.
+  """
+  t = ModelConstants.T_IDXS
+  if len(speeds) < 2:
+    return 0.
+  dist = 0.
+  for i in range(min(len(speeds), len(t)) - 1):
+    dist += (speeds[i] + speeds[i + 1]) / 2 * (t[i + 1] - t[i])
+    if speeds[i + 1] < 0.1:
+      break
+  return dist
+
+
+def _control(cc, lp, cs):
+  a = cc.actuators
+  return {
+    "sat": _lat_saturated(cs),
+    "torque": float(a.torque),          # 橫向輸出 [0,1]
+    "curvature": float(a.curvature),    # 1/m，配 v^2 可得目標橫向加速度
+    "accel": float(a.accel),            # m/s^2
+    "aTarget": float(lp.aTarget),
+    "src": str(lp.longitudinalPlanSource),   # cruise / lead0 / lead1 / lead2 / e2e
+    "hasLead": bool(lp.hasLead),
+    "stop": bool(lp.shouldStop),             # the model's own call, via the planner
+    "stopDistance": _stop_distance(lp.speeds),
+  }
+
+
+def _selfdrive_state(ss):
+  return {
+    "enabled": bool(ss.enabled),
+    "active": bool(ss.active),
+    "state": str(ss.state),
+    "alertText1": str(ss.alertText1),
+    "alertText2": str(ss.alertText2),
+    "alertStatus": str(ss.alertStatus),
+    "experimentalMode": bool(ss.experimentalMode),
+  }
+
+
+def _lead(lead):
+  return {
+    "status": bool(lead.present),   # sunnypilot called this status
+    "dRel": float(lead.dRel),
+    "vRel": float(lead.vRel),
+    "yRel": float(lead.yRel),
+    "vLead": float(lead.vLead),
+    "radar": bool(lead.radar),      # matched to a radar track, rather than vision alone
+    "prob": float(lead.modelProb),
+  }
+
+
+def _radar_targets(points, targets, v_ego, dt):
+  """Everything the radar sees, not just the one target being followed.
+
+  radard only ever hands out two leads and they are both in our own lane, so the cars
+  either side never reach the display. The decode is opendbc's, the same one that feeds
+  the car; what happens here is only the picking and smoothing a display needs.
+  """
+  try:
+    groups = relevant(points, v_ego)
+    return [
+      {"status": True,
+       "id": t.id,                        # stable across frames, so the page can follow one car
+       "dRel": round(t.dRel, 1),
+       "yRel": round(t.yRel, 1),
+       "vRel": round(t.vRel, 1),
+       "radar": True,
+       "coast": t.misses > 0,             # held over a dropped frame rather than seen right now
+       "side": abs(t.yRel) > 1.8,         # in a lane beside us rather than ahead
+       "lane": t.lane,
+       "laneN": t.lane_n,                 # -2..2, negative to our right
+       "oncoming": t.oncoming}
+      for t in targets.update(groups, dt)
+    ]
+  except Exception:
+    return []
+
+
+def _radar_state(rs):
+  one, two = _lead(rs.leadOne), _lead(rs.leadTwo)
+  # the page reads the first lead off the top level
+  return {"leadStatus": one["status"], "dRel": one["dRel"], "vRel": one["vRel"],
+          "yRel": one["yRel"], "vLead": one["vLead"], "radar": one["radar"],
+          "leads": [one, two]}
+
+
+def _next_speed_limit(mem_params):
+  """mapd writes the limit coming up as JSON: speedlimit in m/s, distance in metres.
+
+  The key is declared JSON, so Params.get parses it: loading it again threw every time
+  there was actually a limit ahead, and the except quietly turned that into "none".
+  """
+  try:
+    j = mem_params.get("NextMapSpeedLimit") or {}
+    return float(j.get("speedlimit") or 0.), float(j.get("distance") or 0.)
+  except Exception:
+    return 0., 0.
+
+
+def _assist_set(mem_params):
+  """The last set speed the speed limit assist moved by itself, written by VCruiseHelper.
+
+  Nothing else can tell the two of us apart: the driver's buttons and the assist both land
+  in carState.vCruise. The one place that knows is the code that does it, so it records it.
+  """
+  try:
+    j = mem_params.get("SpeedLimitAssistSet") or {}
+    return float(j.get("limit") or 0.), float(j.get("target") or 0.), float(j.get("t") or 0.)
+  except Exception:
+    return 0., 0., 0.
+
+
+# Settings change when someone changes them, not at 20 Hz. The map values live in shared
+# memory and mapd only rewrites them a couple of times a second, so both are read on a
+# slow tick rather than every frame.
+_SETTINGS_EVERY = 100   # 5 s at 20 Hz
+_MAP_EVERY = 10         # 0.5 s, matching how often mapd writes
+_settings = {"offset": 0., "mode": 0, "aol": False}
+_map = {"limit": 0., "road": "", "ahead": 0., "ahead_dist": 0., "official": False}
+_assist = {"limit": 0., "target": 0., "t": 0.}
+
+
+def _sp_shapes(params, mem_params, cs, cc, ss, frame, gps_ok):
+  """Rebuild what sunnypilot used to publish, so the page does not have to change."""
+  if frame % _SETTINGS_EVERY == 0:
+    _settings["offset"] = params.get("SpeedLimitValueOffset", return_default=True) * KPH_TO_MS
+    _settings["mode"] = params.get("SpeedLimitMode", return_default=True)
+    _settings["aol"] = params.get_bool("AlwaysOnLateral")
+  if frame % _MAP_EVERY == 0:
+    _map["limit"] = effective_limit(mem_params)   # official where OSM is known wrong - selfdrive/mapd/speed_limit
+    # and whether that is what it is: the HUD marks the sign when the correction table supplied the number
+    _fx = mem_params.get("MapSpeedLimitFixed")
+    _map["official"] = (isinstance(_fx, dict) and int(_fx.get("fix", -1)) >= 0
+                        and time.monotonic() - float(_fx.get("t", 0.)) < 3.)
+    _map["road"] = mem_params.get("RoadName") or ""
+    _map["ahead"], _map["ahead_dist"] = _next_speed_limit(mem_params)
+    _assist["limit"], _assist["target"], _assist["t"] = _assist_set(mem_params)
+
+  speed_limit = _map["limit"]
+  offset = _settings["offset"]
+  assisting = _settings["mode"] == 3 and speed_limit > 0.
+  ahead, ahead_dist = _map["ahead"], _map["ahead_dist"]
+  # written on the device's monotonic clock, which restarts with it: a stamp from before
+  # this boot reads as far in the future or absurdly old, and either way is not this drive
+  age = time.monotonic() - _assist["t"]
+  if not 0. <= age < 3600.:
+    age = -1.
+
+  return {
+    "liveMapDataSP": {
+      "roadName": _map["road"],
+      "gpsValid": gps_ok,
+      "speedLimitValid": speed_limit > 0.,
+      "speedLimit": speed_limit,
+      "speedLimitOfficial": bool(_map["official"]),
+      "speedLimitAheadValid": ahead > 0. and ahead_dist > 0.,
+      "speedLimitAhead": ahead,
+      "speedLimitAheadDistance": ahead_dist,
+    },
+    "longitudinalPlanSP": {
+      "dec": {"state": "blended" if ss.experimentalMode else "acc"},
+      "speedLimit": {
+        "resolver": {
+          "speedLimitFinal": speed_limit + offset if speed_limit > 0. else 0.,
+          "speedLimitValid": speed_limit > 0.,
+        },
+        "assist": {"state": "active" if assisting else "inactive",
+                   "lastLimit": _assist["limit"], "lastTarget": _assist["target"],
+                   "lastAge": age},
+      },
+    },
+    "selfdriveStateSP": {
+      "speedLimit": {
+        "resolver": {
+          "speedLimitValid": speed_limit > 0.,
+          "speedLimit": speed_limit,
+          "speedLimitOffset": offset,
+        },
+      },
+      "mads": {
+        "available": _settings["aol"],
+        "active": bool(cc.latActive),
+        "enabled": bool(cc.latActive),
+        "state": "enabled" if cc.latActive else "disabled",
+      },
+    },
+  }
+
+
+def poll_loop():
+  """Restart the producer rather than let one bad frame take the display down for the drive."""
+  while True:
+    try:
+      _produce()
+    except Exception:
+      traceback.print_exc()
+      time.sleep(1.0)
+
+
+def watchdog():
+  """A stopped producer is invisible from outside, so make it fatal and let systemd restart."""
+  while True:
+    time.sleep(5.0)
+    with _lock:
+      age = time.monotonic() - _snapshot_ts
+    if _snapshot_ts and age > STALE_AFTER:
+      print(f'hud: producer stalled for {age:.0f}s, exiting for systemd to restart', flush=True)
+      os._exit(1)
+
+
+def _produce():
+  global _snapshot, _snapshot_ts, _frame, _model_cache
+  sm = messaging.SubMaster(SERVICES)
+  params = Params()
+  mem_params = Params("/dev/shm/params")
+  targets = TargetTracker()
+  last_target_t = time.monotonic()
+  edges = RoadEdgeLaneChangeController()
+  c3_tx = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+  c3_cs, c3_last = [], 0.
+  while True:
+    sm.update(1000)
+    if sm.updated["pandaStates"]:
+      _write_harness(sm["pandaStates"])
+    data = {"ts": time.monotonic(), "alive": {s: bool(sm.alive[s]) for s in SERVICES}}
+    onroad = sm.alive["carState"]
+
+    now = time.monotonic()
+    gps = sm["gpsLocationExternal"]
+    gps_ok = (bool(sm.alive["gpsLocationExternal"]) and gps.horizontalAccuracy < MIN_ACCURACY
+              and not (gps.latitude == 0 and gps.longitude == 0))
+    radar_points = [{"dRel": float(p.dRel), "yRel": float(p.yRel), "vRel": float(p.vRel)}
+                    for p in sm["radarTracksSP"].points]
+    data["standby"] = not onroad
+    data["clock"] = _clock()
+    if not onroad:
+      edges.reset()
+      targets.reset()
+      c3_cs = []
+    else:
+      # to C3 for its calibration; with the cable out the send fails and is dropped
+      if sm.updated["carState"]:
+        c3_cs.append([sm.logMonoTime["carState"], round(float(sm["carState"].vEgo), 3), round(float(sm["carState"].aEgo), 4)])
+      if now - c3_last >= C3_BATCH_S:
+        if c3_cs:
+          try:
+            c3_tx.sendto(json.dumps({"s": time.clock_gettime_ns(time.CLOCK_BOOTTIME), "cs": c3_cs, "tl": _c3_tl(sm, radar_points)},
+                                    separators=(",", ":")).encode(), C3_ADDR)
+          except OSError:
+            pass
+        c3_cs, c3_last = [], now
+    if onroad:
+      try:
+        data["carState"] = _car_state(sm["carState"])
+        # Fuel by subtraction from the last fill. Returns {} until it has a basis, and
+        # holds its last answer while the cluster's economy reads invalid (it does that
+        # for about a minute after a fill), so the display never shows a bogus number.
+        # kept on its own except: everything below shares one, and the display losing
+        # speed, radar and the model because the fuel arithmetic tripped is far worse
+        # than losing the litres.
+        _cs = sm["carState"]
+        try:
+          _f = _fuel.update(float(_cs.odometer), float(_cs.avgFuelEconomy),
+                            float(_cs.fuelGauge))
+        except Exception as e:
+          _f = None
+          data["fuelError"] = str(e)
+        if _f:
+          data["fuel"] = {k: (round(v, 2) if isinstance(v, float) else v)
+                          for k, v in _f.items()}
+        data["selfdriveState"] = _selfdrive_state(sm["selfdriveState"])
+        data["radarState"] = _radar_state(sm["radarState"])
+        dt = max(1e-3, min(0.5, now - last_target_t))
+        last_target_t = now
+        others = _radar_targets(radar_points, targets, float(sm["carState"].vEgo), dt)
+        # radard's leads come first, so the page still treats the followed car as the main one
+        followed = data["radarState"]["dRel"] if data["radarState"]["leadStatus"] else None
+        # radar and vision disagree more the further the car: ~6 m at 40 m out on this
+        # car's logs, so a fixed 3 m gate let the same car through twice
+        gate = max(3.0, 0.2 * followed) if followed is not None else 3.0
+        data["radarState"]["leads"] += [t for t in others
+                                        if followed is None or abs(t["dRel"] - followed) > gate]
+        data["radarState"]["targets"] = len(others)
+        _frame += 1
+        if _frame % 2 == 0 or _model_cache is None:   # 20Hz 進來、10Hz 重算，跟輸出頻率對齊
+          _model_cache = _model(sm["modelV2"])
+        data["modelV2"] = _model_cache
+        if sm.updated["modelV2"]:
+          edges.update_from_model(sm["modelV2"], float(sm["carState"].vEgo))
+        data["modelDataV2SP"] = {"leftLaneChangeEdgeBlock": edges.left_edge_detected,
+                                 "rightLaneChangeEdgeBlock": edges.right_edge_detected}
+        # For the rear LED and the HUD: what the car is about to do sideways. The lane change is the
+        # model's own state; the turn is what desire_helper decided (10/27, its TURN_HOLD_FILE): the turn
+        # desire given ('go': nav / osm / speed), a lane change held for a turn coming ('hold'), or a
+        # quiet caption (neither). Without the file (modeld not up yet) the old speed band.
+        _meta = sm["modelV2"].meta
+        _cs = sm["carState"]
+        _one = _cs.leftBlinker != _cs.rightBlinker
+        _go = _hold = None
+        _quiet = False
+        _h = None
+        if _one:
+          try:
+            with open(TURN_HOLD_FILE) as _f:
+              _h = json.load(_f)
+            if time.monotonic() - float(_h.get("t", 0)) > 60:
+              _h = None
+          except (OSError, ValueError, TypeError):
+            _h = None
+        if _h is not None:
+          _go, _hold, _quiet = _h.get("go"), _h.get("hold"), bool(_h.get("quiet"))
+        else:
+          _go = "speed" if (_one and LANE_TURN_SPEED_MIN <= float(_cs.vEgo) < LANE_TURN_SPEED_MAX) else None
+        _turning = bool(sm["carControl"].latActive) and _one and bool(_go or _hold)
+        data["intent"] = {"laneChangeState": str(_meta.laneChangeState),
+                          "laneChangeDirection": str(_meta.laneChangeDirection),
+                          "turn": ("left" if _cs.leftBlinker else "right") if _turning else "",
+                          "turnGo": _go or "", "turnHold": _hold or "", "quiet": _quiet}
+        # The light watcher (yolo/tlwatchd.py): the OSM signal ahead, its read of the light, and
+        # at a standstill whether it is finding / watching the lamps or has called the green.
+        # Its file says when it was written on this device's monotonic clock; older than 1.5 s
+        # means the watcher is not running, and then the page shows nothing rather than a stale call.
+        try:
+          with open("/dev/shm/tlwatch.json") as _f:
+            _tl = json.load(_f)
+          if time.monotonic() - float(_tl.get("t", 0)) < 1.5:
+            data["tlwatch"] = _tl
+        except (OSError, ValueError):
+          pass
+        # and what the planner does with it (selfdrive/controls/lib/light_ahead.py): coasting or an early
+        # slowdown towards the signal, and whether that is live or only shadowed
+        try:
+          with open("/dev/shm/light_ahead.json") as _f:
+            _la = json.load(_f)
+          if time.monotonic() - float(_la.get("t", 0)) < 2.0:
+            data["lightAhead"] = _la
+        except (OSError, ValueError):
+          pass
+        # the rightmost lane's offset to the left (selfdrive/modeld/lane_offset.py): the model sees a shifted camera,
+        # so its lane lines / edges / path come out shifted by this much - the page adds it back when drawing
+        try:
+          with open("/dev/shm/lane_offset.json") as _f:
+            _lo = json.load(_f)
+          if time.monotonic() - float(_lo.get("t", 0)) < 2.5:
+            data["laneOffset"] = _lo
+        except (OSError, ValueError):
+          pass
+        # road memory (selfdrive/mapd/road_memory.py): shown only while the planner is holding cruise to it - or in
+        # shadow would be (live false) - (road_memory_limit writes the act file on a change) and the lookup is fresh
+        try:
+          with open("/dev/shm/road_mem_act.json") as _f:
+            _ra = json.load(_f)
+          with open("/dev/shm/road_mem.json") as _f:
+            _rm = json.load(_f)
+          if _ra.get("active") and time.monotonic() - float(_rm.get("t", 0)) < 1.5:
+            data["roadMem"] = dict(_rm, live=bool(_ra.get("live")))
+        except (OSError, ValueError):
+          pass
+        # TDX live road conditions ahead (selfdrive/mapd/tdx_traffic.py): events, section speeds, the freeway
+        # detectors' lanes. Display only. Written every 2 s; older than 10 s means it is not running.
+        try:
+          with open("/dev/shm/tdx_traffic.json") as _f:
+            _tx = json.load(_f)
+          if time.monotonic() - float(_tx.get("t", 0)) < 10.0:
+            data["tdxTraffic"] = _tx
+        except (OSError, ValueError):
+          pass
+        data.setdefault("tdxTraffic", {"status": "missing"})
+        data["control"] = _control(sm["carControl"], sm["longitudinalPlan"], sm["controlsState"])
+        data["control"]["reason"] = REASON_NAMES.get(sm["longitudinalPlanSP"].reason.raw, "")
+        # what cruise is really working to, which is not the driver's MAX whenever something
+        # has taken speed off it. m/s, already in dash units so the page can put it next to MAX
+        data["control"]["vCruiseTarget"] = float(sm["longitudinalPlanSP"].vCruise)
+        # whether the model has been handed the junction, which the driver wants to see
+        # even on the frames where cruise is still the one setting the accel
+        data["control"]["modelHandoff"] = bool(sm["longitudinalPlanSP"].modelHandoff)
+        # where the MPC is trying to sit, worked out by the planner with the car's own
+        # constants. The page used to derive this itself and had drifted on all three.
+        data["control"]["followDistance"] = float(sm["longitudinalPlanSP"].followDistance)
+        # the ceiling cruise was allowed this frame. aTarget sitting on it is the difference
+        # between "nothing is asking for more" and "something is holding it down", which is
+        # what the driver is looking at the number to find out.
+        data["control"]["aCruiseMax"] = float(sm["longitudinalPlanSP"].aCruiseMax)
+        # and which of the four limits it came from, because the number alone does not say
+        # and they are not fixed by the same change
+        data["control"]["aCruiseMaxSrc"] = str(sm["longitudinalPlanSP"].aCruiseMaxSource)
+        data.update(_sp_shapes(params, mem_params, sm["carState"], sm["carControl"],
+                               sm["selfdriveState"], _frame, gps_ok))
+      except Exception as e:
+        data["error"] = str(e)
+    # C3 over the USB link (c3link/c3calib.py via c3_relay): its self-calibration, the lights it sees as car-frame
+    # directions, and its voice hits. Display only. Sent twice a second; older than 3 s means C3 is not there.
+    # Onroad or not (10/24, the driver: C3's voice must work parked too - the rear-window captions 謝謝/抱歉/臨時
+    # come from c3.voice in this stream, and offroad it was left out); c3_relay runs always for the same reason.
+    try:
+      with open("/dev/shm/c3lights.json") as _f:
+        _c3 = json.load(_f)
+      if time.monotonic() - float(_c3.get("t", 0)) < 3.0:
+        data["c3"] = _c3
+    except (OSError, ValueError):
+      pass
+    # the driver looks only at the HUD while driving (10/18): no C3 data has to say so, not just vanish
+    data.setdefault("c3", {"missing": True})
+    if not onroad:
+      data["liveMapDataSP"] = {"roadName": mem_params.get("RoadName") or ""}
+    with _lock:
+      _snapshot = json.dumps(data, default=str).encode()
+      _snapshot_ts = time.monotonic()
+    # offroad nothing publishes (sm.update just times out); onroad cap the loop ~20 Hz
+    time.sleep(1.0 if not onroad else 0.05)
+
+
+class Handler(BaseHTTPRequestHandler):
+  protocol_version = "HTTP/1.1"
+
+  def log_message(self, fmt, *args):
+    pass
+
+  def _json(self, obj):
+    body = json.dumps(obj).encode()
+    self.send_response(200)
+    self.send_header("Content-Type", "application/json")
+    self.send_header("Access-Control-Allow-Origin", "*")
+    self.send_header("Cache-Control", "no-store")
+    self.send_header("Content-Length", str(len(body)))
+    self.end_headers()
+    self.wfile.write(body)
+
+  def do_GET(self):
+    if self.path.startswith("/stream"):
+      self.send_response(200)
+      self.send_header("Content-Type", "text/event-stream")
+      self.send_header("Cache-Control", "no-cache")
+      self.send_header("Access-Control-Allow-Origin", "*")
+      self.send_header("Connection", "keep-alive")
+      self.end_headers()
+      try:
+        while True:
+          with _lock:
+            payload = _snapshot
+            stale = bool(_snapshot_ts) and (time.monotonic() - _snapshot_ts) > STALE_AFTER
+          if stale:
+            # say so rather than keep serving a frozen frame that reads as live
+            payload = b'{"stale": true, ' + payload[1:]
+          self.wfile.write(b"data: " + payload + b"\n\n")
+          self.wfile.flush()
+          time.sleep(0.1)
+      except (BrokenPipeError, ConnectionResetError, OSError):
+        return
+    elif self.path.startswith("/health"):
+      self._json({"ok": True})
+    else:
+      self.send_response(404)
+      self.send_header("Content-Length", "0")
+      self.end_headers()
+
+  def _status(self, code):
+    self.send_response(code)
+    self.send_header("Content-Length", "0")
+    self.end_headers()
+
+  def do_POST(self):
+    # The keypad on the PiBar - see selfdrive/keypad.py. Anyone on the hotspot can reach this
+    # port, so a command has to carry the token in KEYPAD_TOKEN; without that file it is off.
+    # /nav (2026-10-27): the PiBar forwards, once a second, the phone's NavDash route step ({} when not navigating)
+    # and the rear-window caption showing (keypad / C3 voice), same token; written to turn_ahead.NAV_FILE with this
+    # machine's clock for mapd_bridge's turn / lane change check.
+    if self.path not in ("/keypad", "/nav"):
+      return self._status(404)
+    try:
+      length = int(self.headers.get("Content-Length", 0))
+    except ValueError:
+      return self._status(400)
+    if not 0 < length <= (8192 if self.path == "/nav" else 512):
+      return self._status(400)
+    try:
+      body = json.loads(self.rfile.read(length))
+      token = str(body["token"])
+      cmd = str(body["cmd"]) if self.path == "/keypad" else ""
+      nav = body["nav"] if self.path == "/nav" else None
+      caption = body.get("caption") if self.path == "/nav" else None
+    except (ValueError, KeyError, TypeError):
+      return self._status(400)
+    try:
+      with open(KEYPAD_TOKEN) as f:
+        expected = f.read().strip()
+    except OSError:
+      return self._status(403)
+    if not expected or not hmac.compare_digest(token, expected):
+      return self._status(403)
+    if self.path == "/nav":
+      if not isinstance(nav, dict) or not (caption is None or isinstance(caption, str)):
+        return self._status(400)
+      try:
+        tmp = NAV_FILE + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+          json.dump({"mono": time.monotonic(), "nav": nav, "caption": caption}, f, ensure_ascii=False)
+        os.replace(tmp, NAV_FILE)
+      except OSError:
+        return self._status(500)
+      return self._json({"ok": True})
+    # one journal line per keypad / C3 voice command (the journal is kept on /data since 10/28), so a command that
+    # "did nothing" can be told apart: never arrived here, refused here, or passed on to card / plannerd
+    ok = keypad.post(cmd)
+    print(f"keypad {cmd} from {self.client_address[0]}: {'passed on' if ok else 'unknown command'}", flush=True)
+    if not ok:
+      return self._status(400)
+    self._json({"ok": True})
+
+
+def main():
+  threading.Thread(target=poll_loop, daemon=True).start()
+  threading.Thread(target=watchdog, daemon=True).start()
+  server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
+  server.daemon_threads = True
+  server.serve_forever()
+
+
+if __name__ == "__main__":
+  main()

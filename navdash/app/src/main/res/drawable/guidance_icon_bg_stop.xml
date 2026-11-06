@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 2.5.0 結束導航鍵：半透明紅色圓底（沿用舊版紅色按鈕的意思） -->
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="#55FFFFFF">
+    <item>
+        <shape android:shape="oval">
+            <solid android:color="#D9D32F2F" />
+            <stroke
+                android:width="1dp"
+                android:color="#40FFFFFF" />
+        </shape>
+    </item>
+</ripple>

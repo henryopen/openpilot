@@ -1,0 +1,28 @@
+* text=auto
+
+# to move existing files into LFS:
+# git add --renormalize .
+*.onnx filter=lfs diff=lfs merge=lfs -text
+*.svg filter=lfs diff=lfs merge=lfs -text
+*.png filter=lfs diff=lfs merge=lfs -text
+*.gif filter=lfs diff=lfs merge=lfs -text
+*.ttf filter=lfs diff=lfs merge=lfs -text
+*.otf filter=lfs diff=lfs merge=lfs -text
+*.wav filter=lfs diff=lfs merge=lfs -text
+
+openpilot/selfdrive/car/tests/test_models_segs.txt filter=lfs diff=lfs merge=lfs -text
+openpilot/common/hardware/comma/updater filter=lfs diff=lfs merge=lfs -text
+# 11/03: the rear-LED Xiaobai frames are plain git objects - LFS here pushes to commaai's gitlab, which we cannot write
+openpilot/hud/pi/xiaobai/*.png -filter -diff -merge binary
+# public snapshot: the models and NavDash are plain git objects, not LFS
+models/** -filter -diff -merge binary
+models/**/*.md text
+models/**/*.txt text
+navdash/**/*.png -filter -diff -merge binary
+navdash/**/*.svg -filter -diff -merge binary
+navdash/**/*.gif -filter -diff -merge binary
+navdash/**/*.ttf -filter -diff -merge binary
+navdash/**/*.otf -filter -diff -merge binary
+navdash/**/*.wav -filter -diff -merge binary
+navdash/**/*.webp -filter -diff -merge binary
+navdash/**/*.jar -filter -diff -merge binary

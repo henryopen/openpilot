@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 主要顏色 -->
+    <color name="primary">#4CAF50</color>
+    <color name="primary_dark">#388E3C</color>
+    <color name="primary_light">#81C784</color>
+    <color name="accent">#2196F3</color>
+
+    <!-- 背景顏色 -->
+    <color name="background">#121212</color>
+    <color name="surface">#1E1E1E</color>
+    <color name="card">#2D2D2D</color>
+
+    <!-- 文字顏色 -->
+    <color name="white">#FFFFFF</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#B3B3B3</color>
+    <color name="text_hint">#666666</color>
+
+    <!-- 狀態顏色 -->
+    <color name="success">#4CAF50</color>
+    <color name="warning">#FF9800</color>
+    <color name="error">#F44336</color>
+    <color name="info">#2196F3</color>
+
+    <!-- FAB 顏色 -->
+    <color name="fab_background">#4CAF50</color>
+    <color name="fab_icon">#FFFFFF</color>
+
+    <!-- 分隔線 -->
+    <color name="divider">#333333</color>
+
+    <!-- App 圖示背景 -->
+    <color name="ic_launcher_background">#4CAF50</color>
+
+    <!-- ==================== HFOP 主題顏色 ==================== -->
+    <color name="hfop_red">#E30613</color>
+    <color name="hfop_red_bright">#FF1A2D</color>
+    <color name="hfop_red_dark">#B00510</color>
+
+    <!-- 狀態顏色 (HFOP) -->
+    <color name="status_safe">#2ecc71</color>
+    <color name="status_warning">#f1c40f</color>
+    <color name="status_danger">#e74c3c</color>
+    <color name="controlling_orange">#e67e22</color>
+
+    <!-- 文字顏色 (HFOP) -->
+    <color name="text_primary_white">#FFFFFF</color>
+    <color name="text_secondary_gray">#E0E0E0</color>
+    <color name="text_dim">#909090</color>
+
+    <!-- 數值正負色 -->
+    <color name="value_positive">#2ecc71</color>
+    <color name="value_negative">#e74c3c</color>
+    <color name="value_neutral">#909090</color>
+</resources>

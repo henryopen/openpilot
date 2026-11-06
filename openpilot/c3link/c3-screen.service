@@ -1,0 +1,17 @@
+[Unit]
+Description=C3 status screen (Qt): temperature, IP, C4 link, calibration, lights, archive
+After=weston.service
+
+[Service]
+Type=simple
+User=comma
+Environment=XDG_RUNTIME_DIR=/var/tmp/weston
+Environment=WAYLAND_DISPLAY=wayland-0
+Environment=QT_QPA_PLATFORM=wayland
+ExecStartPre=/bin/sleep 8
+ExecStart=/data/c3link/c3_screen
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
