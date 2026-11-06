@@ -21,6 +21,24 @@
 
 ---
 
+## 想改成自己要的：請 AI 幫忙
+
+參數都直接寫在程式裡，最省力的做法是請 AI 程式助手幫你看、幫你改：
+
+1. 把這個分支下載到電腦：`git clone -b no-led https://github.com/henryopen/openpilot.git`（或在 GitHub 按 Code → Download ZIP）。
+2. 用能讀整個資料夾的 AI 程式工具打開它（例如 Claude Code、Cursor、GitHub Copilot）。
+3. 開頭可以這樣問：
+   ```
+   這是 Hyundai Custin 的 openpilot 修改版。請先讀 README.md、LONGITUDINAL.md、STOPPING.md，
+   和 openpilot/selfdrive/controls/LONGITUDINAL.md，整理出跟車距離、加速、過彎速度、停車距離
+   這些參數在哪些檔案。我想把＿＿改成＿＿，請告訴我要改哪裡、會影響什麼。
+   ```
+4. 改好的版本推到你自己的 GitHub，用 `installer.comma.ai/<你的帳號>/<分支>` 安裝。
+
+轉向扭力、`opendbc_repo` 與 panda 安全層這類安全相關的地方，改之前請先弄懂；AI 改的程式，自己要看懂、測過再上路。
+
+---
+
 ## 分支：依你有的硬體選
 
 每個分支都是單一快照（沒有開發歷程），差別只在拿掉了哪些硬體的程式。**只有 `c4-only` 可以直接安裝**，其他分支只供研究程式碼。
